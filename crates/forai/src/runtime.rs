@@ -885,11 +885,19 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             Ok(json!(a * b))
         }
         "math.add" => {
+            // Preserve integer type when both operands are integers
+            if let (Some(a), Some(b)) = (args.get(0).and_then(|v| v.as_i64()), args.get(1).and_then(|v| v.as_i64())) {
+                return Ok(json!(a + b));
+            }
             let a = read_f64_arg(args, 0, op)?;
             let b = read_f64_arg(args, 1, op)?;
             Ok(json!(a + b))
         }
         "math.subtract" => {
+            // Preserve integer type when both operands are integers
+            if let (Some(a), Some(b)) = (args.get(0).and_then(|v| v.as_i64()), args.get(1).and_then(|v| v.as_i64())) {
+                return Ok(json!(a - b));
+            }
             let a = read_f64_arg(args, 0, op)?;
             let b = read_f64_arg(args, 1, op)?;
             Ok(json!(a - b))

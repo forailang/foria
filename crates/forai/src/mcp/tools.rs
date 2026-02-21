@@ -70,7 +70,8 @@ pub fn tool_definitions() -> Vec<ToolInfo> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional arguments passed as flow inputs"
-                    }
+                    },
+                    "timeout": { "type": "number", "description": "Timeout in seconds (default: 120). If the flow blocks longer than this — e.g. waiting for user input via term.prompt — execution is cancelled and an error is returned." }
                 },
                 "required": ["source"]
             }),
@@ -109,7 +110,8 @@ pub fn tool_definitions() -> Vec<ToolInfo> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional arguments passed as flow inputs"
-                    }
+                    },
+                    "timeout": { "type": "number", "description": "Timeout in seconds (default: 120). If the flow blocks longer than this — e.g. waiting for user input via term.prompt — execution is cancelled and an error is returned." }
                 },
                 "required": ["source"]
             }),
@@ -343,11 +345,16 @@ async fn tool_test(args: &Value) -> CallToolResult {
 
     match crate::tester::run_tests_at_path_async(&path).await {
         Ok(summary) => {
+            let failures: Vec<_> = summary.failures.iter().map(|f| json!({
+                "test": f.name,
+                "error": f.error,
+            })).collect();
             let result = json!({
                 "total": summary.total,
                 "passed": summary.passed,
                 "failed": summary.failed,
-                "status": if summary.failed == 0 { "pass" } else { "fail" }
+                "status": if summary.failed == 0 { "pass" } else { "fail" },
+                "failures": failures,
             });
             CallToolResult::text(serde_json::to_string_pretty(&result).unwrap())
         }
@@ -365,6 +372,7 @@ async fn tool_run(args: &Value) -> CallToolResult {
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
     let (flow, ir, registry, flow_registry) = match crate::compile_source(&source) {
         Ok(v) => v,
@@ -384,7 +392,7 @@ async fn tool_run(args: &Value) -> CallToolResult {
     };
 
     let codecs = crate::codec::CodecRegistry::default_registry();
-    match crate::runtime::execute_flow(
+    let future = crate::runtime::execute_flow(
         &flow,
         ir,
         inputs,
@@ -392,9 +400,15 @@ async fn tool_run(args: &Value) -> CallToolResult {
         Some(&flow_registry),
         &codecs,
         None,
-    )
-    .await
-    {
+    );
+
+    let secs = timeout_secs.unwrap_or(120.0);
+    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future).await {
+        Ok(r) => r,
+        Err(_) => return CallToolResult::error(format!("Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event")),
+    };
+
+    match run_result {
         Ok(report) => {
             let result = json!({
                 "outputs": report.outputs,
@@ -465,6 +479,7 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
     let (flow, ir, registry, flow_registry) = match crate::compile_source(&source) {
         Ok(v) => v,
@@ -484,7 +499,7 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
     };
 
     let codecs = crate::codec::CodecRegistry::default_registry();
-    match crate::runtime::execute_flow(
+    let future = crate::runtime::execute_flow(
         &flow,
         ir,
         inputs,
@@ -492,9 +507,15 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
         Some(&flow_registry),
         &codecs,
         None,
-    )
-    .await
-    {
+    );
+
+    let secs = timeout_secs.unwrap_or(120.0);
+    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future).await {
+        Ok(r) => r,
+        Err(_) => return CallToolResult::error(format!("Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event")),
+    };
+
+    match run_result {
         Ok(report) => {
             let result = json!({
                 "outputs": report.outputs,

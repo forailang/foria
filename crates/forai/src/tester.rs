@@ -39,10 +39,17 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct TestFailure {
+    pub name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TestSummary {
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
+    pub failures: Vec<TestFailure>,
 }
 
 enum FlowCallResult {
@@ -604,6 +611,10 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                     println!("FAIL  {}.{}", file_label, test.name);
                     println!("      > {}", err);
                     println!("      > {}", doc_hint);
+                    summary.failures.push(TestFailure {
+                        name: format!("{}.{}", file_label, test.name),
+                        error: err,
+                    });
                 }
             }
         }
