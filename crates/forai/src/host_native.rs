@@ -532,7 +532,8 @@ impl Host for NativeHost {
                     }
 
                     let resp = format!(
-                        "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n{header_str}\r\n{body}",
+                        "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\n{header_str}\r\n{body}",
+                        http_reason_phrase(status),
                         body.len()
                     );
                     writer
@@ -815,6 +816,32 @@ async fn execute_reqwest(
         "headers": Value::Object(headers_map),
         "body": body_text
     }))
+}
+
+fn http_reason_phrase(status: i64) -> &'static str {
+    match status {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Unknown",
+    }
 }
 
 fn json_to_sql_params(
