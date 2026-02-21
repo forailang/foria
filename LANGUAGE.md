@@ -235,13 +235,39 @@ emit ok
 
 **String interpolation**: `msg = "Hello #{name}, you have #{count} items"`
 
+Interpolation works in both single-line and triple-quoted strings. Use `\#` to emit a literal `#` and prevent interpolation:
+
+```
+# Interpolates: evaluates `name` at runtime
+msg = "Hello, #{name}!"
+
+# Literal: outputs the text #{name} as-is
+msg = "Hello, \#{name}!"
+```
+
+**Embedding code examples in template strings** — if you put forai source code inside a triple-quoted template string (e.g., for a docs page or tutorial), escape any `#{}` to prevent the runtime from trying to evaluate them:
+
+```
+template = """
+func Greet
+  take name as text
+body
+  msg = "Hello, \#{name}!"
+  emit msg
+done
+"""
+html = tmpl.render(template, data)
+```
+
+Without the `\#`, the runtime would try to evaluate `name` as a variable inside `HomePage`, not render it as literal text.
+
 **List literals**: `items = [1, 2, 3]` or `empty = []`
 
 **Dict literals**: `config = {host: "localhost", port: 8080}` or `empty = {}`
 
 **Function calls**: `result = str.upper(name)` or `result = MyFunc(arg1, arg2)`
 
-String `+` does concatenation. `#{}` inside strings evaluates expressions. Escapes: `\n` `\t` `\\` `\"` `\#`.
+String `+` does concatenation. Escapes: `\n` `\t` `\\` `\"` `\#`.
 
 ### Control Flow (Inside func/sink/source Bodies)
 
