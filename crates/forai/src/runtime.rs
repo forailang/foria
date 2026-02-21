@@ -316,8 +316,9 @@ fn mustache_render_ctx(template: &str, data: &Value, root: &Value) -> String {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let ch = template[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
