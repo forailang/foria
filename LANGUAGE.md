@@ -197,6 +197,40 @@ done
 - `branch when <expr> ... done` — conditional sub-pipeline (runs body only if true)
 - `branch ... done` — unguarded sub-pipeline (always runs)
 
+### `state` vs `step` in flows
+
+`state` and `step` are both flow-level statements but serve different purposes:
+
+- **`state`** — runs once at startup. Use it for values that depend only on literals or other `state` values. Think: resources, constants, derived-but-fixed paths.
+- **`step`** — runs per event. Use it when the value depends on a runtime wire (something that arrived from a source or a previous step's output).
+
+**Rule of thumb**: if all inputs to the call are literals or other `state` vars, use `state`. If any input is a runtime wire, use `step`.
+
+```
+# WRONG — literals are not valid as state RHS directly:
+state label = "jobs"
+
+# RIGHT — literals go inside op calls:
+state parts0 = list.new()
+state parts1 = list.append(parts0, "/jobs/")   # depends only on state vars → state
+```
+
+**Building a path from a runtime value** (e.g., a redirect URL including a job ID):
+
+```
+# The static prefix is state; the part that uses a runtime wire is step
+state parts0 = list.new()
+state parts1 = list.append(parts0, "/jobs/")
+step list.append(parts1 to :l, job_id to :item) then   # job_id is a runtime wire
+  next :result to parts2
+done
+step str.join(parts2 to :l, "" to :sep) then
+  next :result to redir_path
+done
+```
+
+This pattern appears in every HTTP route that needs a redirect or a constructed URL.
+
 ## Language Syntax
 
 ### Every Statement is an Assignment or Action
@@ -260,6 +294,18 @@ html = tmpl.render(template, data)
 ```
 
 Without the `\#`, the runtime would try to evaluate `name` as a variable inside `HomePage`, not render it as literal text.
+
+**Mustache templates and `#{` collision** — `tmpl.render` uses Mustache `{{var}}` syntax. If your template text contains a `#` immediately before `{{`, the forai lexer sees `#{` as the start of a string interpolation expression and fails to parse:
+
+```
+# WRONG — forai lexer reads `#{` as interpolation start, then fails on `{pr_number}`:
+msg = "PR #{{pr_number}} merged"
+
+# RIGHT — escape the hash to emit it literally:
+msg = "PR \#{{pr_number}} merged"
+```
+
+The rule: any `#{` inside a `tmpl.render("""...""", data)` string must be written as `\#{`.
 
 **List literals**: `items = [1, 2, 3]` or `empty = []`
 
@@ -443,6 +489,24 @@ test Mocked
 done
 ```
 
+**Name collision: `docs` required on test blocks** — if a flow and an imported func share the same name (e.g., `flow CreateJob` in `routes/CreateJob.fa` and `func CreateJob` in `routes/db/CreateJob.fa`), the test block inside the flow file **must** have its own `docs` block immediately before it. Without it, the checker cannot unambiguously associate the test with the flow, silently drops it, and then reports "flow has no test block":
+
+```
+# WRONG — checker silently rejects this test and reports the flow as untested:
+test CreateJob
+  ...
+done
+
+# RIGHT — explicit docs block disambiguates:
+docs CreateJob
+  Verifies job creation route.
+done
+
+test CreateJob
+  ...
+done
+```
+
 ## Built-in Operations
 
 The runtime provides 160+ ops across namespaces. All called as `namespace.op(args)`.
@@ -572,6 +636,7 @@ Use `db.open` for connections (returns `db_conn`), `db.exec` for writes, `db.que
 8. **Flows don't compute** — no `+`, no `str.upper`, no function calls except `step` invocations
 9. **`_` discards a return value** — use `_ = op(...)` when you don't need the result
 10. **All data structures are immutable** — `obj.set` and `list.append` return new copies
+11. **`str.join` parameter is `:l`, not `:list`** — `str.join(items to :l, ", " to :sep)`. Using `:list` causes a parse error because `list` is a reserved type keyword. The same applies to any op parameter whose name coincides with a primitive type (`text`, `bool`, `long`, `real`, `list`, `dict`): use the actual parameter name from the stdlib reference, never the type name.
 
 ## File Structure
 
