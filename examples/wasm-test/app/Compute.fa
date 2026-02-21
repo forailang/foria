@@ -1,0 +1,20 @@
+docs Compute
+  Pure computation that adds two numbers.
+done
+
+func Compute
+  emit result as text
+  fail error as text
+body
+  a = 10
+  b = 20
+  c = a + b
+  msg = "hello from wasm: " + to.text(c)
+  _ = log.info(msg)
+  emit msg
+done
+
+test Compute
+  r = Compute()
+  must r.result != ""
+done

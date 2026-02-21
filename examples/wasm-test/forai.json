@@ -1,0 +1,9 @@
+{
+  "name": "wasm-test",
+  "version": "0.1.0",
+  "main": "main.fa",
+  "build": {
+    "out": "dist",
+    "targets": ["wasm", "bundle"]
+  }
+}

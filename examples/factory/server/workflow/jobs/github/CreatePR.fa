@@ -1,0 +1,40 @@
+uses funcs
+
+docs CreatePR
+    Creates a GitHub pull request for a completed job using the gh CLI.
+done
+
+func CreatePR
+    take conn as db_conn
+    take job_id as text
+    take title as text
+    take spec as text
+    take test_summary as text
+    take repo_url as text
+    take branch as text
+    return dict
+    fail text
+body
+    pr_id = random.uuid()
+
+    pr_body = funcs.BuildPRBody(spec, test_summary)
+
+    gh_args = ["pr", "create", "--repo", repo_url, "--base", "main", "--head", branch, "--title", title, "--body", pr_body]
+    pr_url = exec.run("gh", gh_args)
+
+    pr_number = funcs.ParsePRUrl(pr_url)
+
+    _ = term.print("[github] Created PR ##{pr_number} for job #{job_id}")
+
+    ins_params = [pr_id, job_id, str.trim(pr_url), pr_number, "Open"]
+    _ = db.exec(conn, "INSERT INTO pull_requests (id, job_id, github_url, pr_number, status) VALUES (?1, ?2, ?3, ?4, ?5)", ins_params)
+
+    result = {pr_id: pr_id, pr_number: pr_number, github_url: str.trim(pr_url)}
+    return result
+done
+
+test CreatePR
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

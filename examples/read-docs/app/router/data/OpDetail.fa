@@ -1,0 +1,469 @@
+docs OpDetail
+    Returns detailed documentation for a specific operation.
+done
+
+func OpDetail
+    take op as text
+    emit result as text
+    fail error as text
+body
+    n = "\n"
+    case op
+        when "obj.new"
+            t = "=== obj.new ===" + n
+            t = t + "Create an empty dict." + n
+            t = t + n
+            t = t + "  Args:    (none)" + n
+            t = t + "  Returns: dict" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    d = obj.new()"
+            emit t
+        when "obj.set"
+            t = "=== obj.set ===" + n
+            t = t + "Set a key-value pair. Returns a new dict (original unchanged)." + n
+            t = t + n
+            t = t + "  Args:    dict, key (text), value" + n
+            t = t + "  Returns: dict" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    d = obj.new()" + n
+            t = t + "    d2 = obj.set(d, \"name\", \"Alice\")"
+            emit t
+        when "obj.get"
+            t = "=== obj.get ===" + n
+            t = t + "Get a value from a dict by key." + n
+            t = t + n
+            t = t + "  Args:    dict, key (text)" + n
+            t = t + "  Returns: value, or null if key not found" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    name = obj.get(person, \"name\")"
+            emit t
+        when "obj.has"
+            t = "=== obj.has ===" + n
+            t = t + "Check whether a key exists in a dict." + n
+            t = t + n
+            t = t + "  Args:    dict, key (text)" + n
+            t = t + "  Returns: bool" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    exists = obj.has(person, \"email\")"
+            emit t
+        when "obj.delete"
+            t = "=== obj.delete ===" + n
+            t = t + "Remove a key from a dict. Returns a new dict." + n
+            t = t + n
+            t = t + "  Args:    dict, key (text)" + n
+            t = t + "  Returns: dict" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    cleaned = obj.delete(person, \"tmp\")"
+            emit t
+        when "obj.keys"
+            t = "=== obj.keys ===" + n
+            t = t + "Get all keys from a dict as a list." + n
+            t = t + n
+            t = t + "  Args:    dict" + n
+            t = t + "  Returns: list of text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    ks = obj.keys(person)"
+            emit t
+        when "obj.merge"
+            t = "=== obj.merge ===" + n
+            t = t + "Merge two dicts. Keys in the second dict win on conflict." + n
+            t = t + n
+            t = t + "  Args:    dict_a, dict_b" + n
+            t = t + "  Returns: dict" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    merged = obj.merge(defaults, overrides)"
+            emit t
+        when "list.new"
+            t = "=== list.new ===" + n
+            t = t + "Create an empty list." + n
+            t = t + n
+            t = t + "  Args:    (none)" + n
+            t = t + "  Returns: list" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    items = list.new()"
+            emit t
+        when "list.append"
+            t = "=== list.append ===" + n
+            t = t + "Append an item to a list. Returns a new list." + n
+            t = t + n
+            t = t + "  Args:    list, item" + n
+            t = t + "  Returns: list" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    items = list.append(items, \"new\")"
+            emit t
+        when "list.get"
+            t = "=== list.get ===" + n
+            t = t + "Get an item by index. Negative indices count from the end." + n
+            t = t + n
+            t = t + "  Args:    list, index (long)" + n
+            t = t + "  Returns: value, or null if out of bounds" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    first = list.get(items, 0)" + n
+            t = t + "    last = list.get(items, -1)"
+            emit t
+        when "list.len"
+            t = "=== list.len ===" + n
+            t = t + "Get the number of items in a list." + n
+            t = t + n
+            t = t + "  Args:    list" + n
+            t = t + "  Returns: long" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    count = list.len(items)"
+            emit t
+        when "list.range"
+            t = "=== list.range ===" + n
+            t = t + "Create a list of integers from start (inclusive) to end (exclusive)." + n
+            t = t + n
+            t = t + "  Args:    start (long), end (long)" + n
+            t = t + "  Returns: list of long" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    nums = list.range(0, 5)" + n
+            t = t + "    # [0, 1, 2, 3, 4]"
+            emit t
+        when "list.contains"
+            t = "=== list.contains ===" + n
+            t = t + "Check whether a list contains an item." + n
+            t = t + n
+            t = t + "  Args:    list, item" + n
+            t = t + "  Returns: bool" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    found = list.contains(names, \"Alice\")"
+            emit t
+        when "str.len"
+            t = "=== str.len ===" + n
+            t = t + "Get the character length of a string." + n
+            t = t + n
+            t = t + "  Args:    text" + n
+            t = t + "  Returns: long" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    n = str.len(\"hello\")  # 5"
+            emit t
+        when "str.upper"
+            t = "=== str.upper ===" + n
+            t = t + "Convert a string to uppercase." + n
+            t = t + n
+            t = t + "  Args:    text" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    loud = str.upper(\"hello\")  # HELLO"
+            emit t
+        when "str.lower"
+            t = "=== str.lower ===" + n
+            t = t + "Convert a string to lowercase." + n
+            t = t + n
+            t = t + "  Args:    text" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    quiet = str.lower(\"HELLO\")  # hello"
+            emit t
+        when "str.trim"
+            t = "=== str.trim ===" + n
+            t = t + "Remove leading and trailing whitespace." + n
+            t = t + n
+            t = t + "  Args:    text" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    clean = str.trim(\"  hi  \")  # hi"
+            emit t
+        when "str.split"
+            t = "=== str.split ===" + n
+            t = t + "Split a string by a delimiter." + n
+            t = t + n
+            t = t + "  Args:    text, delimiter (text)" + n
+            t = t + "  Returns: list of text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    parts = str.split(\"a,b,c\", \",\")" + n
+            t = t + "    # [\"a\", \"b\", \"c\"]"
+            emit t
+        when "str.join"
+            t = "=== str.join ===" + n
+            t = t + "Join a list of strings with a separator." + n
+            t = t + n
+            t = t + "  Args:    separator (text), list" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    csv = str.join(\",\", parts)"
+            emit t
+        when "str.replace"
+            t = "=== str.replace ===" + n
+            t = t + "Replace all occurrences of a substring." + n
+            t = t + n
+            t = t + "  Args:    text, find (text), replacement (text)" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    fixed = str.replace(msg, \"old\", \"new\")"
+            emit t
+        when "str.contains"
+            t = "=== str.contains ===" + n
+            t = t + "Check whether a string contains a substring." + n
+            t = t + n
+            t = t + "  Args:    text, substring (text)" + n
+            t = t + "  Returns: bool" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    has_at = str.contains(email, \"@\")"
+            emit t
+        when "math.add"
+            t = "=== math.add ===" + n
+            t = t + "Add two numbers." + n
+            t = t + n
+            t = t + "  Args:    a (number), b (number)" + n
+            t = t + "  Returns: number" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    sum = math.add(10, 20)  # 30" + n
+            t = t + "    # or use infix: sum = 10 + 20"
+            emit t
+        when "math.subtract"
+            t = "=== math.subtract ===" + n
+            t = t + "Subtract b from a." + n
+            t = t + n
+            t = t + "  Args:    a (number), b (number)" + n
+            t = t + "  Returns: number" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    diff = math.subtract(100, 30)  # 70" + n
+            t = t + "    # or use infix: diff = 100 - 30"
+            emit t
+        when "math.multiply"
+            t = "=== math.multiply ===" + n
+            t = t + "Multiply two numbers." + n
+            t = t + n
+            t = t + "  Args:    a (number), b (number)" + n
+            t = t + "  Returns: number" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    product = math.multiply(6, 7)  # 42" + n
+            t = t + "    # or use infix: product = 6 * 7"
+            emit t
+        when "math.divide"
+            t = "=== math.divide ===" + n
+            t = t + "Divide a by b. Errors on division by zero." + n
+            t = t + n
+            t = t + "  Args:    a (number), b (number)" + n
+            t = t + "  Returns: real" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    ratio = math.divide(22, 7)" + n
+            t = t + "    # or use infix: ratio = 22 / 7"
+            emit t
+        when "math.mod"
+            t = "=== math.mod ===" + n
+            t = t + "Remainder after integer division." + n
+            t = t + n
+            t = t + "  Args:    a (number), b (number)" + n
+            t = t + "  Returns: number" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    rem = math.mod(17, 5)  # 2" + n
+            t = t + "    # or use infix: rem = 17 % 5"
+            emit t
+        when "math.power"
+            t = "=== math.power ===" + n
+            t = t + "Raise a to the power of b." + n
+            t = t + n
+            t = t + "  Args:    base (number), exp (number)" + n
+            t = t + "  Returns: number" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    sq = math.power(2, 10)  # 1024" + n
+            t = t + "    # or use infix: sq = 2 ** 10"
+            emit t
+        when "math.round"
+            t = "=== math.round ===" + n
+            t = t + "Round a number to N decimal places." + n
+            t = t + n
+            t = t + "  Args:    number (real), decimals (long)" + n
+            t = t + "  Returns: real" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    pi = math.round(3.14159, 2)  # 3.14"
+            emit t
+        when "json.decode"
+            t = "=== json.decode ===" + n
+            t = t + "Parse a JSON string into a value." + n
+            t = t + n
+            t = t + "  Args:    text (JSON string)" + n
+            t = t + "  Returns: value (dict, list, text, number, bool, or null)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    data = json.decode(\"{\\\"name\\\": \\\"Alice\\\"}\")"
+            emit t
+        when "json.encode"
+            t = "=== json.encode ===" + n
+            t = t + "Encode a value as a compact JSON string." + n
+            t = t + n
+            t = t + "  Args:    value" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    s = json.encode(person)"
+            emit t
+        when "json.encode_pretty"
+            t = "=== json.encode_pretty ===" + n
+            t = t + "Encode a value as a pretty-printed JSON string." + n
+            t = t + n
+            t = t + "  Args:    value" + n
+            t = t + "  Returns: text" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    s = json.encode_pretty(person)"
+            emit t
+        when "db.open"
+            t = "=== db.open ===" + n
+            t = t + "Open or create a SQLite database file." + n
+            t = t + n
+            t = t + "  Args:    path (text)" + n
+            t = t + "  Returns: conn (text handle)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    conn = db.open(\"app.db\")" + n
+            t = t + "    mem = db.open(\":memory:\")"
+            emit t
+        when "db.exec"
+            t = "=== db.exec ===" + n
+            t = t + "Execute a write SQL statement (INSERT, UPDATE, CREATE, etc.)." + n
+            t = t + n
+            t = t + "  Args:    conn, sql (text), params (list, optional)" + n
+            t = t + "  Returns: number of rows affected (long)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    _ = db.exec(conn, \"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)\")" + n
+            t = t + "    params = [\"Alice\"]" + n
+            t = t + "    _ = db.exec(conn, \"INSERT INTO users (name) VALUES (?1)\", params)"
+            emit t
+        when "db.query"
+            t = "=== db.query ===" + n
+            t = t + "Query rows from the database. Returns a list of dicts." + n
+            t = t + n
+            t = t + "  Args:    conn, sql (text), params (list, optional)" + n
+            t = t + "  Returns: list of dict (one dict per row)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    rows = db.query(conn, \"SELECT id, name FROM users\")" + n
+            t = t + "    row = list.get(rows, 0)" + n
+            t = t + "    name = obj.get(row, \"name\")"
+            emit t
+        when "db.close"
+            t = "=== db.close ===" + n
+            t = t + "Close a database connection." + n
+            t = t + n
+            t = t + "  Args:    conn" + n
+            t = t + "  Returns: bool (true on success)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    _ = db.close(conn)"
+            emit t
+        when "term.print"
+            t = "=== term.print ===" + n
+            t = t + "Print a line of text to stdout." + n
+            t = t + n
+            t = t + "  Args:    text" + n
+            t = t + "  Returns: bool (true)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    _ = term.print(\"Hello, world!\")"
+            emit t
+        when "term.prompt"
+            t = "=== term.prompt ===" + n
+            t = t + "Print a prompt string and read a line from stdin." + n
+            t = t + n
+            t = t + "  Args:    prompt (text)" + n
+            t = t + "  Returns: text (user input)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    name = term.prompt(\"Your name: \")"
+            emit t
+        when "term.clear"
+            t = "=== term.clear ===" + n
+            t = t + "Clear the terminal screen." + n
+            t = t + n
+            t = t + "  Args:    (none)" + n
+            t = t + "  Returns: bool (true)" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    _ = term.clear()"
+            emit t
+        when "http.get"
+            t = "=== http.get ===" + n
+            t = t + "Send an HTTP GET request." + n
+            t = t + n
+            t = t + "  Args:    url (text), headers (dict)" + n
+            t = t + "  Returns: dict with status, headers, body" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    hdrs = obj.new()" + n
+            t = t + "    resp = http.get(\"https://example.com\", hdrs)"
+            emit t
+        when "http.post"
+            t = "=== http.post ===" + n
+            t = t + "Send an HTTP POST request." + n
+            t = t + n
+            t = t + "  Args:    url (text), body (text), headers (dict)" + n
+            t = t + "  Returns: dict with status, headers, body" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    hdrs = obj.new()" + n
+            t = t + "    resp = http.post(\"https://api.example.com/data\", payload, hdrs)"
+            emit t
+        when "http.put"
+            t = "=== http.put ===" + n
+            t = t + "Send an HTTP PUT request." + n
+            t = t + n
+            t = t + "  Args:    url (text), body (text), headers (dict)" + n
+            t = t + "  Returns: dict with status, headers, body" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    resp = http.put(url, payload, hdrs)"
+            emit t
+        when "http.delete"
+            t = "=== http.delete ===" + n
+            t = t + "Send an HTTP DELETE request." + n
+            t = t + n
+            t = t + "  Args:    url (text), headers (dict)" + n
+            t = t + "  Returns: dict with status, headers, body" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    resp = http.delete(url, hdrs)"
+            emit t
+        when "http.response"
+            t = "=== http.response ===" + n
+            t = t + "Build an HTTP response dict for http.server.respond." + n
+            t = t + n
+            t = t + "  Args:    status (long), headers (dict), body (text)" + n
+            t = t + "  Returns: dict" + n
+            t = t + n
+            t = t + "  Example:" + n
+            t = t + "    hdrs = obj.new()" + n
+            t = t + "    resp = http.response(200, hdrs, \"OK\")"
+            emit t
+        else
+            t = "Unknown op: '#{op}'. Try '<namespace>' to see available ops."
+            emit t
+    done
+done
+
+test OpDetail
+  r = OpDetail("obj.get")
+  must str.contains(r, "obj.get")
+done

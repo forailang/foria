@@ -1,0 +1,21 @@
+docs NumToText
+    Converts a real number to a human-readable text label.
+
+    docs num
+        The number to format.
+    done
+done
+
+func NumToText
+    take num as real
+    emit result as text
+    fail error as text
+body
+    label = "Number: #{to.text(num)}"
+    emit label
+done
+
+test NumToText
+    r = NumToText(3.14)
+    must r == "Number: 3.14"
+done

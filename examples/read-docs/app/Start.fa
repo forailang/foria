@@ -1,0 +1,82 @@
+uses sources
+uses router
+uses display
+
+docs StartResult
+    Result of the documentation browser session.
+
+    docs status
+        Exit status message.
+    done
+done
+
+type StartResult
+    status text
+done
+
+docs StartError
+    An error from the documentation browser.
+
+    docs message
+        Error description.
+    done
+done
+
+type StartError
+    message text
+done
+
+docs Start
+    Pipeline wiring for the documentation browser.
+    Connects user input to a classifier, routes by category to
+    the appropriate data func, and displays the result.
+    Unknown commands are routed to the error display sink.
+done
+
+flow Start
+    emit result as StartResult
+    fail error as StartError
+body
+    step display.Welcome() done
+    step sources.Commands() then
+        next :cmd to cmd
+    done
+    step router.Classify(cmd to :cmd) then
+        next :result to kind
+    done
+    branch when kind == "help"
+        step data.HelpText() then
+            next :result to output
+        done
+        step display.Print(output to :text) done
+    done
+    branch when kind == "ls"
+        step data.Namespaces() then
+            next :result to output
+        done
+        step display.Print(output to :text) done
+    done
+    branch when kind == "quit"
+        step display.Print("Goodbye!" to :text) done
+    done
+    branch when kind == "ns"
+        step data.NsDetail(cmd to :ns) then
+            next :result to output
+        done
+        step display.Print(output to :text) done
+    done
+    branch when kind == "op"
+        step data.OpDetail(cmd to :op) then
+            next :result to output
+        done
+        step display.Print(output to :text) done
+    done
+    branch when kind == "unknown"
+        step display.PrintError(cmd to :cmd) done
+    done
+done
+
+test Start
+    ok = true
+    must ok == true
+done

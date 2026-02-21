@@ -1,0 +1,22 @@
+docs SevenLess
+    Subtracts 0.7 from a real number.
+
+    docs num
+        The input number.
+    done
+done
+
+func SevenLess
+    take num as real
+    emit result as real
+    fail error as text
+body
+    reduced = num - 0.7
+    emit reduced
+done
+
+test SevenLess
+    r = SevenLess(1.0)
+    must r > 0.29
+    must r < 0.31
+done

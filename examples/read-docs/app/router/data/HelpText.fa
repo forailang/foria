@@ -1,0 +1,22 @@
+docs HelpText
+    Returns the help text listing all available commands.
+done
+
+func HelpText
+    emit result as text
+    fail error as text
+body
+    n = "\n"
+    t = "Commands:" + n
+    t = t + "  help          Show this help message" + n
+    t = t + "  ls            List all namespaces" + n
+    t = t + "  <namespace>   Browse ops in a namespace (e.g. obj)" + n
+    t = t + "  <ns.op>       View details for an op (e.g. obj.get)" + n
+    t = t + "  quit          Exit the browser"
+    emit t
+done
+
+test HelpText
+  r = HelpText()
+  must str.contains(r, "help")
+done

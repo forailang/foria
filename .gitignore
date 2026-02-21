@@ -1,0 +1,23 @@
+# Rust build artifacts
+target/
+
+# macOS
+.DS_Store
+
+# Generated output
+**/dist/
+**/docs/
+
+# Node.js
+**/node_modules/
+
+# VSCode extension build artifacts
+editors/vscode/out/
+editors/vscode/*.vsix
+
+# Internal planning docs
+plans/
+
+# Claude memory (local session data)
+.claude/
+

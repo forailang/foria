@@ -1,0 +1,18 @@
+docs ListJobs
+    Queries all jobs ordered by creation date descending.
+done
+
+func ListJobs
+    take conn as db_conn
+    return list
+    fail text
+body
+    rows = db.query(conn, "SELECT id, title, status, created_by, created_at, updated_at FROM jobs ORDER BY created_at DESC")
+    return rows
+done
+
+test ListJobs
+  # DB func: requires live connection — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

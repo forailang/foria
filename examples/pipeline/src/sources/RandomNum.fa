@@ -1,0 +1,22 @@
+docs RandomNum
+    Generates five random numbers between 0 and 100.
+    Each number is emitted as a separate event, then the source stops.
+done
+
+source RandomNum
+    emit num as real
+    fail error as text
+body
+    iters = list.range(0, 5)
+    loop iters as idx
+        n_raw = random.float()
+        n = n_raw * 100.0
+        emit n
+    done
+done
+
+test RandomNum
+    r = RandomNum()
+    must r >= 0.0
+    must r <= 100.0
+done

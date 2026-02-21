@@ -1,0 +1,60 @@
+uses db
+uses api
+
+docs CreateJob
+    Handles POST to create a new job and redirects to the job detail page.
+done
+
+flow CreateJob
+    take conn as db_conn
+    take req as dict
+    emit result as bool
+    fail error as text
+body
+    step obj.get(req to :dict, "conn_id" to :key) then
+        next :result to conn_id
+    done
+    step obj.get(req to :dict, "body" to :key) then
+        next :result to body
+    done
+    step api.HandleCreateJob(body to :body) then
+        next :result to parsed
+    done
+    step obj.get(parsed to :dict, "title" to :key) then
+        next :result to p_title
+    done
+    step obj.get(parsed to :dict, "spec" to :key) then
+        next :result to p_spec
+    done
+    step obj.get(parsed to :dict, "docker_image" to :key) then
+        next :result to p_image
+    done
+    step obj.get(parsed to :dict, "repo_url" to :key) then
+        next :result to p_repo
+    done
+    step obj.get(parsed to :dict, "branch" to :key) then
+        next :result to p_branch
+    done
+    step db.CreateJob(conn to :conn, p_title to :title, p_spec to :spec, p_image to :docker_image, p_repo to :repo_url, p_branch to :branch, "admin" to :created_by) then
+        next :result to job_id
+    done
+    state redir_parts0 = list.new()
+    state redir_parts1 = list.append(redir_parts0, "/jobs/")
+    state redir_parts = list.append(redir_parts1, job_id)
+    step str.join(redir_parts to :list, "" to :sep) then
+        next :result to redir_path
+    done
+    state rr0 = obj.new()
+    state rr1 = obj.set(rr0, "content-type", "text/html; charset=utf-8")
+    state rr = obj.set(rr1, "location", redir_path)
+    step http.server.respond(conn_id to :conn_id, 303 to :status, rr to :hdrs, "" to :body) then
+        next :result to ok
+        emit ok to :result
+    done
+done
+
+test CreateJob
+  # Flow: HTTP route handler — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

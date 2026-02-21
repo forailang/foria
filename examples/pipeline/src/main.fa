@@ -1,0 +1,49 @@
+uses sources
+uses lib
+uses sinks
+
+docs main
+    Pipeline demo with branching and error handling.
+
+    Generates random numbers between 0 and 100, classifies each as
+    "big" (> 50) or "small" (<= 50), and routes through different paths
+    using the `branch` construct.
+
+    Big numbers are squared.
+    Small numbers are doubled, reduced by 0.7, and used as circle radii.
+    Both paths format and print the result.
+
+    The small-number path can fail if the reduced value goes negative,
+    demonstrating error propagation through the pipeline.
+done
+
+flow main
+body
+    step sources.RandomNum() then
+        next :num to raw
+    done
+    branch when raw > 50.0
+        step lib.Square(raw to :num) then
+            next :result to processed
+        done
+        step lib.NumToText(processed to :num) then
+            next :result to big_label
+        done
+        step sinks.Print(big_label to :line) done
+    done
+    branch when raw <= 50.0
+        step lib.Double(raw to :num) then
+            next :result to doubled
+        done
+        step lib.SevenLess(doubled to :num) then
+            next :result to reduced
+        done
+        step lib.CircleArea(reduced to :radius) then
+            next :result to area
+        done
+        step lib.NumToText(area to :num) then
+            next :result to small_label
+        done
+        step sinks.Print(small_label to :line) done
+    done
+done

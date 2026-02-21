@@ -1,0 +1,70 @@
+docs HandleCreateJobResult
+    The parsed fields from a create job form submission.
+
+    docs title
+        The job title.
+    done
+
+    docs spec
+        The job specification text.
+    done
+
+    docs docker_image
+        The Docker image name.
+    done
+
+    docs repo_url
+        The repository URL.
+    done
+
+    docs branch
+        The target branch.
+    done
+done
+
+type HandleCreateJobResult
+    title text
+    spec text
+    docker_image text
+    repo_url text
+    branch text
+done
+
+docs HandleCreateJobError
+    An error from the create job handler.
+
+    docs message
+        Description of what went wrong.
+    done
+done
+
+type HandleCreateJobError
+    message text
+done
+
+docs HandleCreateJob
+    Parses URL-encoded form data from a POST body and returns
+    the extracted job fields.
+done
+
+func HandleCreateJob
+    take body as text
+    return HandleCreateJobResult
+    fail HandleCreateJobError
+body
+    params = url.query_parse(body)
+    title = obj.get(params, "title")
+    spec = obj.get(params, "spec")
+    docker_image = obj.get(params, "docker_image")
+    repo_url = obj.get(params, "repo_url")
+    branch = obj.get(params, "branch")
+
+    result = {title: title, spec: spec, docker_image: docker_image, repo_url: repo_url, branch: branch}
+    return result
+done
+
+test HandleCreateJob
+  body = "title=my+job&spec=do+something&docker_image=python&repo_url=https://github.com/org/repo&branch=main"
+  r = HandleCreateJob(body)
+  must r.result.title == "my job"
+done

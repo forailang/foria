@@ -1,0 +1,155 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "forai",
+  "scopeName": "source.forai",
+  "fileTypes": ["fa"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#boolean" },
+    { "include": "#declaration" },
+    { "include": "#type-declaration" },
+    { "include": "#interface" },
+    { "include": "#block-delimiters" },
+    { "include": "#control-flow" },
+    { "include": "#loop-keywords" },
+    { "include": "#concurrency" },
+    { "include": "#flow-pipeline" },
+    { "include": "#testing" },
+    { "include": "#import" },
+    { "include": "#docs-keyword" },
+    { "include": "#test-keyword" },
+    { "include": "#open-modifier" },
+    { "include": "#builtin-types" },
+    { "include": "#constraint-keys" },
+    { "include": "#fat-arrow" },
+    { "include": "#operators" },
+    { "include": "#namespace-call" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.forai"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.forai",
+      "patterns": [
+        {
+          "match": "\\\\[nrt\\\\\"#]",
+          "name": "constant.character.escape.forai"
+        },
+        {
+          "begin": "#\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.forai",
+          "contentName": "source.forai.embedded",
+          "patterns": [
+            { "include": "#namespace-call" },
+            { "include": "#number" },
+            { "include": "#boolean" }
+          ]
+        }
+      ]
+    },
+    "number": {
+      "match": "\\b\\d+(\\.\\d+)?\\b",
+      "name": "constant.numeric.forai"
+    },
+    "boolean": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.forai"
+    },
+    "declaration": {
+      "match": "^\\s*(func|flow|sink|source)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.forai" },
+        "2": { "name": "entity.name.function.forai" }
+      }
+    },
+    "type-declaration": {
+      "match": "^\\s*(type|data|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.type.forai" },
+        "2": { "name": "entity.name.type.forai" }
+      }
+    },
+    "interface": {
+      "match": "\\b(take|emit|fail|return)\\b",
+      "name": "keyword.other.interface.forai"
+    },
+    "block-delimiters": {
+      "match": "\\b(body|init|from|done)\\b",
+      "name": "keyword.control.block.forai"
+    },
+    "control-flow": {
+      "match": "\\b(case|when|else|if)\\b",
+      "name": "keyword.control.conditional.forai"
+    },
+    "loop-keywords": {
+      "match": "\\b(loop|as|break)\\b",
+      "name": "keyword.control.loop.forai"
+    },
+    "concurrency": {
+      "match": "\\b(sync)\\b",
+      "name": "keyword.control.concurrent.forai"
+    },
+    "flow-pipeline": {
+      "match": "\\b(step|next|state|send|nowait)\\b",
+      "name": "keyword.control.flow.forai"
+    },
+    "testing": {
+      "match": "\\b(must|trap|mock)\\b",
+      "name": "keyword.other.testing.forai"
+    },
+    "import": {
+      "match": "^\\s*(uses)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.import.forai" },
+        "2": { "name": "entity.name.module.forai" }
+      }
+    },
+    "docs-keyword": {
+      "match": "^\\s*(docs)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.docs.forai" },
+        "2": { "name": "entity.name.forai" }
+      }
+    },
+    "test-keyword": {
+      "match": "^\\s*(test)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.test.forai" },
+        "2": { "name": "entity.name.function.forai" }
+      }
+    },
+    "open-modifier": {
+      "match": "\\b(open)\\b",
+      "name": "storage.modifier.forai"
+    },
+    "builtin-types": {
+      "match": "\\b(text|bool|long|real|uuid|time|list|dict|void|db_conn|http_server|http_conn|ws_conn)\\b",
+      "name": "support.type.primitive.forai"
+    },
+    "constraint-keys": {
+      "match": ":[a-z_]+\\b",
+      "name": "entity.other.attribute-name.forai"
+    },
+    "fat-arrow": {
+      "match": "=>",
+      "name": "keyword.operator.arrow.forai"
+    },
+    "operators": {
+      "match": "==|!=|>=|<=|&&|\\|\\||\\*\\*|[+\\-*/%<>=!]",
+      "name": "keyword.operator.forai"
+    },
+    "namespace-call": {
+      "match": "\\b([a-z_][a-z0-9_]*)\\.([a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*)\\b",
+      "captures": {
+        "0": { "name": "support.function.builtin.forai" }
+      }
+    }
+  }
+}

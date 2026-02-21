@@ -1,0 +1,10 @@
+uses app
+
+docs main
+  Browser demo - prints a greeting and logs a message.
+done
+
+flow main
+body
+  step app.Hello() done
+done

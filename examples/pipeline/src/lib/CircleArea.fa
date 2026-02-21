@@ -1,0 +1,30 @@
+docs CircleArea
+    Computes the area of a circle with the given radius using pi * r^2.
+    Fails if the radius is negative.
+
+    docs radius
+        The radius of the circle.
+    done
+done
+
+func CircleArea
+    take radius as real
+    emit result as real
+    fail error as text
+body
+    if radius < 0.0
+        msg = "radius must be non-negative"
+        fail msg
+    done
+    pi = 3.14159265358979
+    area = pi * radius * radius
+    emit area
+done
+
+test CircleArea
+    r = CircleArea(1.0)
+    must r > 3.14
+    must r < 3.15
+    err = trap CircleArea(-1.0)
+    must err == "radius must be non-negative"
+done

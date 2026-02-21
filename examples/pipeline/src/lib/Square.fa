@@ -1,0 +1,23 @@
+docs Square
+    Squares a real number.
+
+    docs num
+        The number to square.
+    done
+done
+
+func Square
+    take num as real
+    emit result as real
+    fail error as text
+body
+    squared = num * num
+    emit squared
+done
+
+test Square
+    r = Square(5.0)
+    must r == 25.0
+    s = Square(0.0)
+    must s == 0.0
+done

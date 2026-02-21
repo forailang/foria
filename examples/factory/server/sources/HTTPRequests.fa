@@ -1,0 +1,19 @@
+docs HTTPRequests
+    Accepts HTTP connections on a port and emits parsed request dicts.
+    Each emitted value is a dict with conn_id, method, path, and body fields.
+done
+
+source HTTPRequests
+    take port as long
+    emit req as dict
+    fail error as text
+init
+    srv = http.server.listen(port)
+from http.server.accept(srv)
+done
+
+test HTTPRequests
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

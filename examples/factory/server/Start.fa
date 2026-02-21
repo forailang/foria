@@ -1,0 +1,55 @@
+uses handler
+uses workflow
+uses sources
+
+docs StartResult
+    The result of the server start operation.
+
+    docs status
+        Server exit status message.
+    done
+done
+
+type StartResult
+    status text
+done
+
+docs StartError
+    An error from the server.
+
+    docs message
+        Description of what went wrong.
+    done
+done
+
+type StartError
+    message text
+done
+
+docs Start
+    HTTP server accept loop for the Factory Manager.
+    Listens on port 8080, initializes the database, routes requests,
+    and dispatches to the request handler.
+done
+
+flow Start
+    emit result as StartResult
+    fail error as StartError
+body
+    state conn = db.open("factory.db")
+    step db.Migrate(conn to :conn) done
+    send nowait workflow.RunJobLoop()
+    step sources.HTTPRequests(8080 to :port) then
+        next :req to req
+    done
+    step handler.HandleRequest(conn to :conn, req to :req) done
+done
+
+test Start
+    mock db.Migrate => true
+    mock workflow.RunJobLoop => true
+    mock sources.HTTPRequests => {}
+    mock handler.HandleRequest => {}
+    r = Start()
+    must r.status == "ok"
+done

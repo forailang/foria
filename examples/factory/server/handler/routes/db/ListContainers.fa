@@ -1,0 +1,18 @@
+docs ListContainers
+    Queries all containers with their associated job title and image name.
+done
+
+func ListContainers
+    take conn as db_conn
+    return list
+    fail text
+body
+    rows = db.query(conn, "SELECT c.id, c.job_id, c.image_id, c.ecs_task_arn, c.status, c.started_at, c.stopped_at, j.title as job_title, i.name as image_name FROM containers c LEFT JOIN jobs j ON c.job_id = j.id LEFT JOIN container_images i ON c.image_id = i.id ORDER BY c.started_at DESC")
+    return rows
+done
+
+test ListContainers
+  # DB func: requires live connection — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

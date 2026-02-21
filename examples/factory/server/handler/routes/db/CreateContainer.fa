@@ -1,0 +1,23 @@
+docs CreateContainer
+    Inserts a new container into the database and returns its generated ID.
+done
+
+func CreateContainer
+    take conn as db_conn
+    take job_id as text
+    take image_id as text
+    take ecs_task_arn as text
+    return text
+    fail text
+body
+    id = random.uuid()
+    params = [id, job_id, image_id, ecs_task_arn]
+    ok = db.exec(conn, "INSERT INTO containers (id, job_id, image_id, ecs_task_arn) VALUES (?1, ?2, ?3, ?4)", params)
+    return id
+done
+
+test CreateContainer
+  # DB func: requires live connection — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

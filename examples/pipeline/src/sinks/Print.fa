@@ -1,0 +1,22 @@
+docs Print
+    Prints a line of text to the terminal.
+
+    docs line
+        The text line to print.
+    done
+done
+
+sink Print
+    take line as text
+    emit done as bool
+    fail error as text
+body
+    _ = term.print(line)
+    ok = true
+    emit ok
+done
+
+test Print
+    r = Print("hello")
+    must r == true
+done

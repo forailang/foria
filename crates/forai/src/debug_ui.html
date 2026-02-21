@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forai debugger</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+  --fg:#e6edf3;--fg2:#8b949e;--accent:#58a6ff;--green:#3fb950;
+  --red:#f85149;--yellow:#d29922;--orange:#db6d28;--blue:#58a6ff;
+}
+body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);color:var(--fg);height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px}
+.grid{flex:1;display:grid;grid-template-columns:280px 1fr 300px;grid-template-rows:1fr 1fr;gap:1px;background:var(--border);overflow:hidden;min-height:0}
+.panel{background:var(--bg2);overflow:auto;display:flex;flex-direction:column}
+.panel-header{padding:8px 12px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--fg2);flex-shrink:0}
+.panel-body{padding:8px 12px;flex:1;overflow:auto;min-height:0}
+#sourcePanel{grid-row:1/2;grid-column:1/2}
+#varsPanel{grid-row:2/3;grid-column:1/2}
+#graphPanel{grid-row:1/3;grid-column:2/3;overflow:hidden}
+#consolePanel{grid-row:1/3;grid-column:3/4}
+.controlbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg3);border-top:1px solid var(--border);flex-shrink:0}
+.controlbar button{background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:5px 14px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px;transition:background .15s,border-color .15s}
+.controlbar button:hover{background:var(--bg3);border-color:var(--accent)}
+.controlbar button:active{background:var(--accent);color:var(--bg)}
+.status{margin-left:auto;color:var(--fg2);font-size:12px}
+.source-line{display:flex;padding:1px 0;line-height:1.5}
+.source-line.active{background:rgba(88,166,255,.15);border-left:3px solid var(--accent)}
+.source-line:not(.active){border-left:3px solid transparent}
+.line-num{color:var(--fg2);width:32px;text-align:right;padding-right:8px;flex-shrink:0;user-select:none}
+.line-text{white-space:pre;flex:1}
+.var-row{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--border);transition:background .1s}
+.var-row.updated{animation:flash .8s ease-out;border-radius:3px}
+.var-row.internal{opacity:.45}
+@keyframes flash{0%{background:rgba(88,166,255,.35)}100%{background:transparent}}
+.var-name{color:var(--accent);min-width:100px;flex-shrink:0}
+.var-val{color:var(--fg);word-break:break-all}
+.trace-entry{padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
+.trace-entry .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;margin-right:6px}
+.badge-ok{background:rgba(63,185,80,.2);color:var(--green)}
+.badge-fail{background:rgba(248,81,73,.2);color:var(--red)}
+.trace-divider{padding:6px 0 4px;color:var(--fg2);font-size:10px;text-align:center;letter-spacing:.8px;opacity:.55;border-top:1px solid var(--border);margin-top:4px}
+svg{width:100%;height:100%}
+.graph-node{stroke-width:1.5;rx:8;cursor:pointer;transition:fill .2s,stroke .3s,opacity .3s}
+.graph-node:hover{stroke:var(--fg2)}
+.graph-node.active{stroke:var(--yellow);stroke-width:2.5;filter:url(#glow)}
+.graph-node.source-active{stroke:var(--yellow);stroke-width:2;opacity:1 !important}
+.graph-node.executed{fill:rgba(63,185,80,.15)}
+.graph-node.failed{fill:rgba(248,81,73,.15)}
+.graph-node.inactive{opacity:.22;filter:none !important}
+.func-node{fill:var(--bg3);stroke:var(--border)}
+.source-node{fill:rgba(88,166,255,.08);stroke:var(--accent)}
+.sink-node{fill:rgba(63,185,80,.06);stroke:var(--green)}
+.node-label{fill:var(--fg);font-size:11px;font-family:inherit;pointer-events:none}
+.node-sublabel{fill:var(--fg2);font-size:9px;font-family:inherit;pointer-events:none}
+.bp-dot{fill:var(--red);cursor:pointer;transition:opacity .15s}
+.edge-path{fill:none;stroke-width:1.5;opacity:.55;transition:opacity .3s,stroke-width .3s}
+.edge-path.active-edge{opacity:1;stroke-width:2.5}
+.edge-path.inactive-edge{opacity:.1 !important;stroke-width:1 !important}
+.edge-label{fill:var(--fg2);font-size:9px;font-family:inherit;pointer-events:none}
+.edge-label-bg{fill:var(--bg2);rx:3}
+.port-circle{stroke-width:1.5;pointer-events:none;transition:opacity .3s}
+.port-circle.inactive-port{opacity:.2}
+.port-label{fill:var(--fg2);font-size:8px;font-family:inherit;pointer-events:none}
+.edge-value{fill:var(--fg2);font-size:8px;font-family:inherit;pointer-events:none;opacity:.8}
+.edge-value-bg{fill:var(--bg);opacity:.85;rx:2}
+.input-rect{fill:rgba(88,166,255,.1);stroke:var(--blue);stroke-width:1;rx:6}
+.output-rect{fill:rgba(63,185,80,.1);stroke:var(--green);stroke-width:1;rx:6}
+.io-label{fill:var(--fg);font-size:10px;font-family:inherit;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="panel" id="sourcePanel">
+    <div class="panel-header">Source</div>
+    <div class="panel-body" id="sourceBody"></div>
+  </div>
+  <div class="panel" id="varsPanel">
+    <div class="panel-header">Variables</div>
+    <div class="panel-body" id="varsBody"></div>
+  </div>
+  <div class="panel" id="graphPanel">
+    <div class="panel-header">Graph</div>
+    <div class="panel-body" id="graphBody" style="padding:0"></div>
+  </div>
+  <div class="panel" id="consolePanel">
+    <div class="panel-header">Console</div>
+    <div class="panel-body" id="consoleBody"></div>
+  </div>
+</div>
+<div class="controlbar">
+  <button id="btnStep" onclick="sendCmd('step')">Step</button>
+  <button id="btnContinue" onclick="sendCmd('run_to_breakpoint')">Continue</button>
+  <button id="btnRun" onclick="sendCmd('continue')">Run</button>
+  <button id="btnRestart" onclick="sendCmd('restart')">Restart</button>
+  <span class="status" id="statusText">Connecting...</span>
+</div>
+<script>
+'use strict';
+let ws, flowData, breakpoints=new Set(), currentNodeId=null, prevBindings={}, nodePositions={};
+let lastTraceLen=0;
+let executedNodeSet=new Set(), failedNodeSet=new Set();
+let currentBindings={};
+// Improvements tracking
+let iterationExecutedSet=new Set(); // nodes executed in current pipeline pass
+let iterationCount=0;              // event counter for console dividers
+let traceNodeSeen={};              // node_id -> first trace index seen (for divider detection)
+let inactiveNodeSet=new Set();     // nodes in non-taken branches (dimmed)
+
+function connect(){
+  const loc=window.location;
+  ws=new WebSocket(`ws://${loc.host}/ws`);
+  ws.onopen=()=>{document.getElementById('statusText').textContent='Connected';};
+  ws.onmessage=(e)=>{
+    const msg=JSON.parse(e.data);
+    dispatch(msg);
+  };
+  ws.onclose=()=>{
+    document.getElementById('statusText').textContent='Disconnected — reconnecting...';
+    setTimeout(connect,1000);
+  };
+}
+
+function sendCmd(type,extra){
+  if(!ws||ws.readyState!==1)return;
+  ws.send(JSON.stringify({type,...(extra||{})}));
+}
+
+function dispatch(msg){
+  switch(msg.type){
+    case'init': onInit(msg);break;
+    case'snapshot': onSnapshot(msg);break;
+    case'completed': onCompleted(msg);break;
+    case'error': onError(msg);break;
+  }
+}
+
+function onInit(msg){
+  flowData=msg;
+  lastTraceLen=0;
+  prevBindings={};
+  currentBindings={};
+  executedNodeSet=new Set();
+  failedNodeSet=new Set();
+  iterationExecutedSet=new Set();
+  inactiveNodeSet=new Set();
+  iterationCount=0;
+  traceNodeSeen={};
+  document.getElementById('consoleBody').innerHTML='';
+  renderSource(msg.source);
+  renderGraph(msg.ir);
+  document.getElementById('statusText').textContent='Paused — waiting for first step';
+}
+
+function onSnapshot(msg){
+  currentNodeId=msg.node_id;
+  currentBindings=msg.bindings||{};
+  updateGraph(msg);
+  updateVars(msg.bindings);
+  updateSourceHighlight(msg.node_id);
+  appendTrace(msg.trace);
+  const label=msg.node_id?`Paused at step ${msg.step}: ${msg.op||'?'}`:'Paused — ready';
+  document.getElementById('statusText').textContent=label;
+}
+
+function onCompleted(msg){
+  currentNodeId=null;
+  if(msg.report&&msg.report.trace) appendTrace(msg.report.trace);
+  updateGraph(null);
+  document.getElementById('statusText').textContent='Completed';
+  const el=document.getElementById('consoleBody');
+  el.insertAdjacentHTML('beforeend',
+    `<div class="trace-entry"><span class="badge badge-ok">done</span>Flow completed</div>`);
+  el.scrollTop=el.scrollHeight;
+}
+
+function onError(msg){
+  currentNodeId=null;
+  document.getElementById('statusText').textContent=`Error: ${msg.message}`;
+  const el=document.getElementById('consoleBody');
+  el.insertAdjacentHTML('beforeend',
+    `<div class="trace-entry"><span class="badge badge-fail">err</span>${esc(msg.message)}</div>`);
+  el.scrollTop=el.scrollHeight;
+}
+
+function renderSource(src){
+  const el=document.getElementById('sourceBody');
+  const lines=src.split('\n');
+  el.innerHTML=lines.map((l,i)=>
+    `<div class="source-line" data-line="${i+1}"><span class="line-num">${i+1}</span><span class="line-text">${esc(l)}</span></div>`
+  ).join('');
+}
+
+function updateSourceHighlight(nodeId){
+  document.querySelectorAll('.source-line.active').forEach(el=>el.classList.remove('active'));
+  if(!nodeId||!flowData) return;
+  const src=flowData.source;
+  const lines=src.split('\n');
+  const bind=nodeId.replace(/^n\d+_/,'');
+  for(let i=0;i<lines.length;i++){
+    const trimmed=lines[i].trim();
+    if(trimmed.startsWith(bind+' =') || trimmed.startsWith(bind+'=')){
+      const el=document.querySelector(`.source-line[data-line="${i+1}"]`);
+      if(el){el.classList.add('active');el.scrollIntoView({block:'center',behavior:'smooth'});}
+      return;
+    }
+  }
+}
+
+function updateVars(bindings){
+  const el=document.getElementById('varsBody');
+  el.innerHTML='';
+  for(const[k,v] of Object.entries(bindings)){
+    const isInternal=k.startsWith('_step_');
+    const changed=JSON.stringify(prevBindings[k])!==JSON.stringify(v);
+    const val=typeof v==='object'?JSON.stringify(v,null,1):String(v);
+    el.insertAdjacentHTML('beforeend',
+      `<div class="var-row${changed?' updated':''}${isInternal?' internal':''}"><span class="var-name">${esc(k)}</span><span class="var-val">${esc(val)}</span></div>`);
+  }
+  prevBindings={...bindings};
+}
+
+function appendTrace(trace){
+  if(!trace)return;
+  const el=document.getElementById('consoleBody');
+  for(let i=lastTraceLen;i<trace.length;i++){
+    const t=trace[i];
+    // Detect iteration boundary: same node_id appearing again
+    if(t.node_id in traceNodeSeen){
+      iterationCount++;
+      // Reset seen map for the new iteration
+      traceNodeSeen={};
+      el.insertAdjacentHTML('beforeend',
+        `<div class="trace-divider">— event ${iterationCount+1} —</div>`);
+    }
+    traceNodeSeen[t.node_id]=i;
+    const cls=t.status==='executed'?'badge-ok':'badge-fail';
+    const err=t.error?` — ${esc(t.error)}`:'';
+    el.insertAdjacentHTML('beforeend',
+      `<div class="trace-entry"><span class="badge ${cls}">${t.status==='executed'?'ok':'fail'}</span>[${t.step}] ${esc(t.op)} → ${esc(t.bind)}${err}</div>`);
+  }
+  lastTraceLen=trace.length;
+  el.scrollTop=el.scrollHeight;
+}
+
+/* --- SVG Graph (top-to-bottom with ports) --- */
+const NW=160, NODEH=50, GX=60, GY=90, PAD=40;
+const PORT_R=5, PORT_GAP=20;
+
+function resolveEdgeId(ep){
+  if(ep.kind==='source_event') return 'src:'+ep.id;
+  if(ep.kind==='input') return 'in:'+ep.id;
+  if(ep.kind==='output') return 'out:'+ep.id;
+  return ep.id;
+}
+
+function extractBranchLabel(when){
+  const m=when.match(/case\(\((.+?)\)\s*==\s*true\)/);
+  return m?m[1]:null;
+}
+
+function fmtVal(v){
+  if(v===undefined||v===null) return '';
+  if(typeof v==='string') return v.length>16?v.slice(0,14)+'..':v;
+  if(typeof v==='number'){
+    const s=String(v);
+    return s.length>12?v.toPrecision(6):s;
+  }
+  if(typeof v==='boolean') return String(v);
+  const s=JSON.stringify(v);
+  return s.length>16?s.slice(0,14)+'..':s;
+}
+
+// Compute which nodes are in non-taken branches (should be dimmed).
+// Uses iterationExecutedSet + currentNodeId to determine which fork branches were chosen.
+function computeInactive(edgeList, nodeMap, executedSet, curNodeId){
+  const inactive=new Set();
+
+  // Group edges by source
+  const byFrom={};
+  edgeList.forEach(e=>{
+    if(!byFrom[e.from]) byFrom[e.from]=[];
+    byFrom[e.from].push(e);
+  });
+
+  // For each fork point with multiple conditional out-edges, mark unchosen branches
+  for(const[fromId,edges] of Object.entries(byFrom)){
+    const condEdges=edges.filter(e=>extractBranchLabel(e.when));
+    if(condEdges.length<2) continue;
+    // Determine which targets are "chosen" (executed or is the current paused node)
+    const takenTargets=condEdges.filter(e=>executedSet.has(e.to)||e.to===curNodeId);
+    if(takenTargets.length===0) continue; // don't know yet
+    // Mark unchosen branch targets as inactive
+    condEdges.forEach(e=>{
+      if(!takenTargets.includes(e)) inactive.add(e.to);
+    });
+  }
+
+  // Propagate inactive status downstream (BFS)
+  let changed=true;
+  while(changed){
+    changed=false;
+    edgeList.forEach(e=>{
+      if(inactive.has(e.from) && !executedSet.has(e.to) && e.to!==curNodeId && !inactive.has(e.to)){
+        inactive.add(e.to);
+        changed=true;
+      }
+    });
+  }
+  return inactive;
+}
+
+function renderGraph(ir){
+  if(!ir) return;
+  const el=document.getElementById('graphBody');
+  const adj={}, inDeg={}, nodeMap={};
+  const allIds=[];
+
+  // 1. Input ports
+  ir.inputs.forEach(p=>{
+    const id='in:'+p.name;
+    allIds.push(id);
+    nodeMap[id]={type:'input',label:p.name,takes:[],emits:[p.name]};
+  });
+
+  // 2. Source nodes from source_event edges
+  const srcSeen=new Map();
+  ir.edges.forEach(e=>{
+    if(e.from.kind==='source_event' && !srcSeen.has(e.from.id)){
+      const m=e.when.match(/source_loop\(([^ ]+) as ([^)]+)\)/);
+      srcSeen.set(e.from.id, m?m[1]:'source');
+    }
+  });
+  srcSeen.forEach((opName,varName)=>{
+    const id='src:'+varName;
+    allIds.push(id);
+    nodeMap[id]={type:'source',label:opName,sub:varName,takes:[],emits:[varName]};
+  });
+
+  // 3. Computation nodes
+  ir.nodes.forEach(n=>{
+    allIds.push(n.id);
+    const isSink=/^sinks?\./.test(n.op);
+    const takes=[];
+    n.args.forEach(a=>{
+      if(a.var) takes.push(a.var);
+    });
+    nodeMap[n.id]={type:isSink?'sink':'node',label:n.op,sub:n.bind,
+      takes:takes, emits:[n.bind]};
+    inDeg[n.id]=0;
+  });
+
+  // 4. Output ports
+  ir.outputs.forEach(p=>{
+    const id='out:'+p.name;
+    allIds.push(id);
+    nodeMap[id]={type:'output',label:p.name,takes:[p.name],emits:[]};
+  });
+
+  // Init adjacency + in-degree
+  allIds.forEach(id=>{ adj[id]=[]; if(!(id in inDeg)) inDeg[id]=0; });
+
+  // Build edge list with resolved IDs
+  const edgeList=[];
+  ir.edges.forEach(e=>{
+    const from=resolveEdgeId(e.from);
+    const to=resolveEdgeId(e.to);
+    let varName=null;
+    if(e.from.kind==='source_event') varName=e.from.id;
+    else {
+      const fn=nodeMap[from];
+      if(fn && fn.emits.length>0) varName=fn.emits[0];
+    }
+    const tn=nodeMap[to];
+    let takeIdx=0;
+    if(tn && varName){
+      const ti=tn.takes.indexOf(varName);
+      if(ti>=0) takeIdx=ti;
+    }
+    edgeList.push({from,to,varName,takeIdx,when:e.when});
+    if(adj[from]) adj[from].push(to);
+    if(to in inDeg) inDeg[to]++; else inDeg[to]=1;
+  });
+
+  // Topological layering
+  const layer={};
+  const queue=allIds.filter(id=>(inDeg[id]||0)===0);
+  queue.forEach(id=>{ layer[id]=0; });
+  const visited=new Set();
+  while(queue.length){
+    const id=queue.shift();
+    if(visited.has(id)) continue;
+    visited.add(id);
+    const l=layer[id]||0;
+    (adj[id]||[]).forEach(to=>{
+      layer[to]=Math.max(layer[to]||0,l+1);
+      inDeg[to]--;
+      if(inDeg[to]<=0) queue.push(to);
+    });
+  }
+  allIds.forEach(id=>{ if(!(id in layer)) layer[id]=0; });
+
+  const maxLayer=Math.max(0,...Object.values(layer));
+  const byLayer=[];
+  for(let i=0;i<=maxLayer;i++) byLayer.push([]);
+  allIds.forEach(id=>byLayer[layer[id]].push(id));
+
+  // Barycenter ordering
+  for(let pass=0;pass<3;pass++){
+    for(let l=1;l<=maxLayer;l++){
+      const prev=byLayer[l-1];
+      const prevIdx={}; prev.forEach((id,i)=>{ prevIdx[id]=i; });
+      byLayer[l].sort((a,b)=>bary(a,edgeList,prevIdx)-bary(b,edgeList,prevIdx));
+    }
+  }
+
+  // Compute positions
+  nodePositions={};
+  const maxInLayer=Math.max(1,...byLayer.map(l=>l.length));
+  const W=maxInLayer*(NW+GX)-GX+PAD*2;
+  const H=(maxLayer+1)*(NODEH+GY)-GY+PAD*2;
+
+  byLayer.forEach((ids,l)=>{
+    const rowW=ids.length*(NW+GX)-GX;
+    const xOff=(W-rowW)/2;
+    ids.forEach((id,i)=>{
+      nodePositions[id]={x:xOff+i*(NW+GX), y:PAD+l*(NODEH+GY), w:NW, h:NODEH};
+    });
+  });
+
+  // Compute inactive nodes for this render
+  const inactive=computeInactive(edgeList, nodeMap, iterationExecutedSet, currentNodeId);
+
+  // Determine which source nodes are "active" (just fired into the current node)
+  const activeSourceIds=new Set();
+  edgeList.forEach(e=>{
+    if(e.to===currentNodeId && nodeMap[e.from]?.type==='source'){
+      activeSourceIds.add(e.from);
+    }
+  });
+
+  // Build connected-port sets
+  const connectedEmits=new Set();
+  const connectedTakes=new Set();
+  edgeList.forEach(e=>{
+    if(e.varName) connectedEmits.add(e.from+':'+e.varName);
+    const tn=nodeMap[e.to];
+    if(tn && tn.takes[e.takeIdx]) connectedTakes.add(e.to+':'+tn.takes[e.takeIdx]);
+  });
+
+  // Detect fork points
+  const outgoing={};
+  edgeList.forEach(e=>{
+    if(!outgoing[e.from]) outgoing[e.from]=[];
+    outgoing[e.from].push(e);
+  });
+  const forkPoints=new Set();
+  Object.entries(outgoing).forEach(([fromId,edges])=>{
+    if(edges.length>1){
+      const conds=new Set(edges.map(e=>extractBranchLabel(e.when)).filter(Boolean));
+      if(conds.size>1) forkPoints.add(fromId);
+    }
+  });
+
+  // Color per branch condition
+  const condColors=['var(--green)','var(--accent)','var(--orange)','var(--red)'];
+  const condMarkers=['url(#arrowG)','url(#arrowB)','url(#arrowO)','url(#arrowR)'];
+  const condColorMap={};
+  let condIdx=0;
+
+  function emitPortPos(nodeId,emitIdx,totalEmits){
+    const p=nodePositions[nodeId];
+    if(!p) return null;
+    const spacing=Math.min(PORT_GAP,p.w/(totalEmits+1));
+    const startX=p.x+p.w/2-(totalEmits-1)*spacing/2;
+    return {x:startX+emitIdx*spacing, y:p.y+p.h+PORT_R+1};
+  }
+
+  function takePortPos(nodeId,takeIdx,totalTakes){
+    const p=nodePositions[nodeId];
+    if(!p) return null;
+    const spacing=Math.min(PORT_GAP,p.w/(totalTakes+1));
+    const startX=p.x+p.w/2-(totalTakes-1)*spacing/2;
+    return {x:startX+takeIdx*spacing, y:p.y-PORT_R-1};
+  }
+
+  // Build SVG
+  const cs=getComputedStyle(document.documentElement);
+  let svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+<defs>
+  <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <marker id="arrowG" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="${cs.getPropertyValue('--green')}"/></marker>
+  <marker id="arrowR" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="${cs.getPropertyValue('--red')}"/></marker>
+  <marker id="arrowB" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="${cs.getPropertyValue('--accent')}"/></marker>
+  <marker id="arrowO" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="${cs.getPropertyValue('--orange')}"/></marker>
+  <marker id="arrowD" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="${cs.getPropertyValue('--fg2')}"/></marker>
+</defs>`;
+
+  // --- Edges (behind everything) ---
+  edgeList.forEach(e=>{
+    const fp=nodePositions[e.from], tp=nodePositions[e.to];
+    if(!fp||!tp) return;
+    const fn=nodeMap[e.from], tn=nodeMap[e.to];
+
+    const emitIdx=0;
+    const totalEmits=fn?fn.emits.length:1;
+    const totalTakes=tn?tn.takes.length:1;
+    const ep=emitPortPos(e.from,emitIdx,totalEmits);
+    const tkp=takePortPos(e.to,e.takeIdx,totalTakes);
+    if(!ep||!tkp) return;
+
+    const x1=ep.x, y1=ep.y;
+    const x2=tkp.x, y2=tkp.y;
+    const dy=y2-y1;
+    const cy1=y1+dy*0.35, cy2=y2-dy*0.35;
+
+    // Edge color
+    let color='var(--fg2)', marker='url(#arrowD)';
+    const cond=extractBranchLabel(e.when);
+    if(cond){
+      if(!(cond in condColorMap)){
+        condColorMap[cond]=condIdx;
+        condIdx=(condIdx+1)%condColors.length;
+      }
+      const ci=condColorMap[cond];
+      color=condColors[ci];
+      marker=condMarkers[ci];
+    } else if(e.when.includes('sync')){
+      color='var(--accent)'; marker='url(#arrowB)';
+    }
+
+    // Edge is inactive if BOTH endpoints are inactive, or destination is inactive
+    const edgeInactive=inactive.has(e.to);
+    const isActiveEdge=e.to===currentNodeId;
+    let edgeCls='edge-path';
+    if(edgeInactive) edgeCls+=' inactive-edge';
+    else if(isActiveEdge) edgeCls+=' active-edge';
+
+    svg+=`<path class="${edgeCls}" d="M${x1},${y1} C${x1},${cy1} ${x2},${cy2} ${x2},${y2}" stroke="${color}" marker-end="${marker}" data-from="${esc(e.from)}" data-to="${esc(e.to)}"/>`;
+
+    // Branch condition label at fork points
+    if(forkPoints.has(e.from) && cond){
+      const lx=x1+(x2-x1)*0.45;
+      const ly=y1+dy*0.3;
+      const label=esc(cond);
+      const tw=label.length*5.5+8;
+      const labelInactive=inactive.has(e.to);
+      svg+=`<rect class="edge-label-bg" x="${lx-tw/2}" y="${ly-8}" width="${tw}" height="14" rx="3" opacity="${labelInactive?0.2:1}"/>`;
+      svg+=`<text class="edge-label" x="${lx}" y="${ly+2}" text-anchor="middle" opacity="${labelInactive?0.2:1}">${label}</text>`;
+    }
+
+    // Edge value: show only for source nodes (always fresh) or nodes executed this iteration
+    const fromIsSource=nodeMap[e.from]?.type==='source';
+    const fromExecutedThisIter=iterationExecutedSet.has(e.from);
+    const showValue=(fromIsSource||fromExecutedThisIter) && !edgeInactive;
+    if(showValue && e.varName && currentBindings[e.varName]!==undefined){
+      const val=fmtVal(currentBindings[e.varName]);
+      if(val){
+        const vx=(x1+x2)/2;
+        const vy=y1+(y2-y1)*0.55;
+        const tw=val.length*5+6;
+        svg+=`<rect class="edge-value-bg" x="${vx-tw/2}" y="${vy-7}" width="${tw}" height="12"/>`;
+        svg+=`<text class="edge-value" x="${vx}" y="${vy+2}" text-anchor="middle">${esc(val)}</text>`;
+      }
+    }
+  });
+
+  // --- Nodes + ports ---
+  allIds.forEach(id=>{
+    const p=nodePositions[id], n=nodeMap[id];
+    if(!p||!n) return;
+
+    const isActive=id===currentNodeId;
+    const isSourceActive=activeSourceIds.has(id);
+    const isExecuted=executedNodeSet.has(id);
+    const isFailed=failedNodeSet.has(id);
+    const isInactive=inactive.has(id);
+    const stateClasses=
+      (isActive?' active':'')+
+      (isSourceActive&&!isActive?' source-active':'')+
+      (isExecuted?' executed':'')+
+      (isFailed?' failed':'')+
+      (isInactive?' inactive':'');
+
+    if(n.type==='input'){
+      svg+=`<rect class="input-rect" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}"/>`;
+      svg+=`<text class="io-label" x="${p.x+p.w/2}" y="${p.y+p.h/2+4}" text-anchor="middle">${esc(n.label)}</text>`;
+    } else if(n.type==='output'){
+      svg+=`<rect class="output-rect" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}"/>`;
+      svg+=`<text class="io-label" x="${p.x+p.w/2}" y="${p.y+p.h/2+4}" text-anchor="middle">${esc(n.label)}</text>`;
+    } else {
+      const typeClass=n.type==='source'?'source-node':n.type==='sink'?'sink-node':'func-node';
+      svg+=`<rect class="graph-node ${typeClass}${stateClasses}" data-id="${esc(id)}" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" onclick="toggleBP('${esc(id)}')"/>`;
+      svg+=`<text class="node-label" x="${p.x+p.w/2}" y="${p.y+20}" text-anchor="middle">${esc(n.label)}</text>`;
+      if(n.sub){
+        svg+=`<text class="node-sublabel" x="${p.x+p.w/2}" y="${p.y+34}" text-anchor="middle">${esc(n.sub)}</text>`;
+      }
+
+      // Take ports (top circles)
+      n.takes.forEach((tName,ti)=>{
+        const tp=takePortPos(id,ti,n.takes.length);
+        if(!tp) return;
+        const connected=connectedTakes.has(id+':'+tName);
+        const portInactive=isInactive;
+        svg+=`<circle class="port-circle${portInactive?' inactive-port':''}" cx="${tp.x}" cy="${tp.y}" r="${PORT_R}" fill="${connected?'var(--fg2)':'var(--bg)'}" stroke="var(--fg2)"/>`;
+        svg+=`<text class="port-label" x="${tp.x}" y="${tp.y-PORT_R-2}" text-anchor="middle">${esc(tName)}</text>`;
+      });
+
+      // Emit ports (bottom circles)
+      n.emits.forEach((eName,ei)=>{
+        const ep=emitPortPos(id,ei,n.emits.length);
+        if(!ep) return;
+        const connected=connectedEmits.has(id+':'+eName);
+        const portInactive=isInactive;
+        svg+=`<circle class="port-circle${portInactive?' inactive-port':''}" cx="${ep.x}" cy="${ep.y}" r="${PORT_R}" fill="${connected?'var(--fg2)':'var(--bg)'}" stroke="var(--fg2)"/>`;
+        svg+=`<text class="port-label" x="${ep.x}" y="${ep.y+PORT_R+10}" text-anchor="middle">${esc(eName)}</text>`;
+      });
+
+      // Breakpoint dot
+      if(breakpoints.has(id)){
+        svg+=`<circle class="bp-dot" cx="${p.x+8}" cy="${p.y+8}" r="5" onclick="toggleBP('${esc(id)}');event.stopPropagation();"/>`;
+      }
+    }
+  });
+
+  svg+='</svg>';
+  el.innerHTML=svg;
+}
+
+function updateGraph(snapshot){
+  if(!flowData) return;
+  executedNodeSet=new Set();
+  failedNodeSet=new Set();
+  iterationExecutedSet=new Set();
+
+  if(snapshot&&snapshot.trace&&snapshot.trace.length>0){
+    const trace=snapshot.trace;
+
+    // Group trace entries into pipeline passes. Whenever a node_id appears again,
+    // a new pass has started. The LAST group is the current iteration.
+    const groups=[[]];
+    const inGroup=new Set();
+    let hadRestart=false;
+    for(const t of trace){
+      if(inGroup.has(t.node_id)){
+        groups.push([]);
+        inGroup.clear();
+        hadRestart=true;
+      }
+      groups[groups.length-1].push(t);
+      inGroup.add(t.node_id);
+      if(t.status==='executed') executedNodeSet.add(t.node_id);
+      else if(t.status==='failed') failedNodeSet.add(t.node_id);
+    }
+
+    // Build iterationExecutedSet from the last (current) group only.
+    groups[groups.length-1].forEach(t=>{
+      if(t.status==='executed') iterationExecutedSet.add(t.node_id);
+    });
+
+    // Special case: no restart detected yet, but the current paused node is already
+    // in executedNodeSet. The source just fired a new pass before any new trace entry
+    // has been recorded — clear iterationExecutedSet so stale edge values don't show.
+    const curId=snapshot&&snapshot.node_id;
+    if(!hadRestart && curId && executedNodeSet.has(curId)){
+      iterationExecutedSet=new Set();
+    }
+  }
+
+  renderGraph(flowData.ir);
+}
+
+function toggleBP(nodeId){
+  if(breakpoints.has(nodeId)) breakpoints.delete(nodeId);
+  else breakpoints.add(nodeId);
+  sendCmd('set_breakpoints',{node_ids:[...breakpoints]});
+  if(flowData) renderGraph(flowData.ir);
+}
+
+function bary(nodeId,edges,prevIdx){
+  let sum=0,count=0;
+  edges.forEach(e=>{
+    if(e.to===nodeId && e.from in prevIdx){sum+=prevIdx[e.from];count++;}
+  });
+  return count?sum/count:0;
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "read-docs",
+  "version": "0.1.0",
+  "description": "Interactive stdlib documentation browser",
+  "main": "main.fa",
+  "build": {
+    "targets": ["wasm", "bundle"]
+  }
+}

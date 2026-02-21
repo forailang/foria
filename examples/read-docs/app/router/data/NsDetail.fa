@@ -1,0 +1,104 @@
+docs NsDetail
+    Returns the formatted ops listing for a given namespace.
+done
+
+func NsDetail
+    take ns as text
+    emit result as text
+    fail error as text
+body
+    n = "\n"
+    case ns
+        when "obj"
+            t = "=== obj — Dict Operations ===" + n
+            t = t + "Immutable dict construction and access." + n
+            t = t + n
+            t = t + "  obj.new       Create an empty dict" + n
+            t = t + "  obj.set       Set a key-value pair (returns new dict)" + n
+            t = t + "  obj.get       Get a value by key" + n
+            t = t + "  obj.has       Check if a key exists" + n
+            t = t + "  obj.delete    Remove a key (returns new dict)" + n
+            t = t + "  obj.keys      Get all keys as a list" + n
+            t = t + "  obj.merge     Merge two dicts (second wins)"
+            emit t
+        when "list"
+            t = "=== list — List Operations ===" + n
+            t = t + "Immutable list construction and access." + n
+            t = t + n
+            t = t + "  list.new      Create an empty list" + n
+            t = t + "  list.append   Append an item (returns new list)" + n
+            t = t + "  list.get      Get item by index" + n
+            t = t + "  list.len      Get the length" + n
+            t = t + "  list.range    Create a numeric range" + n
+            t = t + "  list.contains Check if item exists"
+            emit t
+        when "str"
+            t = "=== str — String Operations ===" + n
+            t = t + "String inspection and transformation." + n
+            t = t + n
+            t = t + "  str.len       String length" + n
+            t = t + "  str.upper     Convert to uppercase" + n
+            t = t + "  str.lower     Convert to lowercase" + n
+            t = t + "  str.trim      Trim whitespace" + n
+            t = t + "  str.split     Split by delimiter" + n
+            t = t + "  str.join      Join list with separator" + n
+            t = t + "  str.replace   Replace substring" + n
+            t = t + "  str.contains  Check for substring"
+            emit t
+        when "math"
+            t = "=== math — Arithmetic ===" + n
+            t = t + "Numeric computation ops." + n
+            t = t + n
+            t = t + "  math.add      Addition" + n
+            t = t + "  math.subtract Subtraction" + n
+            t = t + "  math.multiply Multiplication" + n
+            t = t + "  math.divide   Division" + n
+            t = t + "  math.mod      Modulo" + n
+            t = t + "  math.power    Exponentiation" + n
+            t = t + "  math.round    Round to N decimals"
+            emit t
+        when "json"
+            t = "=== json — JSON Codec ===" + n
+            t = t + "Encode and decode JSON strings." + n
+            t = t + n
+            t = t + "  json.decode       Parse JSON string to value" + n
+            t = t + "  json.encode       Encode value to JSON string" + n
+            t = t + "  json.encode_pretty Pretty-print JSON"
+            emit t
+        when "db"
+            t = "=== db — SQLite Database ===" + n
+            t = t + "Open, query, and mutate SQLite databases." + n
+            t = t + n
+            t = t + "  db.open       Open or create a database" + n
+            t = t + "  db.exec       Execute a write statement" + n
+            t = t + "  db.query      Query rows (returns list of dicts)" + n
+            t = t + "  db.close      Close a database handle"
+            emit t
+        when "term"
+            t = "=== term — Terminal I/O ===" + n
+            t = t + "Read from and write to the terminal." + n
+            t = t + n
+            t = t + "  term.print    Print a line to stdout" + n
+            t = t + "  term.prompt   Print prompt, read a line" + n
+            t = t + "  term.clear    Clear the terminal screen"
+            emit t
+        when "http"
+            t = "=== http — HTTP ===" + n
+            t = t + "HTTP client requests and server utilities." + n
+            t = t + n
+            t = t + "  http.get      GET request" + n
+            t = t + "  http.post     POST request" + n
+            t = t + "  http.put      PUT request" + n
+            t = t + "  http.delete   DELETE request" + n
+            t = t + "  http.response Build a response dict"
+            emit t
+        else
+            msg = "Unknown namespace: '#{ns}'"
+            fail msg
+    done
+done
+
+test NsDetail
+  r = NsDetail("obj")
+  must str.contains(r, "obj.get")
+done

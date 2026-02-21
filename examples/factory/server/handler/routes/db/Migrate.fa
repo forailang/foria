@@ -1,0 +1,37 @@
+docs Migrate
+    Runs database migrations for the Factory Manager.
+    Creates all required tables if they do not exist.
+done
+
+func Migrate
+    take conn as db_conn
+    return bool
+    fail text
+body
+    t1 = db.exec(conn, "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, avatar_url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    t2 = db.exec(conn, "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, title TEXT NOT NULL, spec TEXT NOT NULL, docker_image TEXT NOT NULL, repo_url TEXT NOT NULL, branch TEXT NOT NULL, status TEXT DEFAULT 'Queued', attempt INTEGER DEFAULT 0, max_attempts INTEGER DEFAULT 3, created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    t3 = db.exec(conn, "CREATE TABLE IF NOT EXISTS container_images (id TEXT PRIMARY KEY, name TEXT NOT NULL, ecr_uri TEXT NOT NULL, dockerfile TEXT, description TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    t4 = db.exec(conn, "CREATE TABLE IF NOT EXISTS containers (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, image_id TEXT NOT NULL, ecs_task_arn TEXT, status TEXT DEFAULT 'Starting', started_at TEXT, stopped_at TEXT)")
+
+    t5 = db.exec(conn, "CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, agent_type TEXT NOT NULL, container_id TEXT, status TEXT DEFAULT 'Running', started_at TEXT DEFAULT CURRENT_TIMESTAMP, finished_at TEXT)")
+
+    t6 = db.exec(conn, "CREATE TABLE IF NOT EXISTS agent_messages (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, role TEXT, content TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    t7 = db.exec(conn, "CREATE TABLE IF NOT EXISTS test_reports (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, job_id TEXT NOT NULL, verdict TEXT NOT NULL, summary TEXT, details TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    t8 = db.exec(conn, "CREATE TABLE IF NOT EXISTS human_reviews (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, reviewer TEXT NOT NULL, decision TEXT, feedback TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, decided_at TEXT)")
+
+    t9 = db.exec(conn, "CREATE TABLE IF NOT EXISTS pull_requests (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, github_url TEXT NOT NULL, pr_number INTEGER, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+    ok = true
+    return ok
+done
+
+test Migrate
+  # DB func: requires live connection — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

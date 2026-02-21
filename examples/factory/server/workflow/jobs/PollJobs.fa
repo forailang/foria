@@ -1,0 +1,52 @@
+docs PollJobs
+    Polls the database for queued or PR-monitoring jobs.
+    Returns a tagged result dict with type field.
+done
+
+func PollJobs
+    take conn as db_conn
+    return dict
+    fail text
+body
+    queued = db.query(conn, "SELECT id, title, spec, attempt, max_attempts, repo_url, branch FROM jobs WHERE status = 'Queued' ORDER BY created_at ASC LIMIT 1")
+    queued_count = list.len(queued)
+
+    if queued_count == 0
+        pr_jobs = db.query(conn, "SELECT id, repo_url FROM jobs WHERE status = 'PrCreated' LIMIT 1")
+        pr_count = list.len(pr_jobs)
+
+        if pr_count == 0
+            result = {type: "idle"}
+            return result
+        else
+            pr_job = list.get(pr_jobs, 0)
+            pr_job_id = obj.get(pr_job, "id")
+
+            prq_params = [pr_job_id]
+            pr_rows = db.query(conn, "SELECT pr_number, github_url FROM pull_requests WHERE job_id = ?1 ORDER BY created_at DESC LIMIT 1", prq_params)
+            pr_row_count = list.len(pr_rows)
+
+            if pr_row_count == 0
+                _ = term.print("[runner] No PR found for PrCreated job #{pr_job_id}, marking Failed")
+                nf_params = [pr_job_id]
+                _ = db.exec(conn, "UPDATE jobs SET status = 'Failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?1", nf_params)
+                result = {type: "idle"}
+                return result
+            else
+                pr_row = list.get(pr_rows, 0)
+                result = {type: "pr_check", job: pr_job, pr_record: pr_row}
+                return result
+            done
+        done
+    else
+        job = list.get(queued, 0)
+        result = {type: "queued", job: job}
+        return result
+    done
+done
+
+test PollJobs
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

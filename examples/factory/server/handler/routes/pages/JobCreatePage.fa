@@ -1,0 +1,50 @@
+docs JobCreatePage
+    Renders the job creation form.
+done
+
+func JobCreatePage
+    return text
+    fail text
+body
+    html = """
+    <div class="card">
+    <h1>New Job</h1>
+    <form method="POST" action="/jobs">
+    <div class="form-group">
+    <label>Title</label>
+    <input type="text" name="title" required placeholder="Short description of the task">
+    </div>
+    <div class="form-group">
+    <label>Spec</label>
+    <textarea name="spec" required placeholder="Detailed specification for the coding agent..."></textarea>
+    </div>
+    <div class="form-group">
+    <label>Docker Image</label>
+    <input type="text" name="docker_image" value="default" placeholder="ECR image name">
+    </div>
+    <div class="form-group">
+    <label>Repository URL</label>
+    <input type="text" name="repo_url" required placeholder="https://github.com/org/repo">
+    </div>
+    <div class="form-group">
+    <label>Branch</label>
+    <input type="text" name="branch" value="main" placeholder="Target branch">
+    </div>
+    <div class="form-group">
+    <label>Max Attempts</label>
+    <input type="number" name="max_attempts" value="3" min="1" max="10">
+    </div>
+    <div style="margin-top:24px">
+    <button type="submit" class="btn btn-primary">Create Job</button>
+    <a href="/" style="margin-left:8px">Cancel</a>
+    </div>
+    </form>
+    </div>
+    """
+    return html
+done
+
+test JobCreatePage
+  r = JobCreatePage()
+  must str.contains(r.result, "New Job")
+done

@@ -1,0 +1,20 @@
+docs BuildPrompt
+    Builds the tester agent prompt from job title, spec, and coder output.
+done
+
+func BuildPrompt
+    take title as text
+    take spec as text
+    take code_output as text
+    take job_id as text
+    return text
+    fail text
+body
+    prompt = "You are a test agent. Your job is to verify that the coder's output correctly implements the specification.\n\n## Job Title\n#{title}\n\n## Specification\n#{spec}\n\n## Coder Output\n#{code_output}\n\n## Instructions\n1. Write test scripts to the directory `factory-tests/#{job_id}/`\n2. Run the tests and report results\n3. For web testing, you have rodney available: `rodney start`, `rodney open <url>`, `rodney text <selector>`, `rodney click <selector>`, etc.\n4. Your final line MUST be exactly `VERDICT: PASS` or `VERDICT: FAIL` followed by a one-line reason."
+    return prompt
+done
+
+test BuildPrompt
+  r = BuildPrompt("Fix bug", "Button broken", "added fix", "job-123")
+  must str.contains(r.result, "Fix bug")
+done

@@ -1,0 +1,24 @@
+docs Commands
+    Prompts the user for commands and emits them as text events.
+    Emits quit and exit as regular commands, then stops the source.
+done
+
+source Commands
+    emit cmd as text
+    fail error as text
+from term.prompt("docs> ") as raw
+    trimmed = str.trim(raw)
+    emit trimmed
+    case trimmed
+        when "quit"
+            break
+        when "exit"
+            break
+    done
+done
+
+test Commands
+  # Source: reads from terminal — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

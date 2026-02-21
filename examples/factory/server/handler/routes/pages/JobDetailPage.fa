@@ -1,0 +1,64 @@
+docs JobDetailPage
+    Renders the job detail page showing all job information.
+done
+
+func JobDetailPage
+    take job as dict
+    return text
+    fail text
+body
+    jid = obj.get(job, "id")
+    jtitle = obj.get(job, "title")
+    jspec = obj.get(job, "spec")
+    jstatus = obj.get(job, "status")
+    jimage = obj.get(job, "docker_image")
+    jrepo = obj.get(job, "repo_url")
+    jbranch = obj.get(job, "branch")
+    jattempt = obj.get(job, "attempt")
+    jmax = obj.get(job, "max_attempts")
+    jcreated = obj.get(job, "created_at")
+    jupdated = obj.get(job, "updated_at")
+    jcreator = obj.get(job, "created_by")
+
+    short_id = str.slice(jid, 0, 8)
+    lower_status = str.lower(jstatus)
+    badge_class = "badge-" + lower_status
+
+    escaped_spec = html.escape(jspec)
+
+    data = {id: jid, short_id: short_id, title: jtitle, spec: escaped_spec, status: jstatus, badge_class: badge_class, docker_image: jimage, repo_url: jrepo, branch: jbranch, attempt: jattempt, max_attempts: jmax, created_at: jcreated, updated_at: jupdated, created_by: jcreator}
+
+        html = tmpl.render("""
+        <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h1>{{title}}</h1>
+        <span class="badge {{badge_class}}" style="font-size:14px;padding:6px 14px">{{status}}</span>
+        </div>
+        <table class="meta-table">
+        <tr><th>ID</th><td>{{id}}</td></tr>
+        <tr><th>Status</th><td>{{status}}</td></tr>
+        <tr><th>Docker Image</th><td>{{docker_image}}</td></tr>
+        <tr><th>Repository</th><td><a href="{{repo_url}}">{{repo_url}}</a></td></tr>
+        <tr><th>Branch</th><td>{{branch}}</td></tr>
+        <tr><th>Attempt</th><td>{{attempt}} / {{max_attempts}}</td></tr>
+        <tr><th>Created By</th><td>{{created_by}}</td></tr>
+        <tr><th>Created</th><td>{{created_at}}</td></tr>
+        <tr><th>Updated</th><td>{{updated_at}}</td></tr>
+        </table>
+        </div>
+        <div class="card">
+        <h2 style="margin-bottom:12px">Specification</h2>
+        <pre>{{spec}}</pre>
+        </div>
+        <div style="margin-top:16px">
+        <a href="/">&larr; Back to Jobs</a>
+        </div>
+        """, data)
+        return html
+    done
+
+test JobDetailPage
+  job = {id: "abc", title: "Test Job", spec: "Do stuff", status: "Queued", docker_image: "python", repo_url: "https://github.com/org/repo", branch: "main", attempt: 0, max_attempts: 3, created_at: "2024-01-01", updated_at: "2024-01-01", created_by: "alice"}
+  r = JobDetailPage(job)
+  must str.contains(r.result, "Test Job")
+done

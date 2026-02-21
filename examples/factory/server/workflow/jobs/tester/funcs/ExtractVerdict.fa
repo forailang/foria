@@ -1,0 +1,20 @@
+docs ExtractVerdict
+    Extracts a pass or fail verdict from tester output by checking for VERDICT PASS.
+done
+
+func ExtractVerdict
+    take output as text
+    return text
+    fail text
+body
+    is_pass = str.contains(output, "VERDICT: PASS")
+    verdict = is_pass ? "pass" : "fail"
+    return verdict
+done
+
+test ExtractVerdict
+  r1 = ExtractVerdict("All done. VERDICT: PASS good work")
+  must r1.result == "pass"
+  r2 = ExtractVerdict("Tests failed. VERDICT: FAIL missing cases")
+  must r2.result == "fail"
+done

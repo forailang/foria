@@ -1,0 +1,118 @@
+{
+  "func": {
+    "prefix": "func",
+    "body": [
+      "docs ${1:Name}",
+      "  ${2:Description.}",
+      "done",
+      "",
+      "func ${1:Name}",
+      "  take ${3:input} as ${4:text}",
+      "  emit ${5:output} as ${6:text}",
+      "  fail ${7:error} as ${8:text}",
+      "body",
+      "  $0",
+      "done"
+    ],
+    "description": "func declaration with docs, take/emit/fail, body"
+  },
+  "flow": {
+    "prefix": "flow",
+    "body": [
+      "docs ${1:Name}",
+      "  ${2:Description.}",
+      "done",
+      "",
+      "flow ${1:Name}",
+      "  take ${3:input} as ${4:text}",
+      "  emit ${5:output} as ${6:text}",
+      "  fail ${7:error} as ${8:text}",
+      "body",
+      "  step ${9:first}",
+      "    $0",
+      "  done",
+      "done"
+    ],
+    "description": "flow declaration with docs and step"
+  },
+  "type": {
+    "prefix": "type",
+    "body": [
+      "docs ${1:Name}",
+      "  ${2:Description.}",
+      "",
+      "  docs ${3:field}",
+      "    ${4:Field description.}",
+      "  done",
+      "done",
+      "",
+      "type ${1:Name}",
+      "  ${3:field} ${5:text}",
+      "done"
+    ],
+    "description": "type declaration with docs"
+  },
+  "test": {
+    "prefix": "test",
+    "body": [
+      "docs ${1:Name}",
+      "  Tests ${2:the function.}",
+      "done",
+      "",
+      "test ${1:Name}",
+      "  ${3:result} = ${1:Name}(${4:input})",
+      "  must ${3:result} == ${5:expected}",
+      "done"
+    ],
+    "description": "test block with docs and must assertion"
+  },
+  "docs": {
+    "prefix": "docs",
+    "body": [
+      "docs ${1:Name}",
+      "  ${2:Description.}",
+      "done"
+    ],
+    "description": "docs block"
+  },
+  "case": {
+    "prefix": "case",
+    "body": [
+      "case ${1:value}",
+      "  when ${2:\"pattern\"}",
+      "    $0",
+      "  else",
+      "    ",
+      "done"
+    ],
+    "description": "case/when/else pattern matching"
+  },
+  "loop": {
+    "prefix": "loop",
+    "body": [
+      "loop ${1:items} as ${2:item}",
+      "  $0",
+      "done"
+    ],
+    "description": "loop over a list"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition}",
+      "  $0",
+      "done"
+    ],
+    "description": "if conditional"
+  },
+  "sync": {
+    "prefix": "sync",
+    "body": [
+      "[${1:a}, ${2:b}] = sync",
+      "  ${1:a} = ${3:op1()}",
+      "  ${2:b} = ${4:op2()}",
+      "done [${1:a}, ${2:b}]"
+    ],
+    "description": "sync concurrent block"
+  }
+}

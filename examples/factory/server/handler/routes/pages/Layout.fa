@@ -1,0 +1,75 @@
+docs Layout
+    Wraps page content in the full HTML layout with navigation and CSS.
+done
+
+func Layout
+    take title as text
+    take content as text
+    return text
+    fail text
+body
+    data = {title: title, content: content}
+        template = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{title}} - Factory Manager</title>
+        <style>
+        * { margin:0; padding:0; box-sizing:border-box }
+        body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f5f5f5; color:#333 }
+            nav { background:#1a1a2e; padding:12px 24px; display:flex; align-items:center; gap:24px }
+            nav a { color:#e0e0e0; text-decoration:none; font-size:14px }
+            nav a:hover { color:#fff }
+            nav .brand { font-weight:700; font-size:18px; color:#fff }
+            .container { max-width:960px; margin:24px auto; padding:0 16px }
+            .card { background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.1); padding:24px; margin-bottom:16px }
+            h1 { font-size:24px; margin-bottom:16px }
+            table { width:100%; border-collapse:collapse }
+            th,td { text-align:left; padding:10px 12px; border-bottom:1px solid #eee }
+            th { background:#f8f8f8; font-weight:600; font-size:13px; text-transform:uppercase; color:#666 }
+            .badge { display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600 }
+            .badge-queued { background:#e3f2fd; color:#1565c0 }
+            .badge-coding { background:#fff3e0; color:#e65100 }
+            .badge-testing { background:#f3e5f5; color:#7b1fa2 }
+            .badge-complete { background:#e8f5e9; color:#2e7d32 }
+            .badge-failed { background:#ffebee; color:#c62828 }
+            .badge-review { background:#fff8e1; color:#f57f17 }
+            .badge-starting { background:#e3f2fd; color:#1565c0 }
+            .badge-running { background:#e8f5e9; color:#2e7d32 }
+            .badge-stopped { background:#f5f5f5; color:#666 }
+            .btn { display:inline-block; padding:8px 16px; border-radius:6px; font-size:14px; font-weight:500; text-decoration:none; cursor:pointer; border:none }
+            .btn-primary { background:#1a73e8; color:#fff }
+            .btn-primary:hover { background:#1557b0 }
+            .btn-sm { padding:5px 12px; font-size:13px }
+            a { color:#1a73e8; text-decoration:none }
+            a:hover { text-decoration:underline }
+            pre { background:#f4f4f4; padding:16px; border-radius:6px; overflow-x:auto; font-size:13px; line-height:1.5 }
+            .form-group { margin-bottom:16px }
+            .form-group label { display:block; font-weight:600; margin-bottom:4px; font-size:14px }
+            .form-group input,.form-group textarea,.form-group select { width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px; font-size:14px }
+            .form-group textarea { min-height:120px; font-family:monospace }
+            .meta-table td { padding:6px 12px }
+            .meta-table th { background:none; font-weight:600; width:140px }
+            </style>
+            </head>
+            <body>
+            <nav>
+            <a class="brand" href="/">Factory Manager</a>
+            <a href="/">Jobs</a>
+            <a href="/images">Images</a>
+            <a href="/containers">Containers</a>
+            </nav>
+            <div class="container">{{{content}}}</div>
+            </body>
+            </html>
+            """
+            html = tmpl.render(template, data)
+            return html
+        done
+
+test Layout
+  r = Layout("Test Page", "<p>content</p>")
+  must str.contains(r.result, "Test Page")
+done

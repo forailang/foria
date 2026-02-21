@@ -1,0 +1,12 @@
+uses app
+
+docs main
+  Entry flow for WASM round-trip test.
+done
+
+flow main
+  emit result as text
+  fail error as text
+body
+  step app.Compute() done
+done

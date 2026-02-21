@@ -1,0 +1,39 @@
+docs Classify
+    Categorizes a user command into a routing label.
+    Returns "help", "ls", "quit", "ns", "op", or "unknown".
+done
+
+func Classify
+    take cmd as text
+    emit result as text
+    fail error as text
+body
+    if cmd == "help"
+        r = "help"
+        emit r
+    else if cmd == "ls"
+        r = "ls"
+        emit r
+    else if cmd == "quit" || cmd == "exit"
+        r = "quit"
+        emit r
+    else if str.contains(cmd, ".")
+        r = "op"
+        emit r
+    else
+        known_ns = ["obj", "list", "str", "math", "json", "db", "term", "http"]
+        is_ns = list.contains(known_ns, cmd)
+        if is_ns
+            r = "ns"
+            emit r
+        else
+            r = "unknown"
+            emit r
+        done
+    done
+done
+
+test Classify
+    must Classify("help") == "help"
+    must Classify("quit") == "quit"
+done

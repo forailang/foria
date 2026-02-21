@@ -1,0 +1,9 @@
+{
+  "name": "factory",
+  "version": "0.1.0",
+  "description": "Factory manager web app with HTTP server, SQLite, routing, and CRUD",
+  "main": "main.fa",
+  "build": {
+    "targets": ["wasm", "bundle"]
+  }
+}

@@ -1,0 +1,21 @@
+docs Print
+    Terminal output sink for the documentation browser.
+    Receives formatted text and prints it to the terminal.
+done
+
+sink Print
+    take text as text
+    emit result as bool
+    fail error as text
+body
+    _ = term.print("")
+    _ = term.print(text)
+    ok = true
+    emit ok
+done
+
+test Print
+  # Sink: outputs to terminal, verify it succeeds
+  r = Print("hello test")
+  must r == true
+done

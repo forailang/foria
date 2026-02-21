@@ -1,0 +1,9 @@
+{
+  "name": "pipeline",
+  "version": "0.1.0",
+  "description": "Example forai pipeline using source, flow, func, and sink",
+  "main": "src/main.fa",
+  "build": {
+    "targets": ["wasm", "bundle"]
+  }
+}

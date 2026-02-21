@@ -1,0 +1,628 @@
+use crate::ast::{DeclKind, Statement, TopDecl};
+use crate::codec::CodecRegistry;
+use crate::ir;
+use crate::loader::{self, FlowProgram, FlowRegistry};
+use crate::parser;
+use crate::runtime;
+use crate::sema;
+use crate::types::TypeRegistry;
+use regex::Regex;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
+    for stmt in statements {
+        match stmt {
+            Statement::Node(n) => out.push(n.op.clone()),
+            Statement::ExprAssign(_) => {}
+            Statement::Case(c) => {
+                for arm in &c.arms {
+                    collect_ops(&arm.body, out);
+                }
+                collect_ops(&c.else_body, out);
+            }
+            Statement::Loop(l) => collect_ops(&l.body, out),
+            Statement::Sync(s) => collect_ops(&s.body, out),
+            Statement::Emit(_) => {}
+            Statement::SendNowait(sn) => out.push(sn.target.clone()),
+            Statement::Break => {}
+            Statement::BareLoop(b) => collect_ops(&b.body, out),
+            Statement::SourceLoop(sl) => {
+                out.push(sl.source_op.clone());
+                collect_ops(&sl.body, out);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TestSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+}
+
+enum FlowCallResult {
+    Success(Value),
+    Failure(Value),
+}
+
+fn split_csv(raw: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut cur = String::new();
+    let mut in_string = false;
+    let mut quote_char = '\0';
+    let mut escape = false;
+
+    for ch in raw.chars() {
+        if in_string {
+            cur.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == quote_char {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            quote_char = ch;
+            cur.push(ch);
+        } else if ch == ',' {
+            let token = cur.trim();
+            if !token.is_empty() {
+                items.push(token.to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+    }
+
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        items.push(tail.to_string());
+    }
+
+    items
+}
+
+fn resolve_path(env: &HashMap<String, Value>, path: &str) -> Option<Value> {
+    let mut parts = path.split('.');
+    let first = parts.next()?;
+    let mut current = env.get(first)?.clone();
+    for part in parts {
+        let obj = current.as_object()?;
+        current = obj.get(part)?.clone();
+    }
+    Some(current)
+}
+
+fn eval_value_expr(expr: &str, env: &HashMap<String, Value>) -> Result<Value, String> {
+    let token = expr.trim();
+    if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+        return Ok(Value::String(token[1..token.len() - 1].to_string()));
+    }
+    if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
+        return Ok(Value::String(token[1..token.len() - 1].to_string()));
+    }
+    if token == "true" {
+        return Ok(Value::Bool(true));
+    }
+    if token == "false" {
+        return Ok(Value::Bool(false));
+    }
+    if let Ok(v) = token.parse::<i64>() {
+        return Ok(Value::from(v));
+    }
+    if let Ok(v) = token.parse::<f64>() {
+        return Ok(Value::from(v));
+    }
+
+    if let Some((fn_name, rest)) = token.split_once('(')
+        && token.ends_with(')')
+        && !fn_name.trim().is_empty()
+    {
+        let args_raw = &rest[..rest.len() - 1];
+        let args: Vec<Value> = split_csv(args_raw)
+            .into_iter()
+            .map(|a| eval_value_expr(&a, env))
+            .collect::<Result<_, _>>()?;
+
+        if fn_name.trim() == "dict" {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+        if fn_name.trim() == "obj" {
+            if args.len() % 2 != 0 {
+                return Err("obj() expects alternating key-value pairs".to_string());
+            }
+            let mut obj = serde_json::Map::new();
+            for pair in args.chunks(2) {
+                let Some(key) = pair[0].as_str() else {
+                    return Err(format!("obj() key must be a string, got {}", pair[0]));
+                };
+                obj.insert(key.to_string(), pair[1].clone());
+            }
+            return Ok(Value::Object(obj));
+        }
+        if fn_name.trim() == "request" {
+            if args.len() != 2 {
+                return Err("request(email, password) expects 2 args".to_string());
+            }
+            let Some(email) = args[0].as_str() else {
+                return Err("request(email, password): email must be string".to_string());
+            };
+            let Some(password) = args[1].as_str() else {
+                return Err("request(email, password): password must be string".to_string());
+            };
+            return Ok(serde_json::json!({
+                "path": "/login",
+                "params": {
+                    "email": email,
+                    "password": password
+                }
+            }));
+        }
+        if args.len() == 1 {
+            return Ok(args[0].clone());
+        }
+        return Ok(Value::Array(args));
+    }
+
+    resolve_path(env, token).ok_or_else(|| format!("Unknown value `{token}`"))
+}
+
+fn value_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(v) => *v,
+        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+fn compare_values(lhs: &Value, op: &str, rhs: &Value) -> Result<bool, String> {
+    match op {
+        "==" => Ok(lhs == rhs),
+        "!=" => Ok(lhs != rhs),
+        ">" | ">=" | "<" | "<=" => {
+            let Some(l) = lhs.as_f64() else {
+                return Err(format!("Left side is not numeric: {lhs}"));
+            };
+            let Some(r) = rhs.as_f64() else {
+                return Err(format!("Right side is not numeric: {rhs}"));
+            };
+            Ok(match op {
+                ">" => l > r,
+                ">=" => l >= r,
+                "<" => l < r,
+                "<=" => l <= r,
+                _ => unreachable!(),
+            })
+        }
+        _ => Err(format!("Unsupported comparison operator `{op}`")),
+    }
+}
+
+fn eval_must(expr: &str, env: &HashMap<String, Value>) -> Result<bool, String> {
+    for op in ["==", "!=", ">=", "<=", ">", "<"] {
+        if let Some((left, right)) = expr.split_once(op) {
+            let lhs = eval_value_expr(left, env)?;
+            let rhs = eval_value_expr(right, env)?;
+            return compare_values(&lhs, op, &rhs);
+        }
+    }
+
+    let value = eval_value_expr(expr, env)?;
+    Ok(value_truthy(&value))
+}
+
+async fn invoke_flow(
+    flow_name: &str,
+    arg_exprs: &[String],
+    env: &HashMap<String, Value>,
+    flows: &HashMap<String, FlowProgram>,
+    flow_registry: Option<&FlowRegistry>,
+) -> Result<FlowCallResult, String> {
+    let Some(program) = flows.get(flow_name) else {
+        return Err(format!("Unknown flow `{flow_name}`"));
+    };
+
+    if arg_exprs.len() != program.flow.inputs.len() {
+        return Err(format!(
+            "Flow `{}` expects {} args but got {}",
+            flow_name,
+            program.flow.inputs.len(),
+            arg_exprs.len()
+        ));
+    }
+
+    let mut input_map = HashMap::new();
+    for (idx, input) in program.flow.inputs.iter().enumerate() {
+        let value = eval_value_expr(&arg_exprs[idx], env)?;
+        input_map.insert(input.name.clone(), value);
+    }
+
+    let codecs = CodecRegistry::default_registry();
+    let report = runtime::execute_flow(
+        &program.flow,
+        program.ir.clone(),
+        input_map,
+        &program.registry,
+        flow_registry,
+        &codecs,
+        None,
+    ).await?;
+    let Some(outputs) = report.outputs.as_object() else {
+        return Err(format!("Flow `{flow_name}` produced invalid outputs shape"));
+    };
+
+    let success = outputs.get(&program.emit_name).cloned();
+    let failure = outputs.get(&program.fail_name).cloned();
+
+    match (success, failure) {
+        (Some(v), None) => Ok(FlowCallResult::Success(v)),
+        (None, Some(v)) => Ok(FlowCallResult::Failure(v)),
+        (None, None) => Err(format!("Flow `{flow_name}` produced no outputs")),
+        (Some(_), Some(_)) => Err(format!(
+            "Flow `{flow_name}` produced both emit and fail outputs"
+        )),
+    }
+}
+
+async fn run_test_body(
+    body: &str,
+    flows: &HashMap<String, FlowProgram>,
+    flow_registry: Option<&FlowRegistry>,
+) -> Result<(), String> {
+    let mock_re =
+        Regex::new(r"^mock\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=>\s*(.+)$").unwrap();
+    let trap_re =
+        Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*trap\s+([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$")
+            .unwrap();
+    let call_re =
+        Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$")
+            .unwrap();
+    let assign_re = Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$").unwrap();
+
+    // First pass: collect mock declarations
+    let empty_env = HashMap::new();
+    let mut mocks = HashMap::<String, serde_json::Value>::new();
+    for (idx, raw) in body.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(caps) = mock_re.captures(line) {
+            let name = caps.get(1).unwrap().as_str().to_string();
+            let expr = caps.get(2).unwrap().as_str();
+            let value = eval_value_expr(expr, &empty_env)
+                .map_err(|e| format!("line {line_no}: mock value error: {e}"))?;
+            mocks.insert(name, value);
+        }
+    }
+
+    // Build effective registry with mocks overlaid
+    let mocked_registry = if !mocks.is_empty() {
+        flow_registry.map(|fr| fr.with_value_mocks(mocks))
+    } else {
+        None
+    };
+    let effective_registry: Option<&FlowRegistry> = match &mocked_registry {
+        Some(mr) => Some(mr),
+        None => flow_registry,
+    };
+
+    // Second pass: execute non-mock lines
+    let mut env = HashMap::<String, Value>::new();
+
+    for (idx, raw) in body.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Skip mock lines (already processed in first pass)
+        if mock_re.is_match(line) {
+            continue;
+        }
+
+        if let Some(expr) = line.strip_prefix("must ") {
+            let ok = eval_must(expr, &env)
+                .map_err(|e| format!("line {line_no}: must evaluation error: {e}"))?;
+            if !ok {
+                return Err(format!("line {line_no}: must failed: {expr}"));
+            }
+            continue;
+        }
+
+        if let Some(caps) = trap_re.captures(line) {
+            let var = caps.get(1).unwrap().as_str().to_string();
+            let flow_name = caps.get(2).unwrap().as_str();
+            let args_raw = caps.get(3).unwrap().as_str();
+            let arg_exprs = split_csv(args_raw);
+            match invoke_flow(flow_name, &arg_exprs, &env, flows, effective_registry).await
+                .map_err(|e| format!("line {line_no}: {e}"))?
+            {
+                FlowCallResult::Failure(err) => {
+                    env.insert(var, err);
+                }
+                FlowCallResult::Success(_) => {
+                    return Err(format!(
+                        "line {line_no}: trap expected failure but flow `{flow_name}` succeeded"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if let Some(caps) = call_re.captures(line) {
+            let var = caps.get(1).unwrap().as_str().to_string();
+            let callee = caps.get(2).unwrap().as_str();
+            let args_raw = caps.get(3).unwrap().as_str();
+            let arg_exprs = split_csv(args_raw);
+
+            if flows.contains_key(callee) {
+                match invoke_flow(callee, &arg_exprs, &env, flows, effective_registry).await
+                    .map_err(|e| format!("line {line_no}: {e}"))?
+                {
+                    FlowCallResult::Success(v) => {
+                        env.insert(var, v);
+                    }
+                    FlowCallResult::Failure(err) => {
+                        return Err(format!(
+                            "line {line_no}: flow `{callee}` failed unexpectedly: {err}"
+                        ));
+                    }
+                }
+                continue;
+            }
+        }
+
+        if let Some(caps) = assign_re.captures(line) {
+            let var = caps.get(1).unwrap().as_str().to_string();
+            let expr = caps.get(2).unwrap().as_str();
+            let value = eval_value_expr(expr, &env)
+                .map_err(|e| format!("line {line_no}: assignment error: {e}"))?;
+            env.insert(var, value);
+            continue;
+        }
+
+        return Err(format!("line {line_no}: unsupported test syntax `{line}`"));
+    }
+
+    Ok(())
+}
+
+fn collect_fa_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if path.is_file() {
+        if path.extension().and_then(|s| s.to_str()) == Some("fa") {
+            out.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(path)
+        .map_err(|e| format!("Failed to read test path {}: {e}", path.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read_dir entry error: {e}"))?;
+        let child = entry.path();
+        if child.is_dir() {
+            continue;
+        } else if child.extension().and_then(|s| s.to_str()) == Some("fa") {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String> {
+    let mut files = Vec::new();
+    collect_fa_files(path, &mut files)?;
+    files.sort();
+
+    if files.is_empty() {
+        return Err(format!("No .fa files found at {}", path.display()));
+    }
+
+    let mut summary = TestSummary::default();
+
+    for file in files {
+        let src = fs::read_to_string(&file)
+            .map_err(|e| format!("Failed to read {}: {e}", file.display()))?;
+
+        let module = parser::parse_module_v1(&src)
+            .map_err(|e| format!("{}: parse error: {e}", file.display()))?;
+        let filename = file
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        if let Err(errors) = sema::validate_module(&module, filename.as_deref()) {
+            return Err(format!(
+                "{}: semantic errors:\n{}",
+                file.display(),
+                errors.join("\n")
+            ));
+        }
+
+        let registry = TypeRegistry::from_module(&module).map_err(|errors| {
+            format!(
+                "{}: type errors:\n{}",
+                file.display(),
+                errors.join("\n")
+            )
+        })?;
+
+        let flow_registry = loader::build_flow_registry(&file, &module)?;
+
+        let mut docs_map = HashMap::<String, String>::new();
+        let mut flows = HashMap::<String, FlowProgram>::new();
+        let mut tests = Vec::new();
+
+        for decl in &module.decls {
+            match decl {
+                TopDecl::Docs(d) => {
+                    docs_map.insert(d.name.clone(), d.markdown.clone());
+                }
+                TopDecl::Func(f) | TopDecl::Sink(f) | TopDecl::Source(f) => {
+                    let kind = if matches!(decl, TopDecl::Sink(_)) { DeclKind::Sink } else if matches!(decl, TopDecl::Source(_)) { DeclKind::Source } else { DeclKind::Func };
+                    let flow = parser::parse_runtime_func_decl_v1(f).map_err(|e| {
+                        format!("{}: func `{}` parse error: {e}", file.display(), f.name)
+                    })?;
+
+                    let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
+                    let codec_ops: HashSet<String> = CodecRegistry::default_registry().known_ops().into_iter().collect();
+                    let mut ops = Vec::new();
+                    collect_ops(&flow.body, &mut ops);
+                    let unknown: Vec<_> = ops
+                        .iter()
+                        .filter(|op| !known.contains(op.as_str()) && !codec_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+                        .collect();
+                    if !unknown.is_empty() {
+                        return Err(unknown
+                            .iter()
+                            .map(|op| format!("{}: func `{}` uses unknown op `{op}`", file.display(), f.name))
+                            .collect::<Vec<_>>()
+                            .join("\n"));
+                    }
+
+                    let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
+                        format!("{}: func `{}` lower error: {e}", file.display(), f.name)
+                    })?;
+                    let emit_name =
+                        flow.outputs
+                            .first()
+                            .map(|p| p.name.clone())
+                            .ok_or_else(|| {
+                                format!("{}: func `{}` has no emit output", file.display(), f.name)
+                            })?;
+                    let fail_name =
+                        flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
+                            format!("{}: func `{}` has no fail output", file.display(), f.name)
+                        })?;
+                    flows.insert(
+                        f.name.clone(),
+                        FlowProgram {
+                            flow,
+                            ir: ir_val,
+                            emit_name,
+                            fail_name,
+                            registry: registry.clone(),
+                            kind,
+                        },
+                    );
+                }
+                TopDecl::Flow(f) => {
+                    let flow_graph = parser::parse_flow_graph_decl_v1(f).map_err(|e| {
+                        format!("{}: flow `{}` parse error: {e}", file.display(), f.name)
+                    })?;
+                    let flow = parser::lower_flow_graph_to_flow(&flow_graph).map_err(|e| {
+                        format!("{}: flow `{}` lower error: {e}", file.display(), f.name)
+                    })?;
+
+                    let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
+                    let codec_ops: HashSet<String> = CodecRegistry::default_registry().known_ops().into_iter().collect();
+                    let mut ops = Vec::new();
+                    collect_ops(&flow.body, &mut ops);
+                    let unknown: Vec<_> = ops
+                        .iter()
+                        .filter(|op| !known.contains(op.as_str()) && !codec_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+                        .collect();
+                    if !unknown.is_empty() {
+                        return Err(unknown
+                            .iter()
+                            .map(|op| format!("{}: flow `{}` uses unknown op `{op}`", file.display(), f.name))
+                            .collect::<Vec<_>>()
+                            .join("\n"));
+                    }
+
+                    let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
+                        format!("{}: flow `{}` lower error: {e}", file.display(), f.name)
+                    })?;
+                    let emit_name =
+                        flow.outputs
+                            .first()
+                            .map(|p| p.name.clone())
+                            .ok_or_else(|| {
+                                format!("{}: flow `{}` has no emit output", file.display(), f.name)
+                            })?;
+                    let fail_name =
+                        flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
+                            format!("{}: flow `{}` has no fail output", file.display(), f.name)
+                        })?;
+                    flows.insert(
+                        f.name.clone(),
+                        FlowProgram {
+                            flow,
+                            ir: ir_val,
+                            emit_name,
+                            fail_name,
+                            registry: registry.clone(),
+                            kind: DeclKind::Flow,
+                        },
+                    );
+                }
+                TopDecl::Test(t) => tests.push(t.clone()),
+                TopDecl::Uses(_) | TopDecl::Type(_) | TopDecl::Enum(_) => {}
+            }
+        }
+
+        let file_label = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        for test in tests {
+            summary.total += 1;
+            let start = Instant::now();
+            match run_test_body(&test.body_text, &flows, Some(&flow_registry)).await {
+                Ok(()) => {
+                    summary.passed += 1;
+                    println!(
+                        "PASS  {}.{}   ({}ms)",
+                        file_label,
+                        test.name,
+                        start.elapsed().as_millis()
+                    );
+                }
+                Err(err) => {
+                    summary.failed += 1;
+                    let doc_hint = docs_map
+                        .get(&test.name)
+                        .and_then(|s| s.lines().next())
+                        .unwrap_or("(no docs)");
+                    println!("FAIL  {}.{}", file_label, test.name);
+                    println!("      > {}", err);
+                    println!("      > {}", doc_hint);
+                }
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_tests_at_path_async;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn runs_classify_example_tests() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/read-docs/app/router/Classify.fa");
+        let summary = run_tests_at_path_async(&path).await.expect("test run should succeed");
+        assert!(summary.total >= 1);
+        assert_eq!(summary.failed, 0);
+    }
+}

@@ -1,0 +1,21 @@
+docs Welcome
+    Displays the welcome banner when the browser starts.
+done
+
+sink Welcome
+    emit result as bool
+    fail error as text
+body
+    _ = term.print("")
+    _ = term.print("=== Dataflow Language Reference ===")
+    _ = term.print("Type 'help' for commands, or a namespace to explore.")
+    _ = term.print("")
+    ok = true
+    emit ok
+done
+
+test Welcome
+  # Sink: outputs welcome banner, verify it succeeds
+  r = Welcome()
+  must r == true
+done

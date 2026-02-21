@@ -1,0 +1,25 @@
+docs Namespaces
+    Returns the formatted listing of all available namespaces.
+done
+
+func Namespaces
+    emit result as text
+    fail error as text
+body
+    n = "\n"
+    t = "Namespaces:" + n
+    t = t + "  obj           Dict operations (immutable)" + n
+    t = t + "  list          List operations (immutable)" + n
+    t = t + "  str           String operations" + n
+    t = t + "  math          Arithmetic operations" + n
+    t = t + "  json          JSON encode/decode" + n
+    t = t + "  db            SQLite database" + n
+    t = t + "  term          Terminal I/O" + n
+    t = t + "  http          HTTP client and server"
+    emit t
+done
+
+test Namespaces
+  r = Namespaces()
+  must str.contains(r, "obj")
+done

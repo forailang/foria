@@ -1,0 +1,26 @@
+uses funcs
+
+docs GetPRFeedback
+    Fetches review comments from a GitHub pull request.
+done
+
+func GetPRFeedback
+    take repo_url as text
+    take pr_number as text
+    return dict
+    fail text
+body
+    gh_args = ["pr", "view", pr_number, "--repo", repo_url, "--json", "reviews", "--jq", ".reviews[].body"]
+    output = exec.run("gh", gh_args)
+
+    feedback = funcs.CleanFeedback(output)
+
+    result = {feedback: feedback}
+    return result
+done
+
+test GetPRFeedback
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

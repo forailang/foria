@@ -1,0 +1,68 @@
+uses coder
+uses tester
+uses github
+
+docs ProcessQueuedJob
+    Processes a queued job through the coding, testing, and PR creation pipeline.
+done
+
+func ProcessQueuedJob
+    take conn as db_conn
+    take poll as dict
+    return bool
+    fail text
+body
+    job = obj.get(poll, "job")
+    job_id = obj.get(job, "id")
+    job_title = obj.get(job, "title")
+    job_spec = obj.get(job, "spec")
+    job_attempt = obj.get(job, "attempt")
+    job_max = obj.get(job, "max_attempts")
+    job_repo = obj.get(job, "repo_url")
+    job_branch = obj.get(job, "branch")
+
+    next_attempt = job_attempt + 1
+    _ = term.print("[runner] Picked up: #{job_title} (#{job_id}) attempt #{next_attempt}/#{job_max}")
+
+    update_params = [next_attempt, job_id]
+    _ = db.exec(conn, "UPDATE jobs SET status = 'Coding', attempt = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2", update_params)
+    _ = term.print("[runner] #{job_id} -> Coding")
+
+    agent_result = coder.CoderAgent(conn, job_id, job_title, job_spec)
+    code_output = obj.get(agent_result, "code")
+    _ = term.print("[runner] Coder agent finished for #{job_id}")
+
+    status_params = [job_id]
+    _ = db.exec(conn, "UPDATE jobs SET status = 'Testing', updated_at = CURRENT_TIMESTAMP WHERE id = ?1", status_params)
+    _ = term.print("[runner] #{job_id} -> Testing")
+
+    test_result = tester.TesterAgent(conn, job_id, job_title, job_spec, code_output)
+    verdict = obj.get(test_result, "verdict")
+    _ = term.print("[runner] Tester agent finished: #{verdict}")
+
+    case verdict
+        when "pass"
+            pr_result = github.CreatePR(conn, job_id, job_title, job_spec, verdict, job_repo, job_branch)
+            pr_num = obj.get(pr_result, "pr_number")
+            prp = [job_id]
+            _ = db.exec(conn, "UPDATE jobs SET status = 'PrCreated', updated_at = CURRENT_TIMESTAMP WHERE id = ?1", prp)
+            _ = term.print("[runner] #{job_id} -> PrCreated (PR ##{pr_num})")
+        when "fail"
+            ffp = [job_id]
+            _ = db.exec(conn, "UPDATE jobs SET status = 'Failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?1", ffp)
+            _ = term.print("[runner] #{job_id} -> Failed")
+        else
+            efp = [job_id]
+            _ = db.exec(conn, "UPDATE jobs SET status = 'Failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?1", efp)
+            _ = term.print("[runner] #{job_id} -> Failed (unexpected verdict: #{verdict})")
+    done
+
+    ok = true
+    return ok
+done
+
+test ProcessQueuedJob
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

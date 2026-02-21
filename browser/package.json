@@ -1,0 +1,17 @@
+{
+  "name": "forai-browser",
+  "version": "0.1.0",
+  "description": "Browser runtime for forai .fa applications",
+  "type": "module",
+  "main": "dist/forai-browser.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist/"],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

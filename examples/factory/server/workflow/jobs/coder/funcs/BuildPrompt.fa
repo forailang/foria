@@ -1,0 +1,18 @@
+docs BuildPrompt
+    Builds the coder agent prompt from job title and spec.
+done
+
+func BuildPrompt
+    take title as text
+    take spec as text
+    return text
+    fail text
+body
+    prompt = "Job Title: #{title}\n\nSpecification:\n#{spec}\n\nProduce the code and unit tests needed to implement this."
+    return prompt
+done
+
+test BuildPrompt
+  r = BuildPrompt("Fix the bug", "The login button is broken")
+  must str.contains(r.result, "Fix the bug")
+done

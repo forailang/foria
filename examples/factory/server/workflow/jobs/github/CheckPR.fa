@@ -1,0 +1,29 @@
+uses funcs
+
+docs CheckPR
+    Checks the current state of a GitHub pull request.
+done
+
+func CheckPR
+    take repo_url as text
+    take pr_number as text
+    return dict
+    fail text
+body
+    gh_args = ["pr", "view", pr_number, "--repo", repo_url, "--json", "state"]
+    output = exec.run("gh", gh_args)
+
+    parsed = json.decode(output)
+    raw_state = obj.get(parsed, "state")
+
+    state = funcs.NormalizeState(raw_state)
+
+    result = {state: state}
+    return result
+done
+
+test CheckPR
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done

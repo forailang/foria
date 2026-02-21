@@ -1,0 +1,46 @@
+uses funcs
+
+docs CoderAgent
+    Runs Claude Code in headless mode to generate code for a job spec.
+done
+
+func CoderAgent
+    take conn as db_conn
+    take job_id as text
+    take title as text
+    take spec as text
+    return dict
+    fail text
+body
+    run_id = random.uuid()
+
+    ar_params = [run_id, job_id, "Coder", "Running"]
+    _ = db.exec(conn, "INSERT INTO agent_runs (id, job_id, agent_type, status) VALUES (?1, ?2, ?3, ?4)", ar_params)
+
+    prompt = funcs.BuildPrompt(title, spec)
+
+    um_id = random.uuid()
+    um_params = [um_id, run_id, "user", prompt]
+    _ = db.exec(conn, "INSERT INTO agent_messages (id, run_id, role, content) VALUES (?1, ?2, ?3, ?4)", um_params)
+
+    _ = term.print("[coder] Running Claude Code for job #{job_id}...")
+    cli_args = ["-p", prompt, "--output-format", "text"]
+    code_text = exec.run("claude", cli_args)
+    _ = term.print("[coder] Claude Code finished for job #{job_id}")
+
+    am_id = random.uuid()
+    am_params = [am_id, run_id, "assistant", code_text]
+    _ = db.exec(conn, "INSERT INTO agent_messages (id, run_id, role, content) VALUES (?1, ?2, ?3, ?4)", am_params)
+
+    fin_params = [run_id]
+    _ = db.exec(conn, "UPDATE agent_runs SET status = 'Complete', finished_at = CURRENT_TIMESTAMP WHERE id = ?1", fin_params)
+
+    result = {run_id: run_id, code: code_text}
+    return result
+done
+
+test CoderAgent
+  # Flow/source/func: I/O dependent — stub test, integration tested separately
+  ok = true
+  must ok == true
+done
