@@ -17,9 +17,17 @@ source → flow → func → sink
 
 Each branch of the tree is a concurrent pipeline — like an assembly line where multiple events can be in flight simultaneously across stages.
 
-## Build & run
+## Install
 
-Requires Rust (edition 2024).
+Requires Rust. Install via Cargo:
+
+```bash
+cargo install --git https://github.com/forailang/foria forai
+```
+
+## Build from source
+
+
 
 ```bash
 cargo build                                              # build
