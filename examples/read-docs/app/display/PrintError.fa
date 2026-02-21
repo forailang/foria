@@ -14,7 +14,7 @@ body
 done
 
 test PrintError
-  # Sink: outputs error message, verify it succeeds
-  r = PrintError("badcmd")
-  must r == true
+    # Sink: outputs error message, verify it succeeds
+    r = PrintError("badcmd")
+    must r == true
 done

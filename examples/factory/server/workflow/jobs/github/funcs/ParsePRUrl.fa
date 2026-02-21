@@ -16,6 +16,6 @@ body
 done
 
 test ParsePRUrl
-  r = ParsePRUrl("https://github.com/org/repo/pull/42")
-  must r.result == "42"
+    r = ParsePRUrl("https://github.com/org/repo/pull/42")
+    must r.result == "42"
 done

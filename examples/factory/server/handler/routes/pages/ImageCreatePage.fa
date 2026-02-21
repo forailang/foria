@@ -37,6 +37,6 @@ body
 done
 
 test ImageCreatePage
-  r = ImageCreatePage()
-  must str.contains(r.result, "ECR URI")
+    r = ImageCreatePage()
+    must str.contains(r.result, "ECR URI")
 done

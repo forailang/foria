@@ -22,7 +22,7 @@ body
 
     data = {id: cid, job_id: cjob_id, image_id: cimage_id, ecs_task_arn: carn, status: cstatus, badge_class: badge_class, started_at: cstarted, stopped_at: cstopped, job_title: cjob_title, image_name: cimage_name}
 
-        html = tmpl.render("""
+    html = tmpl.render("""
         <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <h1>Container {{id}}</h1>
@@ -41,12 +41,12 @@ body
         <div style="margin-top:16px">
         <a href="/containers">&larr; Back to Containers</a>
         </div>
-        """, data)
-        return html
-    done
+    """, data)
+    return html
+done
 
 test ContainerDetailPage
-  container = {id: "abc", job_id: "j1", image_id: "i1", ecs_task_arn: "arn:aws:ecs:123", status: "Running", started_at: "2024-01-01", stopped_at: "", job_title: "My Job", image_name: "python-dev"}
-  r = ContainerDetailPage(container)
-  must str.contains(r.result, "abc")
+    container = {id: "abc", job_id: "j1", image_id: "i1", ecs_task_arn: "arn:aws:ecs:123", status: "Running", started_at: "2024-01-01", stopped_at: "", job_title: "My Job", image_name: "python-dev"}
+    r = ContainerDetailPage(container)
+    must str.contains(r.result, "abc")
 done

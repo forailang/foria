@@ -70,7 +70,7 @@ body
 done
 
 test ContainerListPage
-  containers = []
-  r = ContainerListPage(containers)
-  must str.contains(r.result, "Containers")
+    containers = []
+    r = ContainerListPage(containers)
+    must str.contains(r.result, "Containers")
 done

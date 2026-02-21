@@ -25,9 +25,31 @@ pub fn format_source(source: &str) -> String {
     let mut stack: Vec<Block> = Vec::new();
     let mut prev_blank = false;
     let mut prev_was_uses = false;
+    let mut in_multiline_string = false;
 
     for raw_line in &lines {
         let trimmed = raw_line.trim();
+
+        // --- Multi-line string content: preserve verbatim, skip all formatting ---
+        // `closed_multiline` prevents the closing `"""` from being counted again
+        // at the bottom of this iteration and immediately re-opening multiline mode.
+        let mut closed_multiline = false;
+        if in_multiline_string {
+            if count_triple_quotes(trimmed) % 2 == 1 {
+                // This line closes the multi-line string; fall through to format it normally.
+                in_multiline_string = false;
+                closed_multiline = true;
+            } else {
+                // Content inside the string — preserve exactly as written.
+                if trimmed.is_empty() {
+                    out.push(String::new());
+                } else {
+                    out.push(raw_line.to_string());
+                }
+                prev_blank = trimmed.is_empty();
+                continue;
+            }
+        }
 
         if trimmed.is_empty() {
             if !prev_blank && !out.is_empty() {
@@ -50,7 +72,7 @@ pub fn format_source(source: &str) -> String {
                 }
                 stack.pop(); // structural block (Case, If, Loop, Body, Docs, etc.)
             }
-            "body" | "init" => {
+            "body" | "init" if second_token(trimmed) != "=" => {
                 // Close the Decl header
                 if stack.last() == Some(&Block::Decl) {
                     stack.pop();
@@ -122,7 +144,7 @@ pub fn format_source(source: &str) -> String {
             "func" | "flow" | "sink" | "source" => {
                 stack.push(Block::Decl);
             }
-            "body" | "init" => {
+            "body" | "init" if second_token(trimmed) != "=" => {
                 stack.push(Block::Body);
             }
             "from" if !single_line_done => {
@@ -135,7 +157,10 @@ pub fn format_source(source: &str) -> String {
                 stack.push(Block::Test);
             }
             "type" | "data" | "enum" if !single_line_done => {
-                stack.push(Block::TypeDecl);
+                // Only treat as a declaration if not an assignment (e.g. `data = {…}`).
+                if second_token(trimmed) != "=" {
+                    stack.push(Block::TypeDecl);
+                }
             }
             "case" => {
                 stack.push(Block::Case);
@@ -174,6 +199,13 @@ pub fn format_source(source: &str) -> String {
                     stack.push(Block::Sync);
                 }
             }
+        }
+
+        // Track whether this line opens a multi-line string.
+        // An odd number of `"""` means one is left unclosed.
+        // Skip this check if the closing `"""` was on this same line.
+        if !closed_multiline && !in_multiline_string && count_triple_quotes(trimmed) % 2 == 1 {
+            in_multiline_string = true;
         }
     }
 
@@ -254,6 +286,28 @@ fn collect_fa_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Stri
 
 fn first_token(line: &str) -> &str {
     line.split_whitespace().next().unwrap_or("")
+}
+
+fn second_token(line: &str) -> &str {
+    let mut it = line.split_whitespace();
+    it.next();
+    it.next().unwrap_or("")
+}
+
+/// Count the number of `"""` occurrences in a string.
+fn count_triple_quotes(s: &str) -> usize {
+    let mut count = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+            count += 1;
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    count
 }
 
 fn is_top_level_keyword(word: &str) -> bool {
@@ -779,6 +833,101 @@ done
 ";
         let formatted = format_source(input);
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn data_assignment_not_treated_as_declaration() {
+        // `data = {…}` is a variable assignment, not a `data` type declaration.
+        // The formatter must not push an extra indent level for it.
+        let input = "\
+func Test
+    take x as dict
+    return text
+    fail text
+body
+    data = {key: \"value\"}
+    result = obj.get(data, \"key\")
+    return result
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn multiline_string_content_preserved_verbatim() {
+        // Content inside `\"\"\"` strings must pass through unchanged so that
+        // forai keywords inside HTML/CSS (e.g. `body { … }`) do not corrupt
+        // the surrounding indentation.
+        let input = "\
+func Render
+    take data as dict
+    return text
+    fail text
+body
+    template = \"\"\"
+    <!DOCTYPE html>
+    <html>
+    <body>
+    body { font-family: sans-serif }
+    </body>
+    </html>
+    \"\"\"
+    html = tmpl.render(template, data)
+    return html
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn multiline_string_inline_close_with_args() {
+        // Closing `\"\"\"` may be followed by arguments on the same line.
+        let input = "\
+func Render
+    take data as dict
+    return text
+    fail text
+body
+    html = tmpl.render(\"\"\"
+    <p>Hello</p>
+    \"\"\", data)
+    return html
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn multiline_string_with_data_assignment() {
+        // Combination: `data = {…}` followed by a multiline string that
+        // contains HTML with a `body` CSS rule — both bugs at once.
+        let input = "\
+func Layout
+    take title as text
+    take content as text
+    return text
+    fail text
+body
+    data = {title: title, content: content}
+    template = \"\"\"
+    <html>
+    <head><title>{{title}}</title></head>
+    <body>
+    body { color: red }
+    nav { color: blue }
+    {{content}}
+    </body>
+    </html>
+    \"\"\"
+    html = tmpl.render(template, data)
+    return html
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
     }
 
     #[test]

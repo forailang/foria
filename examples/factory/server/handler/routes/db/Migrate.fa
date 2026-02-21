@@ -31,7 +31,7 @@ body
 done
 
 test Migrate
-  # DB func: requires live connection — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # DB func: requires live connection — stub test, integration tested separately
+    ok = true
+    must ok == true
 done

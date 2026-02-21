@@ -15,7 +15,7 @@ body
 done
 
 test Print
-  # Sink: outputs to terminal, verify it succeeds
-  r = Print("hello test")
-  must r == true
+    # Sink: outputs to terminal, verify it succeeds
+    r = Print("hello test")
+    must r == true
 done

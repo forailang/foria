@@ -13,8 +13,8 @@ body
 done
 
 test ExtractVerdict
-  r1 = ExtractVerdict("All done. VERDICT: PASS good work")
-  must r1.result == "pass"
-  r2 = ExtractVerdict("Tests failed. VERDICT: FAIL missing cases")
-  must r2.result == "fail"
+    r1 = ExtractVerdict("All done. VERDICT: PASS good work")
+    must r1.result == "pass"
+    r2 = ExtractVerdict("Tests failed. VERDICT: FAIL missing cases")
+    must r2.result == "fail"
 done

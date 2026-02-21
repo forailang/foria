@@ -464,6 +464,6 @@ body
 done
 
 test OpDetail
-  r = OpDetail("obj.get")
-  must str.contains(r, "obj.get")
+    r = OpDetail("obj.get")
+    must str.contains(r, "obj.get")
 done

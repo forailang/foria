@@ -36,6 +36,6 @@ body
 done
 
 test Route
-  r = Route("help")
-  must r != ""
+    r = Route("help")
+    must r != ""
 done

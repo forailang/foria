@@ -41,17 +41,17 @@ body
     done
     step obj.get(poll to :dict, "type" to :key) then
         next :result to action
-        case action
-            when "queued"
-                step jobs.ProcessQueuedJob(conn to :conn, poll to :poll) done
-            when "pr_check"
-                step jobs.MonitorPRJob(conn to :conn, poll to :poll) done
-        done
+    done
+    branch when action == "queued"
+        step jobs.ProcessQueuedJob(conn to :conn, poll to :poll) done
+    done
+    branch when action == "pr_check"
+        step jobs.MonitorPRJob(conn to :conn, poll to :poll) done
     done
 done
 
 test RunJobLoop
-  # Flow/source/func: I/O dependent — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # Flow/source/func: I/O dependent — stub test, integration tested separately
+    ok = true
+    must ok == true
 done

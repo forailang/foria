@@ -13,6 +13,6 @@ body
 done
 
 test BuildPrompt
-  r = BuildPrompt("Fix the bug", "The login button is broken")
-  must str.contains(r.result, "Fix the bug")
+    r = BuildPrompt("Fix the bug", "The login button is broken")
+    must str.contains(r.result, "Fix the bug")
 done

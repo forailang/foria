@@ -32,7 +32,7 @@ body
 done
 
 test JobList
-  # Flow: HTTP route handler — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # Flow: HTTP route handler — stub test, integration tested separately
+    ok = true
+    must ok == true
 done

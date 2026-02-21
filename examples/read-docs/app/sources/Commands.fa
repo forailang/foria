@@ -18,7 +18,7 @@ from term.prompt("docs> ") as raw
 done
 
 test Commands
-  # Source: reads from terminal — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # Source: reads from terminal — stub test, integration tested separately
+    ok = true
+    must ok == true
 done

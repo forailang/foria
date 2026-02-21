@@ -2169,10 +2169,31 @@ impl<'a> TokenParser<'a> {
         let body_start = self.current().start;
         let mut depth = 1i32;
         let mut prev_was_else = false;
+        let mut paren_depth = 0i32; // track ( ) to skip keywords inside function call args
 
         while !self.at_eof() {
+            // Track parenthesis depth to avoid treating `:branch`, `:step` etc. as keywords
+            match &self.current().kind {
+                TokenKind::Symbol('(') => {
+                    paren_depth += 1;
+                    self.bump();
+                    prev_was_else = false;
+                    continue;
+                }
+                TokenKind::Symbol(')') => {
+                    paren_depth -= 1;
+                    self.bump();
+                    prev_was_else = false;
+                    continue;
+                }
+                _ => {}
+            }
+
             if let Some(word) = self.current_ident() {
-                if word == "done" {
+                if paren_depth > 0 {
+                    // Inside a function call — identifiers here are argument labels, not keywords
+                    prev_was_else = false;
+                } else if word == "done" {
                     depth -= 1;
                     if depth == 0 {
                         let body_end = self.current().start;

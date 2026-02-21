@@ -1648,7 +1648,12 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         // -----------------------------------------------------------------
         "crypto.hash_password" => {
             let password = read_string_arg(args, 0, op)?;
-            let hash = bcrypt::hash(password, 12)
+            // Use minimum cost in tests so the suite stays fast; production uses cost 12.
+            #[cfg(test)]
+            let cost = 4u32;
+            #[cfg(not(test))]
+            let cost = 12u32;
+            let hash = bcrypt::hash(password, cost)
                 .map_err(|e| format!("Op `{op}` bcrypt error: {e}"))?;
             Ok(json!(hash))
         }
@@ -3634,6 +3639,15 @@ done
         let (handle, join) =
             execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
 
+        // Discard the initial "ready" snapshot (op=None) sent before any nodes run
+        let ready = handle
+            .snapshot_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("should receive ready snapshot");
+        assert_eq!(ready.status, "paused");
+        assert_eq!(ready.op, None);
+        handle.command_tx.send(StepCommand::Step).unwrap();
+
         let mut snapshots = Vec::new();
         for _ in 0..3 {
             let snap = handle
@@ -3759,11 +3773,19 @@ done
         let (handle, join) =
             execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
 
-        // First snapshot arrives (step mode = StepOne by default)
+        // Initial "ready" snapshot arrives with no op (emitted before first statement).
+        let init = handle
+            .snapshot_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("should get initial snapshot");
+        assert!(init.op.is_none());
+
+        // Step to the first node and confirm its op.
+        handle.command_tx.send(StepCommand::Step).unwrap();
         let snap1 = handle
             .snapshot_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("should get first snapshot");
+            .expect("should get first node snapshot");
         assert_eq!(snap1.op.as_deref(), Some("http.extract_params"));
 
         // Set breakpoint on the email node and run to breakpoint
@@ -3837,7 +3859,14 @@ done
         let (handle, join) =
             execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
 
-        // First snapshot (step 1: extract_params)
+        // Initial "ready" snapshot (op=None, emitted before first statement).
+        let _ = handle
+            .snapshot_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("initial snapshot");
+
+        // Step to first node (extract_params)
+        handle.command_tx.send(StepCommand::Step).unwrap();
         let snap1 = handle
             .snapshot_rx
             .recv_timeout(Duration::from_secs(2))

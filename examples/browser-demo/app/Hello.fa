@@ -1,63 +1,63 @@
 docs Hello
-  Prints a greeting and demonstrates browser-compatible ops.
-  Exercises pure ops (list, obj, str, math), loops,
-  and string interpolation to verify the full WASM browser pipeline.
+    Prints a greeting and demonstrates browser-compatible ops.
+    Exercises pure ops (list, obj, str, math), loops,
+    and string interpolation to verify the full WASM browser pipeline.
 done
 
 func Hello
-  emit result as text
-  fail error as text
+    emit result as text
+    fail error as text
 body
-  _ = log.info("browser demo starting")
+    _ = log.info("browser demo starting")
 
-  # Greeting
-  greeting = "Hello from forai in the browser!"
-  _ = term.print(greeting)
+    # Greeting
+    greeting = "Hello from forai in the browser!"
+    _ = term.print(greeting)
 
-  # Arithmetic
-  a = 21
-  b = a * 2
-  msg = "The answer is: #{to.text(b)}"
-  _ = term.print(msg)
+    # Arithmetic
+    a = 21
+    b = a * 2
+    msg = "The answer is: #{to.text(b)}"
+    _ = term.print(msg)
 
-  # List operations (pure ops — run entirely in WASM)
-  items = [10, 20, 30, 40, 50]
-  count = list.len(items)
-  third = list.get(items, 2)
-  _ = term.print("List: #{to.text(count)} items, third = #{to.text(third)}")
+    # List operations (pure ops — run entirely in WASM)
+    items = [10, 20, 30, 40, 50]
+    count = list.len(items)
+    third = list.get(items, 2)
+    _ = term.print("List: #{to.text(count)} items, third = #{to.text(third)}")
 
-  # Object operations (pure ops)
-  person = {name: "Alice", age: 30}
-  name = obj.get(person, "name")
-  age = obj.get(person, "age")
-  _ = term.print("Person: #{name}, age #{to.text(age)}")
+    # Object operations (pure ops)
+    person = {name: "Alice", age: 30}
+    name = obj.get(person, "name")
+    age = obj.get(person, "age")
+    _ = term.print("Person: #{name}, age #{to.text(age)}")
 
-  # String operations (pure ops)
-  upper = str.upper("hello world")
-  trimmed = str.trim("  spaces  ")
-  replaced = str.replace("foo bar foo", "foo", "baz")
-  _ = term.print("Str: upper=#{upper}, trim=#{trimmed}, replace=#{replaced}")
+    # String operations (pure ops)
+    upper = str.upper("hello world")
+    trimmed = str.trim("  spaces  ")
+    replaced = str.replace("foo bar foo", "foo", "baz")
+    _ = term.print("Str: upper=#{upper}, trim=#{trimmed}, replace=#{replaced}")
 
-  # Math operations (pure ops)
-  pi_approx = math.divide(355, 113)
-  rounded = math.round(pi_approx, 4)
-  _ = term.print("Math: 355/113 = #{to.text(rounded)}")
+    # Math operations (pure ops)
+    pi_approx = math.divide(355, 113)
+    rounded = math.round(pi_approx, 4)
+    _ = term.print("Math: 355/113 = #{to.text(rounded)}")
 
-  # TODO: async ops (time.sleep, http.get) require Asyncify rewind fix
-  # See browser/ASYNCIFY.md for details on the rewind issue
+    # TODO: async ops (time.sleep, http.get) require Asyncify rewind fix
+    # See browser/ASYNCIFY.md for details on the rewind issue
 
-  # Loop over a list
-  colors = ["red", "green", "blue"]
-  loop colors as color
-    _ = term.print("  color: #{color}")
-  done
+    # Loop over a list
+    colors = ["red", "green", "blue"]
+    loop colors as color
+        _ = term.print("  color: #{color}")
+    done
 
-  _ = log.info("browser demo complete")
-  _ = term.print("All tests passed!")
-  emit greeting
+    _ = log.info("browser demo complete")
+    _ = term.print("All tests passed!")
+    emit greeting
 done
 
 test Hello
-  r = Hello()
-  must r != ""
+    r = Hello()
+    must r != ""
 done

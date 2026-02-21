@@ -13,6 +13,6 @@ body
 done
 
 test BuildPRBody
-  r = BuildPRBody("Implement auth", "All tests passed")
-  must str.contains(r.result, "Implement auth")
+    r = BuildPRBody("Implement auth", "All tests passed")
+    must str.contains(r.result, "Implement auth")
 done

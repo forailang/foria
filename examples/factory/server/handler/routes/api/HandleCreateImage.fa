@@ -58,7 +58,7 @@ body
 done
 
 test HandleCreateImage
-  body = "name=myimage&ecr_uri=123.dkr.ecr.us-east-1.amazonaws.com/repo:tag&dockerfile=FROM+ubuntu&description=test+image"
-  r = HandleCreateImage(body)
-  must r.result.name == "myimage"
+    body = "name=myimage&ecr_uri=123.dkr.ecr.us-east-1.amazonaws.com/repo:tag&dockerfile=FROM+ubuntu&description=test+image"
+    r = HandleCreateImage(body)
+    must r.result.name == "myimage"
 done

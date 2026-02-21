@@ -45,6 +45,6 @@ body
 done
 
 test JobCreatePage
-  r = JobCreatePage()
-  must str.contains(r.result, "New Job")
+    r = JobCreatePage()
+    must str.contains(r.result, "New Job")
 done

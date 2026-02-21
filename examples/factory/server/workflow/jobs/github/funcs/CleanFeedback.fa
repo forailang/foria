@@ -15,8 +15,8 @@ body
 done
 
 test CleanFeedback
-  r1 = CleanFeedback("  looks good  ")
-  must r1.result == "looks good"
-  r2 = CleanFeedback("   ")
-  must r2.result == "No review comments"
+    r1 = CleanFeedback("  looks good  ")
+    must r1.result == "looks good"
+    r2 = CleanFeedback("   ")
+    must r2.result == "No review comments"
 done

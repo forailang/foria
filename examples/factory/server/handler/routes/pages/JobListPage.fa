@@ -80,7 +80,7 @@ body
 done
 
 test JobListPage
-  jobs = []
-  r = JobListPage(jobs)
-  must str.contains(r.result, "Jobs")
+    jobs = []
+    r = JobListPage(jobs)
+    must str.contains(r.result, "Jobs")
 done

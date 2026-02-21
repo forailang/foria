@@ -9,7 +9,7 @@ func Layout
     fail text
 body
     data = {title: title, content: content}
-        template = """
+    template = """
         <!DOCTYPE html>
         <html>
         <head>
@@ -64,12 +64,12 @@ body
             <div class="container">{{{content}}}</div>
             </body>
             </html>
-            """
-            html = tmpl.render(template, data)
-            return html
-        done
+    """
+    html = tmpl.render(template, data)
+    return html
+done
 
 test Layout
-  r = Layout("Test Page", "<p>content</p>")
-  must str.contains(r.result, "Test Page")
+    r = Layout("Test Page", "<p>content</p>")
+    must str.contains(r.result, "Test Page")
 done

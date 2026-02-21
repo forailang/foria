@@ -45,35 +45,35 @@ body
         next :result to kind
     done
     branch when kind == "help"
-        step data.HelpText() then
-            next :result to output
-        done
-        step display.Print(output to :text) done
+    step data.HelpText() then
+        next :result to output
     done
-    branch when kind == "ls"
-        step data.Namespaces() then
-            next :result to output
-        done
-        step display.Print(output to :text) done
-    done
-    branch when kind == "quit"
-        step display.Print("Goodbye!" to :text) done
-    done
-    branch when kind == "ns"
-        step data.NsDetail(cmd to :ns) then
-            next :result to output
-        done
-        step display.Print(output to :text) done
-    done
-    branch when kind == "op"
-        step data.OpDetail(cmd to :op) then
-            next :result to output
-        done
-        step display.Print(output to :text) done
-    done
-    branch when kind == "unknown"
-        step display.PrintError(cmd to :cmd) done
-    done
+    step display.Print(output to :text) done
+done
+branch when kind == "ls"
+step data.Namespaces() then
+    next :result to output
+done
+step display.Print(output to :text) done
+done
+branch when kind == "quit"
+step display.Print("Goodbye!" to :text) done
+done
+branch when kind == "ns"
+step data.NsDetail(cmd to :ns) then
+    next :result to output
+done
+step display.Print(output to :text) done
+done
+branch when kind == "op"
+step data.OpDetail(cmd to :op) then
+    next :result to output
+done
+step display.Print(output to :text) done
+done
+branch when kind == "unknown"
+step display.PrintError(cmd to :cmd) done
+done
 done
 
 test Start

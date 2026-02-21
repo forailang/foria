@@ -28,7 +28,7 @@ body
 
     data = {id: jid, short_id: short_id, title: jtitle, spec: escaped_spec, status: jstatus, badge_class: badge_class, docker_image: jimage, repo_url: jrepo, branch: jbranch, attempt: jattempt, max_attempts: jmax, created_at: jcreated, updated_at: jupdated, created_by: jcreator}
 
-        html = tmpl.render("""
+    html = tmpl.render("""
         <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <h1>{{title}}</h1>
@@ -53,12 +53,12 @@ body
         <div style="margin-top:16px">
         <a href="/">&larr; Back to Jobs</a>
         </div>
-        """, data)
-        return html
-    done
+    """, data)
+    return html
+done
 
 test JobDetailPage
-  job = {id: "abc", title: "Test Job", spec: "Do stuff", status: "Queued", docker_image: "python", repo_url: "https://github.com/org/repo", branch: "main", attempt: 0, max_attempts: 3, created_at: "2024-01-01", updated_at: "2024-01-01", created_by: "alice"}
-  r = JobDetailPage(job)
-  must str.contains(r.result, "Test Job")
+    job = {id: "abc", title: "Test Job", spec: "Do stuff", status: "Queued", docker_image: "python", repo_url: "https://github.com/org/repo", branch: "main", attempt: 0, max_attempts: 3, created_at: "2024-01-01", updated_at: "2024-01-01", created_by: "alice"}
+    r = JobDetailPage(job)
+    must str.contains(r.result, "Test Job")
 done

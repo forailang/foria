@@ -15,7 +15,7 @@ body
 done
 
 test Welcome
-  # Sink: outputs welcome banner, verify it succeeds
-  r = Welcome()
-  must r == true
+    # Sink: outputs welcome banner, verify it succeeds
+    r = Welcome()
+    must r == true
 done

@@ -18,7 +18,7 @@ body
 
     data = {id: iid, name: iname, ecr_uri: iuri, dockerfile: idockerfile, description: idesc, created_at: icreated, has_dockerfile: has_dockerfile}
 
-        html = tmpl.render("""
+    html = tmpl.render("""
         <div class="card">
         <h1>{{name}}</h1>
         <table class="meta-table">
@@ -37,12 +37,12 @@ body
         <div style="margin-top:16px">
         <a href="/images">&larr; Back to Images</a>
         </div>
-        """, data)
-        return html
-    done
+    """, data)
+    return html
+done
 
 test ImageDetailPage
-  image = {id: "abc", name: "python-dev", ecr_uri: "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag", dockerfile: "FROM ubuntu", description: "A test image", created_at: "2024-01-01"}
-  r = ImageDetailPage(image)
-  must str.contains(r.result, "python-dev")
+    image = {id: "abc", name: "python-dev", ecr_uri: "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag", dockerfile: "FROM ubuntu", description: "A test image", created_at: "2024-01-01"}
+    r = ImageDetailPage(image)
+    must str.contains(r.result, "python-dev")
 done

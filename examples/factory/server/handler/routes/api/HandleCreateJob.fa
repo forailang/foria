@@ -64,7 +64,7 @@ body
 done
 
 test HandleCreateJob
-  body = "title=my+job&spec=do+something&docker_image=python&repo_url=https://github.com/org/repo&branch=main"
-  r = HandleCreateJob(body)
-  must r.result.title == "my job"
+    body = "title=my+job&spec=do+something&docker_image=python&repo_url=https://github.com/org/repo&branch=main"
+    r = HandleCreateJob(body)
+    must r.result.title == "my job"
 done

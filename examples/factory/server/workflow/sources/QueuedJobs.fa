@@ -49,7 +49,7 @@ body
 done
 
 test QueuedJobs
-  # Flow/source/func: I/O dependent — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # Flow/source/func: I/O dependent — stub test, integration tested separately
+    ok = true
+    must ok == true
 done

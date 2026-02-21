@@ -40,45 +40,45 @@ body
         next :result to handler
     done
     branch when handler == "job_list"
-        step routes.JobList(conn to :conn, req to :req) done
-    done
-    branch when handler == "job_create_form"
-        step routes.JobCreateForm(req to :req) done
-    done
-    branch when handler == "create_job_post"
-        step routes.CreateJob(conn to :conn, req to :req) done
-    done
-    branch when handler == "job_detail"
-        step routes.JobDetail(conn to :conn, req to :req) done
-    done
-    branch when handler == "image_list"
-        step routes.ImageList(conn to :conn, req to :req) done
-    done
-    branch when handler == "image_create_form"
-        step routes.ImageCreateForm(req to :req) done
-    done
-    branch when handler == "create_image_post"
-        step routes.CreateImage(conn to :conn, req to :req) done
-    done
-    branch when handler == "image_detail"
-        step routes.ImageDetail(conn to :conn, req to :req) done
-    done
-    branch when handler == "container_list"
-        step routes.ContainerList(conn to :conn, req to :req) done
-    done
-    branch when handler == "container_detail"
-        step routes.ContainerDetail(conn to :conn, req to :req) done
-    done
-    branch when handler == "not_found"
-        step routes.NotFound(req to :req) done
-    done
-    state r0 = obj.new()
-    state result = obj.set(r0, "ok", true)
-    emit result to :result
+    step routes.JobList(conn to :conn, req to :req) done
+done
+branch when handler == "job_create_form"
+step routes.JobCreateForm(req to :req) done
+done
+branch when handler == "create_job_post"
+step routes.CreateJob(conn to :conn, req to :req) done
+done
+branch when handler == "job_detail"
+step routes.JobDetail(conn to :conn, req to :req) done
+done
+branch when handler == "image_list"
+step routes.ImageList(conn to :conn, req to :req) done
+done
+branch when handler == "image_create_form"
+step routes.ImageCreateForm(req to :req) done
+done
+branch when handler == "create_image_post"
+step routes.CreateImage(conn to :conn, req to :req) done
+done
+branch when handler == "image_detail"
+step routes.ImageDetail(conn to :conn, req to :req) done
+done
+branch when handler == "container_list"
+step routes.ContainerList(conn to :conn, req to :req) done
+done
+branch when handler == "container_detail"
+step routes.ContainerDetail(conn to :conn, req to :req) done
+done
+branch when handler == "not_found"
+step routes.NotFound(req to :req) done
+done
+state r0 = obj.new()
+state result = obj.set(r0, "ok", true)
+emit result to :result
 done
 
 test HandleRequest
-  # Flow: routes HTTP requests — stub test, integration tested separately
-  ok = true
-  must ok == true
+    # Flow: routes HTTP requests — stub test, integration tested separately
+    ok = true
+    must ok == true
 done
