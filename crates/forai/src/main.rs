@@ -493,19 +493,12 @@ async fn run() -> Result<(), String> {
 
             eprintln!("building {} v{}", config.name, config.version);
 
-            // Step 0: Format check
+            // Step 0: Format
             let src_dir = source_path.parent().unwrap_or(&project_root);
-            let (unformatted, fmt_total) = formatter::fmt_path(src_dir, true)?;
-            if !unformatted.is_empty() {
-                for f in &unformatted {
-                    eprintln!("  unformatted: {}", f.display());
-                }
-                return Err(format!(
-                    "{} file(s) need formatting — run `forai fmt` first",
-                    unformatted.len()
-                ));
-            }
-            if fmt_total > 0 {
+            let (formatted, fmt_total) = formatter::fmt_path(src_dir, false)?;
+            if !formatted.is_empty() {
+                eprintln!("  fmt      {} file(s) formatted", formatted.len());
+            } else if fmt_total > 0 {
                 eprintln!("  fmt      ok ({} files)", fmt_total);
             }
 
