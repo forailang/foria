@@ -1,11 +1,10 @@
 use crate::ast::{
     Arg, BareLoopBlock, BinOp, CaseArm, CaseBlock, ConstraintValue, ContinuationWire, DocsDecl,
-    Emit, EnumDecl, Expr, ExprAssign, FieldDecl, FieldDocsEntry, Flow, FlowBranchBlock,
-    FlowDecl, FlowEmitStmt, FlowGraph, FlowSendNowait,
-    FlowStateDecl, FlowStatement, FuncDecl, InterpExpr, LoopBlock, ModuleAst, NextWire,
-    NodeAssign, Pattern, Port, PortDecl, PortMapping, SendNowait, Span, Statement, StepBlock,
-    StepThenItem, SyncBlock, SyncOptions, TakeDecl, TestDecl, TopDecl, TypeConstraint, TypeDecl,
-    TypeKind, UnaryOp, UsesDecl,
+    Emit, EnumDecl, Expr, ExprAssign, FieldDecl, FieldDocsEntry, Flow, FlowBranchBlock, FlowDecl,
+    FlowEmitStmt, FlowGraph, FlowSendNowait, FlowStateDecl, FlowStatement, FuncDecl, InterpExpr,
+    LoopBlock, ModuleAst, NextWire, NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping,
+    SendNowait, Span, Statement, StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl,
+    TestDecl, TopDecl, TypeConstraint, TypeDecl, TypeKind, UnaryOp, UsesDecl,
 };
 use crate::lexer::{InterpPart, Token, TokenKind, lex};
 use serde_json::json;
@@ -30,11 +29,10 @@ fn parse_interp_parts(parts: &[InterpPart]) -> Result<Expr, ParseError> {
         match part {
             InterpPart::Lit(s) => segments.push(InterpExpr::Lit(s.clone())),
             InterpPart::Expr(raw) => {
-                let mut p = RuntimeBodyParser::new(raw, "_", "_")
-                    .map_err(|e| ParseError {
-                        message: e.message,
-                        span: e.span,
-                    })?;
+                let mut p = RuntimeBodyParser::new(raw, "_", "_").map_err(|e| ParseError {
+                    message: e.message,
+                    span: e.span,
+                })?;
                 let expr = p.parse_pratt_expr(0)?;
                 segments.push(InterpExpr::Expr(Box::new(expr)));
             }
@@ -69,9 +67,7 @@ fn extract_field_docs(raw: &str) -> (String, Vec<FieldDocsEntry>) {
             // Collect lines until indented "done"
             for inner in lines.by_ref() {
                 let inner_trimmed = inner.trim();
-                if inner_trimmed == "done"
-                    && inner.starts_with(|c: char| c == ' ' || c == '\t')
-                {
+                if inner_trimmed == "done" && inner.starts_with(|c: char| c == ' ' || c == '\t') {
                     break;
                 }
                 if !md.is_empty() {
@@ -153,8 +149,14 @@ pub fn parse_runtime_func_decl_v1(func_decl: &FuncDecl) -> Result<Flow, String> 
             "_return".to_string(),
             "_fail".to_string(),
             vec![
-                Port { name: "_return".to_string(), type_name: ret_type.clone() },
-                Port { name: "_fail".to_string(), type_name: fail_t.clone() },
+                Port {
+                    name: "_return".to_string(),
+                    type_name: ret_type.clone(),
+                },
+                Port {
+                    name: "_fail".to_string(),
+                    type_name: fail_t.clone(),
+                },
             ],
         )
     } else {
@@ -298,8 +300,10 @@ fn lower_flow_statements(
         match stmt {
             FlowStatement::Step(step) => {
                 // Find first Next item for the bind name
-                let bind = if let Some(StepThenItem::Next(first)) =
-                    step.then_body.iter().find(|i| matches!(i, StepThenItem::Next(_)))
+                let bind = if let Some(StepThenItem::Next(first)) = step
+                    .then_body
+                    .iter()
+                    .find(|i| matches!(i, StepThenItem::Next(_)))
                 {
                     first.wire.clone()
                 } else {
@@ -308,11 +312,7 @@ fn lower_flow_statements(
                     name
                 };
 
-                let args: Vec<Arg> = step
-                    .inputs
-                    .iter()
-                    .map(|pm| pm.value.clone())
-                    .collect();
+                let args: Vec<Arg> = step.inputs.iter().map(|pm| pm.value.clone()).collect();
 
                 out.push(Statement::Node(NodeAssign {
                     bind: bind.clone(),
@@ -328,13 +328,13 @@ fn lower_flow_statements(
                         StepThenItem::Emit(e) => {
                             out.push(Statement::Emit(Emit {
                                 output: e.port.clone(),
-                                value_var: e.wire.clone(),
+                                value_expr: Expr::Var(e.wire.clone()),
                             }));
                         }
                         StepThenItem::Fail(f) => {
                             out.push(Statement::Emit(Emit {
                                 output: f.port.clone(),
-                                value_var: f.wire.clone(),
+                                value_expr: Expr::Var(f.wire.clone()),
                             }));
                         }
                     }
@@ -343,13 +343,13 @@ fn lower_flow_statements(
             FlowStatement::Emit(e) => {
                 out.push(Statement::Emit(Emit {
                     output: e.port.clone(),
-                    value_var: e.wire.clone(),
+                    value_expr: Expr::Var(e.wire.clone()),
                 }));
             }
             FlowStatement::Fail(f) => {
                 out.push(Statement::Emit(Emit {
                     output: f.port.clone(),
-                    value_var: f.wire.clone(),
+                    value_expr: Expr::Var(f.wire.clone()),
                 }));
             }
             FlowStatement::State(state) => {
@@ -471,6 +471,9 @@ impl RuntimeBodyParser {
         }
         if self.peek_keyword("loop") {
             return self.parse_loop();
+        }
+        if self.peek_keyword("on") {
+            return self.parse_on();
         }
         if self.peek_symbol('[') {
             return self.parse_sync();
@@ -600,6 +603,60 @@ impl RuntimeBodyParser {
         }))
     }
 
+    fn parse_on(&mut self) -> Result<Statement, ParseError> {
+        self.expect_keyword("on")?;
+
+        // Expect :eventTag
+        self.expect_symbol(':')?;
+        let event_tag = self.expect_ident("expected event tag after `:`")?;
+
+        // Expect `from`
+        self.expect_keyword("from")?;
+
+        // Parse the source call as an expression (e.g. http.server.accept(srv))
+        let call_expr = self.parse_prefix_expr()?;
+
+        // Extract op and args from the call expression
+        let (source_op, source_args) = match call_expr {
+            Expr::Call { func, args } => {
+                let old_args: Vec<Arg> = args
+                    .iter()
+                    .map(|a| match a {
+                        Expr::Lit(v) => Arg::Lit { lit: v.clone() },
+                        Expr::Var(v) => Arg::Var { var: v.clone() },
+                        _ => Arg::Lit {
+                            lit: serde_json::Value::Null,
+                        },
+                    })
+                    .collect();
+                (func, old_args)
+            }
+            _ => {
+                return self.err_here("expected op call after `from` in on block");
+            }
+        };
+
+        // Expect `to`
+        self.expect_keyword("to")?;
+
+        // Parse bind variable
+        let bind = self.expect_ident("expected variable name after `to`")?;
+
+        self.expect_line_end("expected newline after on header")?;
+
+        let body = self.parse_block(&[BodyStop::Done])?;
+        self.expect_keyword("done")?;
+        self.expect_line_end("expected newline after on `done`")?;
+
+        Ok(Statement::On(OnBlock {
+            event_tag,
+            source_op,
+            source_args,
+            bind,
+            body,
+        }))
+    }
+
     fn parse_sync(&mut self) -> Result<Statement, ParseError> {
         self.expect_symbol('[')?;
         let targets = self.parse_ident_list(']')?;
@@ -637,31 +694,31 @@ impl RuntimeBodyParser {
 
     fn parse_emit_stmt(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword("emit")?;
-        let value_var = self.parse_var_path("expected variable after `emit`")?;
+        let value_expr = self.parse_pratt_expr(0)?;
         self.expect_line_end("expected newline after emit statement")?;
         Ok(Statement::Emit(Emit {
             output: self.emit_output_name.clone(),
-            value_var,
+            value_expr,
         }))
     }
 
     fn parse_fail_stmt(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword("fail")?;
-        let value_var = self.parse_var_path("expected variable after `fail`")?;
+        let value_expr = self.parse_pratt_expr(0)?;
         self.expect_line_end("expected newline after fail statement")?;
         Ok(Statement::Emit(Emit {
             output: self.fail_output_name.clone(),
-            value_var,
+            value_expr,
         }))
     }
 
     fn parse_return_stmt(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword("return")?;
-        let value_var = self.parse_var_path("expected variable after `return`")?;
+        let value_expr = self.parse_pratt_expr(0)?;
         self.expect_line_end("expected newline after return statement")?;
         Ok(Statement::Emit(Emit {
             output: self.emit_output_name.clone(),
-            value_var,
+            value_expr,
         }))
     }
 
@@ -696,13 +753,18 @@ impl RuntimeBodyParser {
         // Backward compat: if the expression is a simple Call with only Var/Lit args,
         // produce a Statement::Node to keep the old IR/runtime path.
         if let Expr::Call { func, args } = &expr {
-            let all_simple = args.iter().all(|a| matches!(a, Expr::Var(_) | Expr::Lit(_)));
+            let all_simple = args
+                .iter()
+                .all(|a| matches!(a, Expr::Var(_) | Expr::Lit(_)));
             if all_simple {
-                let old_args: Vec<Arg> = args.iter().map(|a| match a {
-                    Expr::Lit(v) => Arg::Lit { lit: v.clone() },
-                    Expr::Var(v) => Arg::Var { var: v.clone() },
-                    _ => unreachable!(),
-                }).collect();
+                let old_args: Vec<Arg> = args
+                    .iter()
+                    .map(|a| match a {
+                        Expr::Lit(v) => Arg::Lit { lit: v.clone() },
+                        Expr::Var(v) => Arg::Var { var: v.clone() },
+                        _ => unreachable!(),
+                    })
+                    .collect();
                 return Ok(Statement::Node(NodeAssign {
                     bind: bind.clone(),
                     node_id: bind,
@@ -754,6 +816,18 @@ impl RuntimeBodyParser {
                 break;
             }
 
+            // Postfix bracket indexing: expr[index]
+            if self.peek_symbol('[') {
+                self.bump(); // consume '['
+                let index = self.parse_pratt_expr(0)?;
+                self.expect_symbol(']')?;
+                lhs = Expr::Index {
+                    expr: Box::new(lhs),
+                    index: Box::new(index),
+                };
+                continue;
+            }
+
             let Some((l_bp, r_bp, op)) = Self::infix_bp(&self.current().kind) else {
                 break;
             };
@@ -796,7 +870,9 @@ impl RuntimeBodyParser {
                 items.push(self.parse_pratt_expr(0)?);
                 while self.peek_symbol(',') {
                     self.bump();
-                    if self.peek_symbol(']') { break; }
+                    if self.peek_symbol(']') {
+                        break;
+                    }
                     items.push(self.parse_pratt_expr(0)?);
                 }
             }
@@ -814,7 +890,9 @@ impl RuntimeBodyParser {
                 pairs.push((key, value));
                 while self.peek_symbol(',') {
                     self.bump();
-                    if self.peek_symbol('}') { break; }
+                    if self.peek_symbol('}') {
+                        break;
+                    }
                     let key = self.expect_ident("expected key identifier in dict literal")?;
                     self.expect_symbol(':')?;
                     let value = self.parse_pratt_expr(0)?;
@@ -1075,9 +1153,7 @@ impl RuntimeBodyParser {
         stop.iter().any(|marker| match marker {
             BodyStop::Done => self.peek_keyword("done"),
             BodyStop::Else => self.peek_keyword("else"),
-            BodyStop::ElseIf => {
-                self.peek_keyword("else") && self.peek_keyword_at(1, "if")
-            }
+            BodyStop::ElseIf => self.peek_keyword("else") && self.peek_keyword_at(1, "if"),
             BodyStop::When => self.peek_keyword("when"),
             BodyStop::DoneWithExports => self.peek_keyword("done") && self.peek_symbol_at(1, '['),
         })
@@ -1409,14 +1485,20 @@ impl FlowBodyParser {
             let value = match self.current().kind.clone() {
                 TokenKind::StringLit(s) => {
                     self.bump();
-                    Arg::Lit { lit: serde_json::json!(s) }
+                    Arg::Lit {
+                        lit: serde_json::json!(s),
+                    }
                 }
                 TokenKind::Number(n) => {
                     self.bump();
                     if let Ok(v) = n.parse::<i64>() {
-                        Arg::Lit { lit: serde_json::json!(v) }
+                        Arg::Lit {
+                            lit: serde_json::json!(v),
+                        }
                     } else if let Ok(v) = n.parse::<f64>() {
-                        Arg::Lit { lit: serde_json::json!(v) }
+                        Arg::Lit {
+                            lit: serde_json::json!(v),
+                        }
                     } else {
                         return self.err_here("invalid numeric literal in port mapping");
                     }
@@ -1424,7 +1506,9 @@ impl FlowBodyParser {
                 TokenKind::Ident(ref v) if v == "true" || v == "false" => {
                     let b = v == "true";
                     self.bump();
-                    Arg::Lit { lit: serde_json::json!(b) }
+                    Arg::Lit {
+                        lit: serde_json::json!(b),
+                    }
                 }
                 TokenKind::Ident(_) => {
                     let ident = self.expect_ident("expected wire label in port mapping")?;
@@ -1645,6 +1729,18 @@ impl FlowBodyParser {
                 break;
             }
 
+            // Postfix bracket indexing: expr[index]
+            if self.peek_symbol('[') {
+                self.bump(); // consume '['
+                let index = self.parse_pratt_expr(0)?;
+                self.expect_symbol(']')?;
+                lhs = Expr::Index {
+                    expr: Box::new(lhs),
+                    index: Box::new(index),
+                };
+                continue;
+            }
+
             let Some((l_bp, r_bp, op)) = Self::infix_bp(&self.current().kind) else {
                 break;
             };
@@ -1686,7 +1782,9 @@ impl FlowBodyParser {
                 items.push(self.parse_pratt_expr(0)?);
                 while self.peek_symbol(',') {
                     self.bump();
-                    if self.peek_symbol(']') { break; }
+                    if self.peek_symbol(']') {
+                        break;
+                    }
                     items.push(self.parse_pratt_expr(0)?);
                 }
             }
@@ -1703,7 +1801,9 @@ impl FlowBodyParser {
                 pairs.push((key, value));
                 while self.peek_symbol(',') {
                     self.bump();
-                    if self.peek_symbol('}') { break; }
+                    if self.peek_symbol('}') {
+                        break;
+                    }
                     let key = self.expect_ident("expected key identifier in dict literal")?;
                     self.expect_symbol(':')?;
                     let value = self.parse_pratt_expr(0)?;
@@ -1857,9 +1957,9 @@ impl<'a> TokenParser<'a> {
                 false
             };
 
-            if self.peek_keyword("uses") {
+            if self.peek_keyword("use") {
                 if open {
-                    return self.err_here("`open uses` is not valid");
+                    return self.err_here("`open use` is not valid");
                 }
                 decls.push(TopDecl::Uses(self.parse_uses()?));
             } else if self.peek_keyword("docs") {
@@ -1906,10 +2006,22 @@ impl<'a> TokenParser<'a> {
     }
 
     fn parse_uses(&mut self) -> Result<UsesDecl, ParseError> {
-        let span = self.expect_keyword("uses")?.span;
-        let module = self.expect_ident_value("expected module name after `uses`")?;
-        self.expect_line_end("expected newline after uses declaration")?;
-        Ok(UsesDecl { module, span })
+        let span = self.expect_keyword("use")?.span;
+        let name = self.expect_ident_value("expected name after `use`")?;
+        self.expect_keyword("from")?;
+        let path = self.expect_string_lit_value("expected path string after `from`")?;
+        self.expect_line_end("expected newline after use declaration")?;
+        Ok(UsesDecl { name, path, span })
+    }
+
+    fn expect_string_lit_value(&mut self, message: &str) -> Result<String, ParseError> {
+        match self.current().kind.clone() {
+            TokenKind::StringLit(s) => {
+                self.bump();
+                Ok(s)
+            }
+            _ => self.err_here(message),
+        }
     }
 
     fn parse_docs(&mut self) -> Result<DocsDecl, ParseError> {
@@ -1995,28 +2107,12 @@ impl<'a> TokenParser<'a> {
 
         self.skip_newlines();
 
-        let body_text = if self.peek_keyword("body") {
-            // Backward-compatible: body ... done
-            self.expect_keyword("body")?;
-            self.expect_line_end("expected newline after `body`")?;
-            self.collect_body_text(kw_span, &["case", "loop", "sync", "if"])?
-        } else if self.peek_keyword("init") {
-            // init ... from expr [as var] ... done
-            self.expect_keyword("init")?;
-            self.expect_line_end("expected newline after `init`")?;
-            let init_text = self.collect_text_until(kw_span, "from", &["case", "loop", "sync", "if"])?;
-            let from_body = self.parse_source_from(kw_span)?;
-            if init_text.is_empty() {
-                from_body
-            } else {
-                format!("{}\n{}", init_text, from_body)
-            }
-        } else if self.peek_keyword("from") {
-            // from expr [as var] ... done
-            self.parse_source_from(kw_span)?
-        } else {
-            return self.err_here("expected `body`, `init`, or `from` in source");
-        };
+        if !self.peek_keyword("body") {
+            return self.err_here("expected `body` in source");
+        }
+        self.expect_keyword("body")?;
+        self.expect_line_end("expected newline after `body`")?;
+        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if", "on"])?;
 
         Ok(FuncDecl {
             name,
@@ -2028,55 +2124,6 @@ impl<'a> TokenParser<'a> {
             body_text,
             span: kw_span,
         })
-    }
-
-    /// Parse a `from expr [as var] ... done` clause and return the generated body_text
-    /// containing a bare loop.
-    fn parse_source_from(&mut self, kw_span: Span) -> Result<String, ParseError> {
-        self.expect_keyword("from")?;
-
-        // Collect the expression tokens until `as` (at paren depth 0) or newline
-        let expr_start = self.current().start;
-        let mut paren_depth = 0i32;
-        while !self.at_eof() {
-            match &self.current().kind {
-                TokenKind::Symbol('(') => { paren_depth += 1; self.bump(); }
-                TokenKind::Symbol(')') => { paren_depth -= 1; self.bump(); }
-                TokenKind::Ident(s) if s == "as" && paren_depth == 0 => break,
-                TokenKind::Newline => break,
-                _ => { self.bump(); }
-            }
-        }
-        let expr_text = self.source[expr_start..self.current().start].trim().to_string();
-        if expr_text.is_empty() {
-            return self.err_here("expected expression after `from`");
-        }
-
-        // Check for `as var`
-        let binding = if self.peek_keyword("as") {
-            self.bump(); // consume `as`
-            let var = self.expect_ident_value("expected variable name after `as`")?;
-            Some(var)
-        } else {
-            None
-        };
-
-        self.expect_line_end("expected newline after `from` clause")?;
-        self.skip_newlines();
-
-        // Check if next token is `done` (simple source) or a transform body
-        if self.peek_keyword("done") {
-            self.bump(); // consume `done`
-            self.consume_newline();
-            // Simple source: auto-emit
-            let var = binding.unwrap_or_else(|| "_from".to_string());
-            Ok(format!("loop\n  {} = {}\n  emit {}\ndone", var, expr_text, var))
-        } else {
-            // Transform source: collect body until `done`
-            let transform_body = self.collect_body_text(kw_span, &["case", "loop", "sync", "if"])?;
-            let var = binding.unwrap_or_else(|| "_".to_string());
-            Ok(format!("loop\n  {} = {}\n{}\ndone", var, expr_text, transform_body))
-        }
     }
 
     fn parse_flow(&mut self) -> Result<FlowDecl, ParseError> {
@@ -2103,7 +2150,16 @@ impl<'a> TokenParser<'a> {
 
     fn parse_header_ports(
         &mut self,
-    ) -> Result<(Vec<TakeDecl>, Vec<PortDecl>, Vec<PortDecl>, Option<String>, Option<String>), ParseError> {
+    ) -> Result<
+        (
+            Vec<TakeDecl>,
+            Vec<PortDecl>,
+            Vec<PortDecl>,
+            Option<String>,
+            Option<String>,
+        ),
+        ParseError,
+    > {
         let mut takes = Vec::new();
         let mut emits = Vec::new();
         let mut fails = Vec::new();
@@ -2219,41 +2275,6 @@ impl<'a> TokenParser<'a> {
         }
 
         self.err_at(open_span, "unclosed block")
-    }
-
-    /// Like `collect_body_text`, but stops at a custom keyword instead of `done`.
-    /// Tracks nesting of case/loop/sync blocks so inner `done` keywords don't confuse it.
-    fn collect_text_until(
-        &mut self,
-        open_span: Span,
-        stop_keyword: &str,
-        nesting_keywords: &[&str],
-    ) -> Result<String, ParseError> {
-        let start = self.current().start;
-        let mut depth = 0i32;
-        let mut prev_was_else = false;
-        while !self.at_eof() {
-            if let Some(word) = self.current_ident() {
-                if word == stop_keyword && depth == 0 {
-                    let end = self.current().start;
-                    return Ok(self.source[start..end].trim_end().to_string());
-                } else if word == "done" {
-                    depth -= 1;
-                    prev_was_else = false;
-                } else if word == "if" && nesting_keywords.contains(&"if") && prev_was_else {
-                    prev_was_else = false;
-                } else if nesting_keywords.contains(&word) {
-                    depth += 1;
-                    prev_was_else = false;
-                } else {
-                    prev_was_else = word == "else";
-                }
-            } else {
-                prev_was_else = false;
-            }
-            self.bump();
-        }
-        self.err_at(open_span, &format!("expected `{}` in source", stop_keyword))
     }
 
     fn parse_take(&mut self) -> Result<TakeDecl, ParseError> {
@@ -2726,12 +2747,8 @@ body
 done
 "#;
         let module = parse_module_v1(src).expect("module should parse");
-        let err =
-            parse_flow_graph_from_module_v1(&module).expect_err("should reject bind syntax");
-        assert!(
-            err.contains("expected `step`"),
-            "got: {err}"
-        );
+        let err = parse_flow_graph_from_module_v1(&module).expect_err("should reject bind syntax");
+        assert!(err.contains("expected `step`"), "got: {err}");
     }
 
     #[test]
@@ -3177,7 +3194,7 @@ done
         match &flow.body[1] {
             Statement::Emit(e) => {
                 assert_eq!(e.output, "result");
-                assert_eq!(e.value_var, "output");
+                assert!(matches!(&e.value_expr, Expr::Var(v) if v == "output"));
             }
             _ => panic!("expected Statement::Emit"),
         }
@@ -3214,7 +3231,7 @@ done
     #[test]
     fn flow_compiles_via_parse_runtime_flow_v1() {
         let src = r#"
-uses calc
+use calc from "./calc"
 
 docs main
   Pipes through two steps.
@@ -3249,7 +3266,7 @@ func Calc
   emit result as Bar
   fail error as Baz
 body
-  x = math.add(input, 1.0)
+  x = math.floor(input)
   emit x
 done
 "#;
@@ -3288,21 +3305,19 @@ done
         let flow = parse_runtime_flow_v1(src).expect("should parse");
         // Should be (2 + (3 * 4)) = BinOp(Add, Lit(2), BinOp(Mul, Lit(3), Lit(4)))
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::BinOp { op, lhs, rhs } => {
-                        assert_eq!(*op, BinOp::Add);
-                        assert!(matches!(**lhs, Expr::Lit(_)));
-                        match &**rhs {
-                            Expr::BinOp { op: inner_op, .. } => {
-                                assert_eq!(*inner_op, BinOp::Mul);
-                            }
-                            _ => panic!("expected BinOp(Mul) on rhs"),
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::BinOp { op, lhs, rhs } => {
+                    assert_eq!(*op, BinOp::Add);
+                    assert!(matches!(**lhs, Expr::Lit(_)));
+                    match &**rhs {
+                        Expr::BinOp { op: inner_op, .. } => {
+                            assert_eq!(*inner_op, BinOp::Mul);
                         }
+                        _ => panic!("expected BinOp(Mul) on rhs"),
                     }
-                    _ => panic!("expected BinOp"),
                 }
-            }
+                _ => panic!("expected BinOp"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3354,15 +3369,19 @@ done
 "#;
         let flow = parse_runtime_flow_v1(src).expect("should parse");
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::BinOp { op, lhs, .. } => {
-                        assert_eq!(*op, BinOp::Add);
-                        assert!(matches!(**lhs, Expr::UnaryOp { op: UnaryOp::Neg, .. }));
-                    }
-                    _ => panic!("expected BinOp"),
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::BinOp { op, lhs, .. } => {
+                    assert_eq!(*op, BinOp::Add);
+                    assert!(matches!(
+                        **lhs,
+                        Expr::UnaryOp {
+                            op: UnaryOp::Neg,
+                            ..
+                        }
+                    ));
                 }
-            }
+                _ => panic!("expected BinOp"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3382,20 +3401,18 @@ done
         let flow = parse_runtime_flow_v1(src).expect("should parse");
         // Should be 2 ** (3 ** 2) due to right-assoc
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::BinOp { op, rhs, .. } => {
-                        assert_eq!(*op, BinOp::Pow);
-                        match &**rhs {
-                            Expr::BinOp { op: inner_op, .. } => {
-                                assert_eq!(*inner_op, BinOp::Pow);
-                            }
-                            _ => panic!("expected BinOp(Pow) on rhs"),
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::BinOp { op, rhs, .. } => {
+                    assert_eq!(*op, BinOp::Pow);
+                    match &**rhs {
+                        Expr::BinOp { op: inner_op, .. } => {
+                            assert_eq!(*inner_op, BinOp::Pow);
                         }
+                        _ => panic!("expected BinOp(Pow) on rhs"),
                     }
-                    _ => panic!("expected BinOp"),
                 }
-            }
+                _ => panic!("expected BinOp"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3408,22 +3425,20 @@ func Calc
   emit result as Bar
   fail error as Baz
 body
-  x = math.add(a, b) + 1
+  x = math.round(a, b) + 1
   emit x
 done
 "#;
         let flow = parse_runtime_flow_v1(src).expect("should parse");
-        // math.add(a, b) + 1 → BinOp(Add, Call, Lit)
+        // math.round(a, b) + 1 → BinOp(Add, Call, Lit)
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::BinOp { op, lhs, .. } => {
-                        assert_eq!(*op, BinOp::Add);
-                        assert!(matches!(**lhs, Expr::Call { .. }));
-                    }
-                    _ => panic!("expected BinOp"),
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::BinOp { op, lhs, .. } => {
+                    assert_eq!(*op, BinOp::Add);
+                    assert!(matches!(**lhs, Expr::Call { .. }));
                 }
-            }
+                _ => panic!("expected BinOp"),
+            },
             _ => panic!("expected ExprAssign (call + literal is not a simple call)"),
         }
     }
@@ -3452,7 +3467,13 @@ done
         }
         match &flow.body[1] {
             Statement::ExprAssign(ea) => {
-                assert!(matches!(&ea.expr, Expr::BinOp { op: BinOp::GtEq, .. }));
+                assert!(matches!(
+                    &ea.expr,
+                    Expr::BinOp {
+                        op: BinOp::GtEq,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected ExprAssign"),
         }
@@ -3485,15 +3506,13 @@ done
         let flow = parse_runtime_flow_v1(src).expect("should parse");
         // Should be (true && false) || true because && binds tighter than ||
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::BinOp { op, lhs, .. } => {
-                        assert_eq!(*op, BinOp::Or);
-                        assert!(matches!(**lhs, Expr::BinOp { op: BinOp::And, .. }));
-                    }
-                    _ => panic!("expected BinOp(Or)"),
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::BinOp { op, lhs, .. } => {
+                    assert_eq!(*op, BinOp::Or);
+                    assert!(matches!(**lhs, Expr::BinOp { op: BinOp::And, .. }));
                 }
-            }
+                _ => panic!("expected BinOp(Or)"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3625,12 +3644,10 @@ done
 "#;
         let flow = parse_runtime_flow_v1(source).unwrap();
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::ListLit(items) => assert_eq!(items.len(), 0),
-                    _ => panic!("expected ListLit"),
-                }
-            }
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::ListLit(items) => assert_eq!(items.len(), 0),
+                _ => panic!("expected ListLit"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3678,12 +3695,10 @@ done
 "#;
         let flow = parse_runtime_flow_v1(source).unwrap();
         match &flow.body[0] {
-            Statement::ExprAssign(ea) => {
-                match &ea.expr {
-                    Expr::DictLit(pairs) => assert_eq!(pairs.len(), 0),
-                    _ => panic!("expected DictLit"),
-                }
-            }
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::DictLit(pairs) => assert_eq!(pairs.len(), 0),
+                _ => panic!("expected DictLit"),
+            },
             _ => panic!("expected ExprAssign"),
         }
     }
@@ -3768,7 +3783,12 @@ done
             FlowStatement::State(s) => {
                 assert_eq!(s.bind, "conn");
                 assert_eq!(s.callee, "db.open");
-                assert_eq!(s.args, vec![Arg::Var { var: "port".to_string() }]);
+                assert_eq!(
+                    s.args,
+                    vec![Arg::Var {
+                        var: "port".to_string()
+                    }]
+                );
             }
             _ => panic!("expected State"),
         }
@@ -3950,7 +3970,9 @@ done
                 assert_eq!(s.inputs.len(), 4);
                 assert!(matches!(&s.inputs[0].value, Arg::Var { var } if var == "conn_id"));
                 assert_eq!(s.inputs[1].port, "status");
-                assert!(matches!(&s.inputs[1].value, Arg::Lit { lit } if lit == &serde_json::json!(200)));
+                assert!(
+                    matches!(&s.inputs[1].value, Arg::Lit { lit } if lit == &serde_json::json!(200))
+                );
                 assert!(matches!(&s.inputs[2].value, Arg::Var { var } if var == "hdrs"));
                 assert!(matches!(&s.inputs[3].value, Arg::Var { var } if var == "html"));
             }
@@ -4024,10 +4046,14 @@ body
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
-        let funcs: Vec<&FuncDecl> = module.decls.iter().filter_map(|d| match d {
-            TopDecl::Func(f) => Some(f),
-            _ => None,
-        }).collect();
+        let funcs: Vec<&FuncDecl> = module
+            .decls
+            .iter()
+            .filter_map(|d| match d {
+                TopDecl::Func(f) => Some(f),
+                _ => None,
+            })
+            .collect();
         let flow = parse_runtime_func_decl_v1(funcs[0]).expect("should compile v2 func");
         assert_eq!(flow.name, "Compute");
         assert_eq!(flow.inputs.len(), 1);
@@ -4041,7 +4067,7 @@ done
         match &flow.body[1] {
             Statement::Emit(e) => {
                 assert_eq!(e.output, "_return");
-                assert_eq!(e.value_var, "result");
+                assert!(matches!(&e.value_expr, Expr::Var(v) if v == "result"));
             }
             other => panic!("expected Emit from return, got: {other:?}"),
         }
@@ -4132,8 +4158,7 @@ source HTTPRequests
   fail error as text
 body
   srv = http.server.listen(port)
-  loop
-    req = http.server.accept(srv)
+  on :request from http.server.accept(srv) to req
     emit req
   done
 done
@@ -4160,77 +4185,61 @@ done
     }
 
     #[test]
-    fn parses_source_with_from() {
-        let src = r#"
-source Commands
-  emit cmd as text
-from term.prompt("docs> ")
-done
-"#;
-        let module = parse_module_v1(src).expect("module should parse");
-        assert_eq!(module.decls.len(), 1);
-        match &module.decls[0] {
-            TopDecl::Source(f) => {
-                assert_eq!(f.name, "Commands");
-                assert!(f.body_text.contains("loop"));
-                assert!(f.body_text.contains("term.prompt(\"docs> \")"));
-                assert!(f.body_text.contains("emit _from"));
-            }
-            _ => panic!("expected source decl"),
-        }
-    }
-
-    #[test]
-    fn parses_source_with_init_from() {
+    fn parses_source_with_on_block() {
         let src = r#"
 source HTTPRequests
   take port as long
   emit req as dict
-init
+  fail error as text
+body
   srv = http.server.listen(port)
-from http.server.accept(srv)
+  on :request from http.server.accept(srv) to req
+    emit req
+  done
 done
 "#;
-        let module = parse_module_v1(src).expect("module should parse");
-        assert_eq!(module.decls.len(), 1);
-        match &module.decls[0] {
-            TopDecl::Source(f) => {
-                assert_eq!(f.name, "HTTPRequests");
-                assert!(f.body_text.contains("srv = http.server.listen(port)"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("loop"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("http.server.accept(srv)"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("emit _from"), "body: {}", f.body_text);
+        let flow = parse_runtime_flow_v1(src).expect("should parse");
+        assert_eq!(flow.body.len(), 2); // srv = ..., on block
+        match &flow.body[1] {
+            Statement::On(on_block) => {
+                assert_eq!(on_block.event_tag, "request");
+                assert_eq!(on_block.source_op, "http.server.accept");
+                assert_eq!(on_block.source_args.len(), 1);
+                assert_eq!(on_block.bind, "req");
+                assert_eq!(on_block.body.len(), 1);
             }
-            _ => panic!("expected source decl"),
+            other => panic!("expected On, got {:?}", other),
         }
     }
 
     #[test]
-    fn parses_source_with_from_transform() {
+    fn parses_source_with_on_transform() {
         let src = r#"
 source Commands
   emit cmd as text
-from term.prompt("docs> ") as raw
-  trimmed = str.trim(raw)
-  emit trimmed
+  fail error as text
+body
+  on :input from term.prompt("docs> ") to raw
+    trimmed = str.trim(raw)
+    emit trimmed
+  done
 done
 "#;
-        let module = parse_module_v1(src).expect("module should parse");
-        assert_eq!(module.decls.len(), 1);
-        match &module.decls[0] {
-            TopDecl::Source(f) => {
-                assert_eq!(f.name, "Commands");
-                assert!(f.body_text.contains("loop"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("raw = term.prompt(\"docs> \")"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("trimmed = str.trim(raw)"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("emit trimmed"), "body: {}", f.body_text);
+        let flow = parse_runtime_flow_v1(src).expect("should parse");
+        assert_eq!(flow.body.len(), 1); // just the on block
+        match &flow.body[0] {
+            Statement::On(on_block) => {
+                assert_eq!(on_block.event_tag, "input");
+                assert_eq!(on_block.source_op, "term.prompt");
+                assert_eq!(on_block.bind, "raw");
+                assert_eq!(on_block.body.len(), 2); // trimmed = ..., emit trimmed
             }
-            _ => panic!("expected source decl"),
+            other => panic!("expected On, got {:?}", other),
         }
     }
 
     #[test]
-    fn parses_source_with_body_still_works() {
+    fn parses_source_with_body_loop() {
         let src = r#"
 source Numbers
   take count as long
@@ -4247,8 +4256,16 @@ done
         match &module.decls[0] {
             TopDecl::Source(f) => {
                 assert_eq!(f.name, "Numbers");
-                assert!(f.body_text.contains("list.range(1, count)"), "body: {}", f.body_text);
-                assert!(f.body_text.contains("loop items as n"), "body: {}", f.body_text);
+                assert!(
+                    f.body_text.contains("list.range(1, count)"),
+                    "body: {}",
+                    f.body_text
+                );
+                assert!(
+                    f.body_text.contains("loop items as n"),
+                    "body: {}",
+                    f.body_text
+                );
             }
             _ => panic!("expected source decl"),
         }
@@ -4278,7 +4295,7 @@ done
             Statement::Case(cb) => {
                 assert_eq!(cb.arms.len(), 1);
                 assert_eq!(cb.arms[0].body.len(), 2); // r = "positive", emit r
-                assert_eq!(cb.else_body.len(), 2);    // r = "non-positive", emit r
+                assert_eq!(cb.else_body.len(), 2); // r = "non-positive", emit r
             }
             other => panic!("expected Case, got {:?}", other),
         }
@@ -4549,6 +4566,153 @@ done
                 }
             }
             other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_accepts_string_literal() {
+        let src = r#"
+docs Hello
+  A test func.
+done
+
+func Hello
+  emit result as text
+  fail error as text
+body
+  emit "hello"
+done
+
+test Hello
+  ok = true
+  must ok == true
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+        match &flow.body[0] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "result");
+                assert!(matches!(&e.value_expr, Expr::Lit(v) if v == "hello"));
+            }
+            other => panic!("expected Emit, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_accepts_interpolation() {
+        let src = r#"
+docs Greet
+  A test func.
+done
+
+func Greet
+  take name as text
+  emit result as text
+  fail error as text
+body
+  emit "hello #{name}!"
+done
+
+test Greet
+  ok = true
+  must ok == true
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+        match &flow.body[0] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "result");
+                assert!(matches!(&e.value_expr, Expr::Interp(_)));
+            }
+            other => panic!("expected Emit, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fail_accepts_dotted_path() {
+        let src = r#"
+docs RunCmd
+  A test func.
+done
+
+func RunCmd
+  emit result as text
+  fail error as text
+body
+  out = exec.run("echo", ["hi"])
+  fail out.stderr
+done
+
+test RunCmd
+  ok = true
+  must ok == true
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+        match &flow.body[1] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "error");
+                assert!(matches!(&e.value_expr, Expr::Var(v) if v == "out.stderr"));
+            }
+            other => panic!("expected Emit (fail), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fail_accepts_interpolation() {
+        let src = r#"
+docs ErrMsg
+  A test func.
+done
+
+func ErrMsg
+  take msg as text
+  emit result as text
+  fail error as text
+body
+  fail "error: #{msg}"
+done
+
+test ErrMsg
+  ok = true
+  must ok == true
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+        match &flow.body[0] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "error");
+                assert!(matches!(&e.value_expr, Expr::Interp(_)));
+            }
+            other => panic!("expected Emit (fail), got: {other:?}"),
         }
     }
 }

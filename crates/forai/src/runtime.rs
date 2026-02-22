@@ -5,25 +5,24 @@ use crate::host_native::NativeHost;
 use crate::ir::Ir;
 use crate::loader::FlowRegistry;
 use crate::types::TypeRegistry;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use rand::Rng;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::rc::Rc;
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
-use regex::Regex;
-use rand::Rng;
-use uuid::Uuid;
-use sha2::{Sha256, Sha512, Digest};
-use hmac::{Hmac, Mac};
-use base64::Engine;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeTraceEvent {
@@ -211,7 +210,27 @@ fn html_unescape(input: &str) -> String {
 // Route matching helper
 // ---------------------------------------------------------------------------
 
-fn match_route(pattern: &str, path: &str) -> Value {
+fn route_match_bool(pattern: &str, path: &str) -> bool {
+    let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    let mut pi = 0;
+    for seg in &pat_segs {
+        if seg.starts_with('*') {
+            return true;
+        }
+        if pi >= path_segs.len() {
+            return false;
+        }
+        if !seg.starts_with(':') && *seg != path_segs[pi] {
+            return false;
+        }
+        pi += 1;
+    }
+    pi == path_segs.len()
+}
+
+fn route_extract_params(pattern: &str, path: &str) -> Value {
     let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut params = serde_json::Map::new();
@@ -225,23 +244,23 @@ fn match_route(pattern: &str, path: &str) -> Value {
             if !key.is_empty() {
                 params.insert(key.to_string(), json!(val));
             }
-            return json!({"matched": true, "params": Value::Object(params)});
+            return Value::Object(params);
         }
         if pi >= path_segs.len() {
-            return json!({"matched": false, "params": {}});
+            return json!({});
         }
         if seg.starts_with(':') {
             let key = &seg[1..];
             params.insert(key.to_string(), json!(path_segs[pi]));
         } else if *seg != path_segs[pi] {
-            return json!({"matched": false, "params": {}});
+            return json!({});
         }
         pi += 1;
     }
     if pi != path_segs.len() {
-        return json!({"matched": false, "params": {}});
+        return json!({});
     }
-    json!({"matched": true, "params": Value::Object(params)})
+    Value::Object(params)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +437,10 @@ pub fn known_ops() -> &'static [&'static str] {
         "http.server.accept",
         "http.server.respond",
         "http.server.close",
+        // HTTP respond convenience
+        "http.respond.html",
+        "http.respond.json",
+        "http.respond.text",
         "accept",
         // WebSocket client
         "ws.connect",
@@ -430,13 +453,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "headers.get",
         "headers.delete",
         // math
-        "math.divide",
-        "math.multiply",
-        "math.add",
-        "math.subtract",
         "math.floor",
-        "math.mod",
-        "math.power",
         "math.round",
         // time & format
         "time.sleep",
@@ -485,7 +502,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "list.range",
         "list.new",
         "list.append",
-        "list.get",
+
         "list.len",
         "list.contains",
         "list.slice",
@@ -599,6 +616,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "url.decode",
         // route
         "route.match",
+        "route.params",
         // html
         "html.escape",
         "html.unescape",
@@ -651,7 +669,13 @@ fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => if is_leap_year(y) { 29 } else { 28 },
+        2 => {
+            if is_leap_year(y) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 0,
     }
 }
@@ -662,11 +686,17 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
     let err = || format!("invalid ISO 8601 datetime: `{s}`");
 
     // Must have at least YYYY-MM-DD (10 chars)
-    if s.len() < 10 { return Err(err()); }
+    if s.len() < 10 {
+        return Err(err());
+    }
     let y: i64 = s[0..4].parse().map_err(|_| err())?;
-    if s.as_bytes()[4] != b'-' { return Err(err()); }
+    if s.as_bytes()[4] != b'-' {
+        return Err(err());
+    }
     let mo: i64 = s[5..7].parse().map_err(|_| err())?;
-    if s.as_bytes()[7] != b'-' { return Err(err()); }
+    if s.as_bytes()[7] != b'-' {
+        return Err(err());
+    }
     let d: i64 = s[8..10].parse().map_err(|_| err())?;
 
     let mut h: i64 = 0;
@@ -678,14 +708,23 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
     let rest = &s[10..];
     if !rest.is_empty() {
         // Expect 'T' separator
-        let rest = rest.strip_prefix('T').or_else(|| rest.strip_prefix('t')).ok_or_else(err)?;
+        let rest = rest
+            .strip_prefix('T')
+            .or_else(|| rest.strip_prefix('t'))
+            .ok_or_else(err)?;
 
         // Parse HH:MM:SS
-        if rest.len() < 8 { return Err(err()); }
+        if rest.len() < 8 {
+            return Err(err());
+        }
         h = rest[0..2].parse().map_err(|_| err())?;
-        if rest.as_bytes()[2] != b':' { return Err(err()); }
+        if rest.as_bytes()[2] != b':' {
+            return Err(err());
+        }
         mi = rest[3..5].parse().map_err(|_| err())?;
-        if rest.as_bytes()[5] != b':' { return Err(err()); }
+        if rest.as_bytes()[5] != b':' {
+            return Err(err());
+        }
         sec = rest[6..8].parse().map_err(|_| err())?;
 
         let mut rest = &rest[8..];
@@ -707,7 +746,9 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
                 }
             }
             // Pad to 3 digits
-            while frac_str.len() < 3 { frac_str.push('0'); }
+            while frac_str.len() < 3 {
+                frac_str.push('0');
+            }
             ms = frac_str.parse().unwrap_or(0);
             rest = &rest[consumed..];
         }
@@ -718,7 +759,9 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
         } else if rest.starts_with('+') || rest.starts_with('-') {
             let sign: i64 = if rest.starts_with('+') { 1 } else { -1 };
             let tz = &rest[1..];
-            if tz.len() < 5 || tz.as_bytes()[2] != b':' { return Err(err()); }
+            if tz.len() < 5 || tz.as_bytes()[2] != b':' {
+                return Err(err());
+            }
             let tz_h: i64 = tz[0..2].parse().map_err(|_| err())?;
             let tz_m: i64 = tz[3..5].parse().map_err(|_| err())?;
             tz_offset_min = sign * (tz_h * 60 + tz_m);
@@ -757,9 +800,15 @@ fn format_iso_datetime(unix_ms: i64, tz_offset_min: i64) -> String {
     };
 
     if ms == 0 {
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}", y, mo, d, hr, min, sec, tz_str)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+            y, mo, d, hr, min, sec, tz_str
+        )
     } else {
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}", y, mo, d, hr, min, sec, ms, tz_str)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}",
+            y, mo, d, hr, min, sec, ms, tz_str
+        )
     }
 }
 
@@ -777,19 +826,29 @@ fn make_trange(start: Value, end: Value) -> Value {
 
 fn read_date_arg(args: &[Value], index: usize, op: &str) -> Result<(i64, i64), String> {
     let obj = read_object_arg(args, index, op)?;
-    let unix_ms = obj.get("unix_ms").and_then(Value::as_i64)
+    let unix_ms = obj
+        .get("unix_ms")
+        .and_then(Value::as_i64)
         .ok_or_else(|| format!("Op `{op}` arg{index} missing `unix_ms`"))?;
-    let tz = obj.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
+    let tz = obj
+        .get("tz_offset_min")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     Ok((unix_ms, tz))
 }
 
 fn read_stamp_arg(args: &[Value], index: usize, op: &str) -> Result<i64, String> {
     let obj = read_object_arg(args, index, op)?;
-    obj.get("ns").and_then(Value::as_i64)
+    obj.get("ns")
+        .and_then(Value::as_i64)
         .ok_or_else(|| format!("Op `{op}` arg{index} missing `ns`"))
 }
 
-fn read_trange_arg(args: &[Value], index: usize, op: &str) -> Result<serde_json::Map<String, Value>, String> {
+fn read_trange_arg(
+    args: &[Value],
+    index: usize,
+    op: &str,
+) -> Result<serde_json::Map<String, Value>, String> {
     let obj = read_object_arg(args, index, op)?;
     if !obj.contains_key("start") || !obj.contains_key("end") {
         return Err(format!("Op `{op}` arg{index} must have `start` and `end`"));
@@ -797,7 +856,12 @@ fn read_trange_arg(args: &[Value], index: usize, op: &str) -> Result<serde_json:
     Ok(obj)
 }
 
-async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecRegistry) -> Result<Value, String> {
+async fn execute_op(
+    op: &str,
+    args: &[Value],
+    host: &dyn Host,
+    codecs: &CodecRegistry,
+) -> Result<Value, String> {
     if host::is_io_op(op) {
         return host.execute_io_op(op, args).await;
     }
@@ -871,48 +935,9 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                 "body": format!("{{\"ok\":false,\"error\":\"{message}\"}}")
             }))
         }
-        "math.divide" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            if b == 0.0 {
-                return Err(format!("Op `{op}` division by zero"));
-            }
-            Ok(json!(a / b))
-        }
-        "math.multiply" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a * b))
-        }
-        "math.add" => {
-            // Preserve integer type when both operands are integers
-            if let (Some(a), Some(b)) = (args.get(0).and_then(|v| v.as_i64()), args.get(1).and_then(|v| v.as_i64())) {
-                return Ok(json!(a + b));
-            }
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a + b))
-        }
-        "math.subtract" => {
-            // Preserve integer type when both operands are integers
-            if let (Some(a), Some(b)) = (args.get(0).and_then(|v| v.as_i64()), args.get(1).and_then(|v| v.as_i64())) {
-                return Ok(json!(a - b));
-            }
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a - b))
-        }
         "math.floor" => {
             let a = read_f64_arg(args, 0, op)?;
             Ok(json!(a.floor() as i64))
-        }
-        "math.mod" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            if b == 0.0 {
-                return Err(format!("Op `{op}` modulo by zero"));
-            }
-            Ok(json!(a % b))
         }
         "time.split_hms" => {
             let decimal_hours = read_f64_arg(args, 0, op)?;
@@ -931,15 +956,13 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "fmt.wrap_field" => {
             let field_name = read_string_arg(args, 0, op)?;
-            let value = args.get(1).cloned().ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let value = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             let mut obj = serde_json::Map::new();
             obj.insert(field_name, value);
             Ok(Value::Object(obj))
-        }
-        "math.power" => {
-            let base = read_f64_arg(args, 0, op)?;
-            let exp = read_f64_arg(args, 1, op)?;
-            Ok(json!(base.powf(exp)))
         }
         "math.round" => {
             let value = read_f64_arg(args, 0, op)?;
@@ -955,32 +978,30 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "list.new" => Ok(Value::Array(Vec::new())),
         "list.append" => {
-            let list_val = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+            let list_val = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
             let arr = list_val
                 .as_array()
                 .ok_or_else(|| format!("Op `{op}` expected array at arg0"))?;
-            let item = args.get(1).cloned().ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let item = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             let mut new_arr = arr.clone();
             new_arr.push(item);
             Ok(Value::Array(new_arr))
         }
-        "list.get" => {
-            let arr = read_array_arg(args, 0, op)?;
-            let idx = read_i64_arg(args, 1, op)?;
-            let len = arr.len() as i64;
-            let resolved = if idx < 0 { len + idx } else { idx };
-            if resolved < 0 || resolved >= len {
-                return Err(format!("Op `{op}` index {idx} out of bounds (len={len})"));
-            }
-            Ok(arr[resolved as usize].clone())
-        }
+
         "list.len" => {
             let arr = read_array_arg(args, 0, op)?;
             Ok(json!(arr.len() as i64))
         }
         "list.contains" => {
             let arr = read_array_arg(args, 0, op)?;
-            let needle = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let needle = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             Ok(json!(arr.contains(needle)))
         }
         "list.slice" => {
@@ -1003,12 +1024,17 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "obj.new" => Ok(Value::Object(serde_json::Map::new())),
         "obj.set" => {
-            let obj_val = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+            let obj_val = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
             let map = obj_val
                 .as_object()
                 .ok_or_else(|| format!("Op `{op}` expected object at arg0"))?;
             let key = read_string_arg(args, 1, op)?;
-            let value = args.get(2).cloned().ok_or_else(|| format!("Op `{op}` missing arg2"))?;
+            let value = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg2"))?;
             let mut new_map = map.clone();
             new_map.insert(key, value);
             Ok(Value::Object(new_map))
@@ -1111,10 +1137,13 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             Ok(Value::Array(parts))
         }
         "str.join" => {
-            let arr = args.get(0).and_then(Value::as_array)
+            let arr = args
+                .get(0)
+                .and_then(Value::as_array)
                 .ok_or_else(|| format!("Op `{op}` expected array at arg0"))?;
             let sep = read_string_arg(args, 1, op)?;
-            let joined: String = arr.iter()
+            let joined: String = arr
+                .iter()
                 .map(|v| v.as_str().unwrap_or("").to_string())
                 .collect::<Vec<_>>()
                 .join(&sep);
@@ -1180,7 +1209,11 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                 Value::String(_) => "text",
                 Value::Bool(_) => "bool",
                 Value::Number(n) => {
-                    if n.is_f64() && n.as_i64().is_none() { "real" } else { "long" }
+                    if n.is_f64() && n.as_i64().is_none() {
+                        "real"
+                    } else {
+                        "long"
+                    }
                 }
                 Value::Array(_) => "list",
                 Value::Object(_) => "dict",
@@ -1193,8 +1226,11 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let s = match v {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => {
-                    if let Some(i) = n.as_i64() { i.to_string() }
-                    else { n.as_f64().unwrap().to_string() }
+                    if let Some(i) = n.as_i64() {
+                        i.to_string()
+                    } else {
+                        n.as_f64().unwrap().to_string()
+                    }
                 }
                 Value::Bool(b) => b.to_string(),
                 Value::Null => String::new(),
@@ -1206,13 +1242,22 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let v = args.first().unwrap_or(&Value::Null);
             let i = match v {
                 Value::Number(n) => {
-                    if let Some(i) = n.as_i64() { i }
-                    else { n.as_f64().unwrap().round() as i64 }
+                    if let Some(i) = n.as_i64() {
+                        i
+                    } else {
+                        n.as_f64().unwrap().round() as i64
+                    }
                 }
-                Value::String(s) => {
-                    extract_first_number(s).map(|f| f.round() as i64).unwrap_or(0)
+                Value::String(s) => extract_first_number(s)
+                    .map(|f| f.round() as i64)
+                    .unwrap_or(0),
+                Value::Bool(b) => {
+                    if *b {
+                        1
+                    } else {
+                        0
+                    }
                 }
-                Value::Bool(b) => if *b { 1 } else { 0 },
                 Value::Array(a) => a.len() as i64,
                 Value::Object(m) => m.len() as i64,
                 Value::Null => 0,
@@ -1224,7 +1269,13 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let f = match v {
                 Value::Number(n) => n.as_f64().unwrap(),
                 Value::String(s) => extract_first_number(s).unwrap_or(0.0),
-                Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                Value::Bool(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 Value::Array(a) => a.len() as f64,
                 Value::Object(m) => m.len() as f64,
                 Value::Null => 0.0,
@@ -1261,7 +1312,8 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             match re.captures(&text) {
                 Some(caps) => {
                     let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                    let groups: Vec<Value> = caps.iter()
+                    let groups: Vec<Value> = caps
+                        .iter()
                         .skip(1)
                         .map(|m| m.map(|m| json!(m.as_str())).unwrap_or(Value::Null))
                         .collect();
@@ -1275,16 +1327,14 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                     "matched": false,
                     "text": "",
                     "groups": []
-                }))
+                })),
             }
         }
         "regex.find_all" => {
             let text = read_string_arg(args, 0, op)?;
             let pattern = read_string_arg(args, 1, op)?;
             let re = Regex::new(&pattern).map_err(|e| format!("Op `{op}` invalid regex: {e}"))?;
-            let matches: Vec<Value> = re.find_iter(&text)
-                .map(|m| json!(m.as_str()))
-                .collect();
+            let matches: Vec<Value> = re.find_iter(&text).map(|m| json!(m.as_str())).collect();
             Ok(Value::Array(matches))
         }
         "regex.replace" => {
@@ -1299,7 +1349,9 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let pattern = read_string_arg(args, 1, op)?;
             let replacement = read_string_arg(args, 2, op)?;
             let re = Regex::new(&pattern).map_err(|e| format!("Op `{op}` invalid regex: {e}"))?;
-            Ok(json!(re.replace_all(&text, replacement.as_str()).to_string()))
+            Ok(json!(
+                re.replace_all(&text, replacement.as_str()).to_string()
+            ))
         }
         "regex.split" => {
             let text = read_string_arg(args, 0, op)?;
@@ -1325,9 +1377,7 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let val: f64 = rand::thread_rng().r#gen();
             Ok(json!(val))
         }
-        "random.uuid" => {
-            Ok(json!(Uuid::new_v4().to_string()))
-        }
+        "random.uuid" => Ok(json!(Uuid::new_v4().to_string())),
         "random.choice" => {
             let arr = read_array_arg(args, 0, op)?;
             if arr.is_empty() {
@@ -1462,7 +1512,13 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         "date.compare" => {
             let (a_ms, _) = read_date_arg(args, 0, op)?;
             let (b_ms, _) = read_date_arg(args, 1, op)?;
-            Ok(json!(if a_ms < b_ms { -1 } else if a_ms > b_ms { 1 } else { 0 }))
+            Ok(json!(if a_ms < b_ms {
+                -1
+            } else if a_ms > b_ms {
+                1
+            } else {
+                0
+            }))
         }
 
         // -----------------------------------------------------------------
@@ -1513,7 +1569,13 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         "stamp.compare" => {
             let a_ns = read_stamp_arg(args, 0, op)?;
             let b_ns = read_stamp_arg(args, 1, op)?;
-            Ok(json!(if a_ns < b_ns { -1 } else if a_ns > b_ns { 1 } else { 0 }))
+            Ok(json!(if a_ns < b_ns {
+                -1
+            } else if a_ns > b_ns {
+                1
+            } else {
+                0
+            }))
         }
 
         // -----------------------------------------------------------------
@@ -1537,46 +1599,77 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "trange.duration_ms" => {
             let tr = read_trange_arg(args, 0, op)?;
-            let s_ms = tr.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let s_ms = tr
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid start date"))?;
-            let e_ms = tr.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let e_ms = tr
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid end date"))?;
             Ok(json!(e_ms - s_ms))
         }
         "trange.contains" => {
             let tr = read_trange_arg(args, 0, op)?;
             let (d_ms, _) = read_date_arg(args, 1, op)?;
-            let s_ms = tr.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let s_ms = tr
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid start date"))?;
-            let e_ms = tr.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let e_ms = tr
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid end date"))?;
             Ok(json!(d_ms >= s_ms && d_ms <= e_ms))
         }
         "trange.overlaps" => {
             let a = read_trange_arg(args, 0, op)?;
             let b = read_trange_arg(args, 1, op)?;
-            let a_start = a.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let a_start = a
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid a.start"))?;
-            let a_end = a.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let a_end = a
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid a.end"))?;
-            let b_start = b.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let b_start = b
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid b.start"))?;
-            let b_end = b.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let b_end = b
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid b.end"))?;
             Ok(json!(a_start <= b_end && b_start <= a_end))
         }
         "trange.shift" => {
             let tr = read_trange_arg(args, 0, op)?;
             let shift_ms = read_i64_arg(args, 1, op)?;
-            let s = tr.get("start").and_then(|v| v.as_object())
+            let s = tr
+                .get("start")
+                .and_then(|v| v.as_object())
                 .ok_or_else(|| format!("Op `{op}` invalid start"))?;
-            let e = tr.get("end").and_then(|v| v.as_object())
+            let e = tr
+                .get("end")
+                .and_then(|v| v.as_object())
                 .ok_or_else(|| format!("Op `{op}` invalid end"))?;
             let s_ms = s.get("unix_ms").and_then(Value::as_i64).unwrap_or(0);
             let s_tz = s.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
             let e_ms = e.get("unix_ms").and_then(Value::as_i64).unwrap_or(0);
             let e_tz = e.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
-            Ok(make_trange(make_date(s_ms + shift_ms, s_tz), make_date(e_ms + shift_ms, e_tz)))
+            Ok(make_trange(
+                make_date(s_ms + shift_ms, s_tz),
+                make_date(e_ms + shift_ms, e_tz),
+            ))
         }
 
         // -----------------------------------------------------------------
@@ -1587,37 +1680,59 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let mut hasher = Sha256::new();
             hasher.update(data.as_bytes());
             let result = hasher.finalize();
-            Ok(json!(result.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+            Ok(json!(
+                result
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ))
         }
         "hash.sha512" => {
             let data = read_string_arg(args, 0, op)?;
             let mut hasher = Sha512::new();
             hasher.update(data.as_bytes());
             let result = hasher.finalize();
-            Ok(json!(result.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+            Ok(json!(
+                result
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ))
         }
         "hash.hmac" => {
             let data = read_string_arg(args, 0, op)?;
             let key = read_string_arg(args, 1, op)?;
-            let algo = args.get(2)
-                .and_then(|v| v.as_str())
-                .unwrap_or("sha256");
+            let algo = args.get(2).and_then(|v| v.as_str()).unwrap_or("sha256");
             match algo {
                 "sha256" => {
                     let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes())
                         .map_err(|e| format!("Op `{op}` HMAC key error: {e}"))?;
                     mac.update(data.as_bytes());
                     let result = mac.finalize();
-                    Ok(json!(result.into_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()))
+                    Ok(json!(
+                        result
+                            .into_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ))
                 }
                 "sha512" => {
                     let mut mac = Hmac::<Sha512>::new_from_slice(key.as_bytes())
                         .map_err(|e| format!("Op `{op}` HMAC key error: {e}"))?;
                     mac.update(data.as_bytes());
                     let result = mac.finalize();
-                    Ok(json!(result.into_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()))
+                    Ok(json!(
+                        result
+                            .into_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ))
                 }
-                _ => Err(format!("Op `{op}` unsupported algorithm `{algo}`, expected `sha256` or `sha512`"))
+                _ => Err(format!(
+                    "Op `{op}` unsupported algorithm `{algo}`, expected `sha256` or `sha512`"
+                )),
             }
         }
 
@@ -1631,7 +1746,8 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "base64.decode" => {
             let encoded = read_string_arg(args, 0, op)?;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes())
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
                 .map_err(|e| format!("Op `{op}` invalid base64: {e}"))?;
             let text = String::from_utf8(bytes)
                 .map_err(|e| format!("Op `{op}` decoded bytes are not valid UTF-8: {e}"))?;
@@ -1644,7 +1760,8 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         }
         "base64.decode_url" => {
             let encoded = read_string_arg(args, 0, op)?;
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_bytes())
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded.as_bytes())
                 .map_err(|e| format!("Op `{op}` invalid URL-safe base64: {e}"))?;
             let text = String::from_utf8(bytes)
                 .map_err(|e| format!("Op `{op}` decoded bytes are not valid UTF-8: {e}"))?;
@@ -1661,8 +1778,8 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             let cost = 4u32;
             #[cfg(not(test))]
             let cost = 12u32;
-            let hash = bcrypt::hash(password, cost)
-                .map_err(|e| format!("Op `{op}` bcrypt error: {e}"))?;
+            let hash =
+                bcrypt::hash(password, cost).map_err(|e| format!("Op `{op}` bcrypt error: {e}"))?;
             Ok(json!(hash))
         }
         "crypto.verify_password" => {
@@ -1673,7 +1790,9 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
             Ok(json!(valid))
         }
         "crypto.sign_token" => {
-            let payload = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0 (payload)"))?;
+            let payload = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0 (payload)"))?;
             if !payload.is_object() {
                 return Err(format!("Op `{op}` arg0 must be a dict, got {}", payload));
             }
@@ -1756,7 +1875,10 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            outer.insert("message".to_string(), json!(format!("{context}: {orig_msg}")));
+            outer.insert(
+                "message".to_string(),
+                json!(format!("{context}: {orig_msg}")),
+            );
             Ok(Value::Object(outer))
         }
         "error.code" => {
@@ -1806,7 +1928,11 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                 if opts.get("secure").and_then(Value::as_bool).unwrap_or(false) {
                     header.push_str("; Secure");
                 }
-                if opts.get("http_only").and_then(Value::as_bool).unwrap_or(false) {
+                if opts
+                    .get("http_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     header.push_str("; HttpOnly");
                 }
                 if let Some(ss) = opts.get("same_site").and_then(Value::as_str) {
@@ -1876,7 +2002,12 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         "route.match" => {
             let pattern = read_string_arg(args, 0, op)?;
             let path = read_string_arg(args, 1, op)?;
-            Ok(match_route(&pattern, &path))
+            Ok(json!(route_match_bool(&pattern, &path)))
+        }
+        "route.params" => {
+            let pattern = read_string_arg(args, 0, op)?;
+            let path = read_string_arg(args, 1, op)?;
+            Ok(route_extract_params(&pattern, &path))
         }
 
         // --- HTML ops ---
@@ -1892,7 +2023,9 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         // --- Template ops ---
         "tmpl.render" => {
             let template = read_string_arg(args, 0, op)?;
-            let data = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let data = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             Ok(json!(mustache_render(&template, data)))
         }
 
@@ -1900,19 +2033,29 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
         "codec.decode" => {
             let format = read_string_arg(args, 0, op)?;
             let text = read_string_arg(args, 1, op)?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.decode: unknown format `{format}`"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.decode: unknown format `{format}`"))?;
             codec.decode(&text)
         }
         "codec.encode" => {
             let format = read_string_arg(args, 0, op)?;
-            let value = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.encode: unknown format `{format}`"))?;
+            let value = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.encode: unknown format `{format}`"))?;
             codec.encode(value).map(|s| Value::String(s))
         }
         "codec.encode_pretty" => {
             let format = read_string_arg(args, 0, op)?;
-            let value = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.encode_pretty: unknown format `{format}`"))?;
+            let value = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.encode_pretty: unknown format `{format}`"))?;
             codec.encode_pretty(value).map(|s| Value::String(s))
         }
 
@@ -1926,14 +2069,18 @@ async fn execute_op(op: &str, args: &[Value], host: &dyn Host, codecs: &CodecReg
                             codec.decode(&text)
                         }
                         "encode" => {
-                            let value = args.first().ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+                            let value = args
+                                .first()
+                                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
                             codec.encode(value).map(|s| Value::String(s))
                         }
                         "encode_pretty" => {
-                            let value = args.first().ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+                            let value = args
+                                .first()
+                                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
                             codec.encode_pretty(value).map(|s| Value::String(s))
                         }
-                        _ => Err(format!("unknown op `{op}`"))
+                        _ => Err(format!("unknown op `{op}`")),
                     };
                 }
             }
@@ -1963,9 +2110,8 @@ fn eval_expr<'a>(
     Box::pin(async move {
         match expr {
             Expr::Lit(v) => Ok(v.clone()),
-            Expr::Var(name) => {
-                resolve_var_path(vars, name).ok_or_else(|| format!("Unknown variable path `{name}`"))
-            }
+            Expr::Var(name) => resolve_var_path(vars, name)
+                .ok_or_else(|| format!("Unknown variable path `{name}`")),
             Expr::BinOp { op, lhs, rhs } => {
                 let l = eval_expr(lhs, vars, flow_registry, host, codecs).await?;
                 let r = eval_expr(rhs, vars, flow_registry, host, codecs).await?;
@@ -1988,7 +2134,9 @@ fn eval_expr<'a>(
                         if evaluated.len() != program.flow.inputs.len() {
                             return Err(format!(
                                 "flow `{}` expects {} args but got {}",
-                                func, program.flow.inputs.len(), evaluated.len()
+                                func,
+                                program.flow.inputs.len(),
+                                evaluated.len()
                             ));
                         }
                         let mut input_map = HashMap::new();
@@ -2003,16 +2151,25 @@ fn eval_expr<'a>(
                             flow_registry,
                             codecs,
                             Some(host.clone()),
-                        ).await?;
-                        let outputs = report.outputs.as_object()
-                            .ok_or_else(|| format!("flow `{func}` produced invalid outputs shape"))?;
-                        let success = outputs.get(&program.emit_name).cloned();
-                        let failure = outputs.get(&program.fail_name).cloned();
+                        )
+                        .await?;
+                        let outputs = report.outputs.as_object().ok_or_else(|| {
+                            format!("flow `{func}` produced invalid outputs shape")
+                        })?;
+                        let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+                        let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+                        if program.emit_name.is_none() {
+                            return Ok(serde_json::Value::Null);
+                        }
                         return match (success, failure) {
                             (Some(v), None) => Ok(v),
-                            (None, Some(f)) => Err(format!("flow `{func}` emitted on fail track: {f}")),
+                            (None, Some(f)) => {
+                                Err(format!("flow `{func}` emitted on fail track: {f}"))
+                            }
                             (None, None) => Err(format!("flow `{func}` produced no outputs")),
-                            (Some(_), Some(_)) => Err(format!("flow `{func}` produced both emit and fail outputs")),
+                            (Some(_), Some(_)) => {
+                                Err(format!("flow `{func}` produced both emit and fail outputs"))
+                            }
                         };
                     }
                 }
@@ -2028,7 +2185,9 @@ fn eval_expr<'a>(
                             match &val {
                                 Value::String(s) => result.push_str(s),
                                 Value::Number(n) => result.push_str(&n.to_string()),
-                                Value::Bool(b) => result.push_str(if *b { "true" } else { "false" }),
+                                Value::Bool(b) => {
+                                    result.push_str(if *b { "true" } else { "false" })
+                                }
                                 Value::Null => result.push_str("null"),
                                 other => result.push_str(&other.to_string()),
                             }
@@ -2037,7 +2196,11 @@ fn eval_expr<'a>(
                 }
                 Ok(json!(result))
             }
-            Expr::Ternary { cond, then_expr, else_expr } => {
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let cond_val = eval_expr(cond, vars, flow_registry, host, codecs).await?;
                 let is_truthy = match &cond_val {
                     Value::Bool(b) => *b,
@@ -2067,6 +2230,26 @@ fn eval_expr<'a>(
                 }
                 Ok(Value::Object(map))
             }
+            Expr::Index { expr, index } => {
+                let collection = eval_expr(expr, vars, flow_registry, host, codecs).await?;
+                let idx = eval_expr(index, vars, flow_registry, host, codecs).await?;
+                match &collection {
+                    Value::Array(arr) => {
+                        let i = idx.as_i64().ok_or_else(|| format!("Index must be an integer, got {idx}"))?;
+                        let len = arr.len() as i64;
+                        let resolved = if i < 0 { len + i } else { i };
+                        if resolved < 0 || resolved >= len {
+                            return Err(format!("Index {i} out of bounds (len={len})"));
+                        }
+                        Ok(arr[resolved as usize].clone())
+                    }
+                    Value::Object(map) => {
+                        let key = idx.as_str().ok_or_else(|| format!("Dict key must be a string, got {idx}"))?;
+                        map.get(key).cloned().ok_or_else(|| format!("Key \"{key}\" not found"))
+                    }
+                    _ => Err(format!("Cannot index into {}", collection)),
+                }
+            }
         }
     })
 }
@@ -2089,32 +2272,48 @@ fn eval_binop(op: crate::ast::BinOp, l: &Value, r: &Value) -> Result<Value, Stri
             Err(format!("Cannot add {l} and {r}"))
         }
         BinOp::Sub => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot subtract: left operand {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot subtract: right operand {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot subtract: left operand {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot subtract: right operand {r} is not a number"))?;
             if l.is_i64() && r.is_i64() {
                 return Ok(json!(l.as_i64().unwrap() - r.as_i64().unwrap()));
             }
             Ok(json!(a - b))
         }
         BinOp::Mul => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot multiply: left operand {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot multiply: right operand {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot multiply: left operand {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot multiply: right operand {r} is not a number"))?;
             if l.is_i64() && r.is_i64() {
                 return Ok(json!(l.as_i64().unwrap() * r.as_i64().unwrap()));
             }
             Ok(json!(a * b))
         }
         BinOp::Div => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot divide: left operand {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot divide: right operand {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot divide: left operand {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot divide: right operand {r} is not a number"))?;
             if b == 0.0 {
                 return Err("Division by zero".to_string());
             }
             Ok(json!(a / b))
         }
         BinOp::Mod => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot mod: left operand {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot mod: right operand {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot mod: left operand {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot mod: right operand {r} is not a number"))?;
             if b == 0.0 {
                 return Err("Modulo by zero".to_string());
             }
@@ -2124,40 +2323,68 @@ fn eval_binop(op: crate::ast::BinOp, l: &Value, r: &Value) -> Result<Value, Stri
             Ok(json!(a % b))
         }
         BinOp::Pow => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot pow: left operand {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot pow: right operand {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot pow: left operand {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot pow: right operand {r} is not a number"))?;
             Ok(json!(a.powf(b)))
         }
         BinOp::Eq => Ok(json!(l == r)),
         BinOp::Neq => Ok(json!(l != r)),
         BinOp::Lt => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
             Ok(json!(a < b))
         }
         BinOp::Gt => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
             Ok(json!(a > b))
         }
         BinOp::LtEq => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
             Ok(json!(a <= b))
         }
         BinOp::GtEq => {
-            let a = l.as_f64().ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r.as_f64().ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
+            let a = l
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
+            let b = r
+                .as_f64()
+                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
             Ok(json!(a >= b))
         }
         BinOp::And => {
-            let a = l.as_bool().ok_or_else(|| format!("Cannot AND: {l} is not a boolean"))?;
-            let b = r.as_bool().ok_or_else(|| format!("Cannot AND: {r} is not a boolean"))?;
+            let a = l
+                .as_bool()
+                .ok_or_else(|| format!("Cannot AND: {l} is not a boolean"))?;
+            let b = r
+                .as_bool()
+                .ok_or_else(|| format!("Cannot AND: {r} is not a boolean"))?;
             Ok(json!(a && b))
         }
         BinOp::Or => {
-            let a = l.as_bool().ok_or_else(|| format!("Cannot OR: {l} is not a boolean"))?;
-            let b = r.as_bool().ok_or_else(|| format!("Cannot OR: {r} is not a boolean"))?;
+            let a = l
+                .as_bool()
+                .ok_or_else(|| format!("Cannot OR: {l} is not a boolean"))?;
+            let b = r
+                .as_bool()
+                .ok_or_else(|| format!("Cannot OR: {r} is not a boolean"))?;
             Ok(json!(a || b))
         }
     }
@@ -2176,7 +2403,9 @@ fn eval_unary(op: crate::ast::UnaryOp, v: &Value) -> Result<Value, String> {
             }
         }
         UnaryOp::Not => {
-            let b = v.as_bool().ok_or_else(|| format!("Cannot NOT: {v} is not a boolean"))?;
+            let b = v
+                .as_bool()
+                .ok_or_else(|| format!("Cannot NOT: {v} is not a boolean"))?;
             Ok(json!(!b))
         }
     }
@@ -2241,9 +2470,7 @@ pub fn load_inputs(flow: &Flow, input: Option<&PathBuf>) -> Result<HashMap<Strin
 
     let mut out = HashMap::new();
     for port in &flow.inputs {
-        let value = provided
-            .remove(&port.name)
-            .unwrap_or(Value::Null);
+        let value = provided.remove(&port.name).unwrap_or(Value::Null);
         out.insert(port.name.clone(), value);
     }
     Ok(out)
@@ -2251,7 +2478,10 @@ pub fn load_inputs(flow: &Flow, input: Option<&PathBuf>) -> Result<HashMap<Strin
 
 /// Map positional CLI args to flow input ports (in declaration order).
 /// Coerces text to the port's declared type: long→i64, real→f64, bool→bool, text→string.
-pub fn load_inputs_from_args(flow: &Flow, args: &[String]) -> Result<HashMap<String, Value>, String> {
+pub fn load_inputs_from_args(
+    flow: &Flow,
+    args: &[String],
+) -> Result<HashMap<String, Value>, String> {
     if args.len() > flow.inputs.len() {
         return Err(format!(
             "Too many arguments: flow `{}` takes {} input(s) but {} were provided",
@@ -2275,8 +2505,14 @@ pub fn load_inputs_from_args(flow: &Flow, args: &[String]) -> Result<HashMap<Str
 
 fn coerce_arg(raw: &str, type_name: &str) -> Value {
     match type_name.to_lowercase().as_str() {
-        "long" => raw.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::String(raw.to_string())),
-        "real" => raw.parse::<f64>().map(Value::from).unwrap_or_else(|_| Value::String(raw.to_string())),
+        "long" => raw
+            .parse::<i64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(raw.to_string())),
+        "real" => raw
+            .parse::<f64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(raw.to_string())),
         "bool" => match raw {
             "true" => Value::Bool(true),
             "false" => Value::Bool(false),
@@ -2309,7 +2545,9 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
             .map_err(|_| format!("Invalid duration `{s}`"))?;
         return Ok(Duration::from_secs(n));
     }
-    Err(format!("Invalid duration `{s}` (expected e.g. 5s, 500ms, 2m)"))
+    Err(format!(
+        "Invalid duration `{s}` (expected e.g. 5s, 500ms, 2m)"
+    ))
 }
 
 // --- Stepping engine types ---
@@ -2439,7 +2677,17 @@ pub async fn execute_flow(
     codecs: &CodecRegistry,
     host: Option<Rc<dyn Host>>,
 ) -> Result<RunReport, String> {
-    execute_flow_inner(flow, ir, inputs, registry, flow_registry, None, codecs, host).await
+    execute_flow_inner(
+        flow,
+        ir,
+        inputs,
+        registry,
+        flow_registry,
+        None,
+        codecs,
+        host,
+    )
+    .await
 }
 
 async fn try_dispatch_flow(
@@ -2480,7 +2728,9 @@ async fn try_dispatch_flow(
         flow_registry,
         codecs,
         Some(host.clone()),
-    ).await {
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
@@ -2489,14 +2739,20 @@ async fn try_dispatch_flow(
         return Some(Err(format!("flow `{op}` produced invalid outputs shape")));
     };
 
-    let success = outputs.get(&program.emit_name).cloned();
-    let failure = outputs.get(&program.fail_name).cloned();
+    let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+    let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+
+    if program.emit_name.is_none() {
+        return Some(Ok(serde_json::Value::Null));
+    }
 
     match (success, failure) {
         (Some(v), None) => Some(Ok(v)),
         (None, Some(f)) => Some(Err(format!("flow `{op}` emitted on fail track: {f}"))),
         (None, None) => Some(Err(format!("flow `{op}` produced no outputs"))),
-        (Some(_), Some(_)) => Some(Err(format!("flow `{op}` produced both emit and fail outputs"))),
+        (Some(_), Some(_)) => Some(Err(format!(
+            "flow `{op}` produced both emit and fail outputs"
+        ))),
     }
 }
 
@@ -2576,462 +2832,618 @@ fn execute_statements<'a>(
     source_tx: Option<&'a tokio::sync::mpsc::UnboundedSender<Value>>,
 ) -> Pin<Box<dyn Future<Output = Result<ExecSignal, String>> + 'a>> {
     Box::pin(async move {
-    for stmt in statements {
-        match stmt {
-            Statement::Node(node) => {
-                // Pause BEFORE executing the node
-                if let Some(ctrl) = step_ctrl {
-                    ctrl.maybe_pause(StateSnapshot {
-                        step: *step,
-                        node_id: Some(node.node_id.clone()),
-                        op: Some(node.op.clone()),
-                        bindings: vars.clone(),
-                        status: "paused".to_string(),
-                        trace: trace.clone(),
-                        emits: emit_trace.clone(),
-                    });
-                }
+        for stmt in statements {
+            match stmt {
+                Statement::Node(node) => {
+                    // Pause BEFORE executing the node
+                    if let Some(ctrl) = step_ctrl {
+                        ctrl.maybe_pause(StateSnapshot {
+                            step: *step,
+                            node_id: Some(node.node_id.clone()),
+                            op: Some(node.op.clone()),
+                            bindings: vars.clone(),
+                            status: "paused".to_string(),
+                            trace: trace.clone(),
+                            emits: emit_trace.clone(),
+                        });
+                    }
 
-                let mut args = Vec::new();
-                let mut missing_var: Option<String> = None;
-                for arg in &node.args {
-                    match arg {
-                        Arg::Lit { lit } => args.push(lit.clone()),
-                        Arg::Var { var } => {
-                            if let Some(value) = resolve_var_path(vars, var) {
-                                args.push(value);
-                            } else {
-                                missing_var = Some(var.clone());
-                                break;
+                    let mut args = Vec::new();
+                    let mut missing_var: Option<String> = None;
+                    for arg in &node.args {
+                        match arg {
+                            Arg::Lit { lit } => args.push(lit.clone()),
+                            Arg::Var { var } => {
+                                if let Some(value) = resolve_var_path(vars, var) {
+                                    args.push(value);
+                                } else {
+                                    missing_var = Some(var.clone());
+                                    break;
+                                }
                             }
                         }
                     }
-                }
 
-                if let Some(var) = missing_var {
-                    trace.push(NodeTraceEvent {
-                        step: *step,
-                        node_id: node.node_id.clone(),
-                        op: node.op.clone(),
-                        bind: node.bind.clone(),
-                        when: "true".to_string(),
-                        status: "failed".to_string(),
-                        args,
-                        output: None,
-                        error: Some(format!("Missing variable `{var}`")),
-                        duration_ms: 0,
-                        sync_group: sync_group.map(|s| s.to_string()),
-                    });
+                    if let Some(var) = missing_var {
+                        trace.push(NodeTraceEvent {
+                            step: *step,
+                            node_id: node.node_id.clone(),
+                            op: node.op.clone(),
+                            bind: node.bind.clone(),
+                            when: "true".to_string(),
+                            status: "failed".to_string(),
+                            args,
+                            output: None,
+                            error: Some(format!("Missing variable `{var}`")),
+                            duration_ms: 0,
+                            sync_group: sync_group.map(|s| s.to_string()),
+                        });
+                        *step += 1;
+                        continue;
+                    }
+
+                    let start = Instant::now();
+                    let result = if let Some(flow_result) =
+                        try_dispatch_flow(&node.op, &args, flow_registry, codecs, host).await
+                    {
+                        flow_result
+                    } else {
+                        execute_op(&node.op, &args, &**host, codecs).await
+                    };
+
+                    match result {
+                        Ok(output) => {
+                            vars.insert(node.bind.clone(), output.clone());
+                            trace.push(NodeTraceEvent {
+                                step: *step,
+                                node_id: node.node_id.clone(),
+                                op: node.op.clone(),
+                                bind: node.bind.clone(),
+                                when: "true".to_string(),
+                                status: "executed".to_string(),
+                                args,
+                                output: Some(output),
+                                error: None,
+                                duration_ms: start.elapsed().as_millis(),
+                                sync_group: sync_group.map(|s| s.to_string()),
+                            });
+                        }
+                        Err(error) => {
+                            trace.push(NodeTraceEvent {
+                                step: *step,
+                                node_id: node.node_id.clone(),
+                                op: node.op.clone(),
+                                bind: node.bind.clone(),
+                                when: "true".to_string(),
+                                status: "failed".to_string(),
+                                args,
+                                output: None,
+                                error: Some(error),
+                                duration_ms: start.elapsed().as_millis(),
+                                sync_group: sync_group.map(|s| s.to_string()),
+                            });
+                        }
+                    }
                     *step += 1;
-                    continue;
                 }
+                Statement::ExprAssign(ea) => {
+                    // Pause BEFORE executing the expression
+                    if let Some(ctrl) = step_ctrl {
+                        ctrl.maybe_pause(StateSnapshot {
+                            step: *step,
+                            node_id: Some(ea.bind.clone()),
+                            op: Some("expr".to_string()),
+                            bindings: vars.clone(),
+                            status: "paused".to_string(),
+                            trace: trace.clone(),
+                            emits: emit_trace.clone(),
+                        });
+                    }
 
-                let start = Instant::now();
-                let result = if let Some(flow_result) =
-                    try_dispatch_flow(&node.op, &args, flow_registry, codecs, host).await
-                {
-                    flow_result
-                } else {
-                    execute_op(&node.op, &args, &**host, codecs).await
-                };
-
-                match result {
-                    Ok(output) => {
-                        vars.insert(node.bind.clone(), output.clone());
-                        trace.push(NodeTraceEvent {
-                            step: *step,
-                            node_id: node.node_id.clone(),
-                            op: node.op.clone(),
-                            bind: node.bind.clone(),
-                            when: "true".to_string(),
-                            status: "executed".to_string(),
-                            args,
-                            output: Some(output),
-                            error: None,
-                            duration_ms: start.elapsed().as_millis(),
-                            sync_group: sync_group.map(|s| s.to_string()),
-                        });
+                    let start = Instant::now();
+                    let result = eval_expr(&ea.expr, vars, flow_registry, host, codecs).await;
+                    match result {
+                        Ok(value) => {
+                            vars.insert(ea.bind.clone(), value.clone());
+                            trace.push(NodeTraceEvent {
+                                step: *step,
+                                node_id: ea.bind.clone(),
+                                op: "expr".to_string(),
+                                bind: ea.bind.clone(),
+                                when: "true".to_string(),
+                                status: "executed".to_string(),
+                                args: vec![],
+                                output: Some(value),
+                                error: None,
+                                duration_ms: start.elapsed().as_millis(),
+                                sync_group: sync_group.map(|s| s.to_string()),
+                            });
+                        }
+                        Err(error) => {
+                            trace.push(NodeTraceEvent {
+                                step: *step,
+                                node_id: ea.bind.clone(),
+                                op: "expr".to_string(),
+                                bind: ea.bind.clone(),
+                                when: "true".to_string(),
+                                status: "failed".to_string(),
+                                args: vec![],
+                                output: None,
+                                error: Some(error.clone()),
+                                duration_ms: start.elapsed().as_millis(),
+                                sync_group: sync_group.map(|s| s.to_string()),
+                            });
+                            return Err(error);
+                        }
                     }
-                    Err(error) => {
-                        trace.push(NodeTraceEvent {
-                            step: *step,
-                            node_id: node.node_id.clone(),
-                            op: node.op.clone(),
-                            bind: node.bind.clone(),
-                            when: "true".to_string(),
-                            status: "failed".to_string(),
-                            args,
-                            output: None,
-                            error: Some(error),
-                            duration_ms: start.elapsed().as_millis(),
-                            sync_group: sync_group.map(|s| s.to_string()),
-                        });
-                    }
+                    *step += 1;
                 }
-                *step += 1;
-            }
-            Statement::ExprAssign(ea) => {
-                // Pause BEFORE executing the expression
-                if let Some(ctrl) = step_ctrl {
-                    ctrl.maybe_pause(StateSnapshot {
-                        step: *step,
-                        node_id: Some(ea.bind.clone()),
-                        op: Some("expr".to_string()),
-                        bindings: vars.clone(),
-                        status: "paused".to_string(),
-                        trace: trace.clone(),
-                        emits: emit_trace.clone(),
-                    });
-                }
-
-                let start = Instant::now();
-                let result = eval_expr(&ea.expr, vars, flow_registry, host, codecs).await;
-                match result {
-                    Ok(value) => {
-                        vars.insert(ea.bind.clone(), value.clone());
-                        trace.push(NodeTraceEvent {
-                            step: *step,
-                            node_id: ea.bind.clone(),
-                            op: "expr".to_string(),
-                            bind: ea.bind.clone(),
-                            when: "true".to_string(),
-                            status: "executed".to_string(),
-                            args: vec![],
-                            output: Some(value),
-                            error: None,
-                            duration_ms: start.elapsed().as_millis(),
-                            sync_group: sync_group.map(|s| s.to_string()),
-                        });
-                    }
-                    Err(error) => {
-                        trace.push(NodeTraceEvent {
-                            step: *step,
-                            node_id: ea.bind.clone(),
-                            op: "expr".to_string(),
-                            bind: ea.bind.clone(),
-                            when: "true".to_string(),
-                            status: "failed".to_string(),
-                            args: vec![],
-                            output: None,
-                            error: Some(error.clone()),
-                            duration_ms: start.elapsed().as_millis(),
-                            sync_group: sync_group.map(|s| s.to_string()),
-                        });
-                        return Err(error);
-                    }
-                }
-                *step += 1;
-            }
-            Statement::Emit(emit) => {
-                let value = resolve_var_path(vars, &emit.value_var).ok_or_else(|| {
-                    format!("Emit references unknown var `{}`", emit.value_var)
-                })?;
-                emit_trace.push(EmitTraceEvent {
-                    output: emit.output.clone(),
-                    value_var: emit.value_var.clone(),
-                    when: "true".to_string(),
-                    emitted: true,
-                    value: Some(value.clone()),
-                });
-                if let Some(tx) = source_tx {
-                    // Source yield: send value to channel and yield so the
-                    // receiver (SourceLoop) can process before we continue.
-                    let _ = tx.send(value);
-                    tokio::task::yield_now().await;
-                } else {
-                    return Ok(ExecSignal::Emit {
+                Statement::Emit(emit) => {
+                    let value =
+                        eval_expr(&emit.value_expr, vars, flow_registry, host, codecs).await?;
+                    let label = match &emit.value_expr {
+                        Expr::Var(name) => name.clone(),
+                        _ => format!("{:?}", emit.value_expr),
+                    };
+                    emit_trace.push(EmitTraceEvent {
                         output: emit.output.clone(),
-                        value_var: emit.value_var.clone(),
-                        value,
+                        value_var: label.clone(),
+                        when: "true".to_string(),
+                        emitted: true,
+                        value: Some(value.clone()),
                     });
+                    if let Some(tx) = source_tx {
+                        // Source yield: send value to channel and yield so the
+                        // receiver (SourceLoop) can process before we continue.
+                        let _ = tx.send(value);
+                        tokio::task::yield_now().await;
+                    } else {
+                        return Ok(ExecSignal::Emit {
+                            output: emit.output.clone(),
+                            value_var: label,
+                            value,
+                        });
+                    }
                 }
-            }
-            Statement::Case(case_block) => {
-                let subject = eval_expr(&case_block.expr, vars, flow_registry, host, codecs).await?;
-                let mut matched = false;
-                for arm in &case_block.arms {
-                    if pattern_matches(&subject, &arm.pattern) {
-                        matched = true;
+                Statement::Case(case_block) => {
+                    let subject =
+                        eval_expr(&case_block.expr, vars, flow_registry, host, codecs).await?;
+                    let mut matched = false;
+                    for arm in &case_block.arms {
+                        if pattern_matches(&subject, &arm.pattern) {
+                            matched = true;
+                            match execute_statements(
+                                &arm.body,
+                                vars,
+                                trace,
+                                emit_trace,
+                                step,
+                                flow_registry,
+                                sync_counter,
+                                sync_group,
+                                step_ctrl,
+                                host,
+                                codecs,
+                                source_tx,
+                            )
+                            .await?
+                            {
+                                ExecSignal::Continue => {}
+                                signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                                ExecSignal::Break => return Ok(ExecSignal::Break),
+                            }
+                            break;
+                        }
+                    }
+                    if !matched {
                         match execute_statements(
-                            &arm.body, vars, trace, emit_trace, step,
-                            flow_registry, sync_counter, sync_group, step_ctrl, host, codecs, source_tx,
-                        ).await? {
+                            &case_block.else_body,
+                            vars,
+                            trace,
+                            emit_trace,
+                            step,
+                            flow_registry,
+                            sync_counter,
+                            sync_group,
+                            step_ctrl,
+                            host,
+                            codecs,
+                            source_tx,
+                        )
+                        .await?
+                        {
                             ExecSignal::Continue => {}
                             signal @ ExecSignal::Emit { .. } => return Ok(signal),
                             ExecSignal::Break => return Ok(ExecSignal::Break),
                         }
-                        break;
                     }
                 }
-                if !matched {
-                    match execute_statements(
-                        &case_block.else_body, vars, trace, emit_trace, step,
-                        flow_registry, sync_counter, sync_group, step_ctrl, host, codecs, source_tx,
-                    ).await? {
-                        ExecSignal::Continue => {}
-                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
-                        ExecSignal::Break => return Ok(ExecSignal::Break),
-                    }
-                }
-            }
-            Statement::Loop(loop_block) => {
-                let collection = eval_expr(&loop_block.collection, vars, flow_registry, host, codecs).await?;
-                let items = collection.as_array().ok_or_else(|| {
-                    format!("Loop collection must be an array, got `{}`", collection)
-                })?;
-                let items = items.clone();
-                let previous = vars.get(&loop_block.item).cloned();
-                for item in &items {
-                    vars.insert(loop_block.item.clone(), item.clone());
-                    match execute_statements(
-                        &loop_block.body, vars, trace, emit_trace, step,
-                        flow_registry, sync_counter, sync_group, step_ctrl, host, codecs, source_tx,
-                    ).await? {
-                        ExecSignal::Continue => {}
-                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
-                        ExecSignal::Break => break,
-                    }
-                }
-                if let Some(prev) = previous {
-                    vars.insert(loop_block.item.clone(), prev);
-                } else {
-                    vars.remove(&loop_block.item);
-                }
-            }
-            Statement::Sync(sync_block) => {
-                let group_id = format!("sync_{}", *sync_counter);
-                *sync_counter += 1;
-
-                let timeout = sync_block
-                    .options
-                    .timeout
-                    .as_ref()
-                    .map(|s| parse_duration(s))
-                    .transpose()?;
-                let max_retries = sync_block.options.retry.unwrap_or(0) as usize;
-                let safe = sync_block.options.safe;
-                let sync_start = Instant::now();
-
-                let mut last_error: Option<String> = None;
-                let mut succeeded = false;
-
-                for attempt in 0..=max_retries {
-                    if let Some(dur) = timeout {
-                        if sync_start.elapsed() > dur {
-                            last_error = Some(format!(
-                                "sync block `{}` timed out after {}ms",
-                                group_id,
-                                dur.as_millis()
-                            ));
-                            break;
+                Statement::Loop(loop_block) => {
+                    let collection =
+                        eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)
+                            .await?;
+                    let items = collection.as_array().ok_or_else(|| {
+                        format!("Loop collection must be an array, got `{}`", collection)
+                    })?;
+                    let items = items.clone();
+                    let previous = vars.get(&loop_block.item).cloned();
+                    for item in &items {
+                        vars.insert(loop_block.item.clone(), item.clone());
+                        match execute_statements(
+                            &loop_block.body,
+                            vars,
+                            trace,
+                            emit_trace,
+                            step,
+                            flow_registry,
+                            sync_counter,
+                            sync_group,
+                            step_ctrl,
+                            host,
+                            codecs,
+                            source_tx,
+                        )
+                        .await?
+                        {
+                            ExecSignal::Continue => {}
+                            signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                            ExecSignal::Break => break,
                         }
                     }
+                    if let Some(prev) = previous {
+                        vars.insert(loop_block.item.clone(), prev);
+                    } else {
+                        vars.remove(&loop_block.item);
+                    }
+                }
+                Statement::Sync(sync_block) => {
+                    let group_id = format!("sync_{}", *sync_counter);
+                    *sync_counter += 1;
 
-                    // Run each statement concurrently with its own vars clone
-                    let futures: Vec<_> = sync_block.body.iter().map(|stmt| {
-                        let mut local_vars = vars.clone();
-                        let mut local_trace = Vec::new();
-                        let mut local_emit_trace = Vec::new();
-                        let mut local_step = *step;
-                        let mut local_sync_counter = *sync_counter;
-                        let group_id = group_id.clone();
-                        async move {
-                            let result = execute_statements(
-                                std::slice::from_ref(stmt),
-                                &mut local_vars,
-                                &mut local_trace,
-                                &mut local_emit_trace,
-                                &mut local_step,
-                                flow_registry,
-                                &mut local_sync_counter,
-                                Some(&group_id),
-                                step_ctrl,
-                                host,
-                                codecs,
-                                None, // sync blocks don't yield to source channels
-                            ).await;
-                            (local_vars, local_trace, local_emit_trace, local_step, result)
-                        }
-                    }).collect();
+                    let timeout = sync_block
+                        .options
+                        .timeout
+                        .as_ref()
+                        .map(|s| parse_duration(s))
+                        .transpose()?;
+                    let max_retries = sync_block.options.retry.unwrap_or(0) as usize;
+                    let safe = sync_block.options.safe;
+                    let sync_start = Instant::now();
 
-                    let run_concurrent = futures::future::join_all(futures);
-                    let results = if let Some(dur) = timeout {
-                        let remaining = dur.saturating_sub(sync_start.elapsed());
-                        match tokio::time::timeout(remaining, run_concurrent).await {
-                            Ok(r) => r,
-                            Err(_) => {
+                    let mut last_error: Option<String> = None;
+                    let mut succeeded = false;
+
+                    for attempt in 0..=max_retries {
+                        if let Some(dur) = timeout {
+                            if sync_start.elapsed() > dur {
                                 last_error = Some(format!(
                                     "sync block `{}` timed out after {}ms",
                                     group_id,
                                     dur.as_millis()
                                 ));
-                                if attempt < max_retries { continue; }
                                 break;
                             }
                         }
-                    } else {
-                        run_concurrent.await
-                    };
 
-                    // Merge results: collect all traces, merge vars
-                    let mut merged_vars = vars.clone();
-                    let mut had_error = false;
-                    let mut emit_signal: Option<ExecSignal> = None;
+                        // Run each statement concurrently with its own vars clone
+                        let futures: Vec<_> = sync_block
+                            .body
+                            .iter()
+                            .map(|stmt| {
+                                let mut local_vars = vars.clone();
+                                let mut local_trace = Vec::new();
+                                let mut local_emit_trace = Vec::new();
+                                let mut local_step = *step;
+                                let mut local_sync_counter = *sync_counter;
+                                let group_id = group_id.clone();
+                                async move {
+                                    let result = execute_statements(
+                                        std::slice::from_ref(stmt),
+                                        &mut local_vars,
+                                        &mut local_trace,
+                                        &mut local_emit_trace,
+                                        &mut local_step,
+                                        flow_registry,
+                                        &mut local_sync_counter,
+                                        Some(&group_id),
+                                        step_ctrl,
+                                        host,
+                                        codecs,
+                                        None, // sync blocks don't yield to source channels
+                                    )
+                                    .await;
+                                    (
+                                        local_vars,
+                                        local_trace,
+                                        local_emit_trace,
+                                        local_step,
+                                        result,
+                                    )
+                                }
+                            })
+                            .collect();
 
-                    for (local_vars, local_trace, local_emit_trace, local_step, result) in results {
-                        trace.extend(local_trace);
-                        emit_trace.extend(local_emit_trace);
-                        if local_step > *step { *step = local_step; }
-
-                        match result {
-                            Ok(ExecSignal::Continue) => {
-                                for (k, v) in &local_vars {
-                                    if !vars.contains_key(k) || local_vars.get(k) != vars.get(k) {
-                                        merged_vars.insert(k.clone(), v.clone());
+                        let run_concurrent = futures::future::join_all(futures);
+                        let results = if let Some(dur) = timeout {
+                            let remaining = dur.saturating_sub(sync_start.elapsed());
+                            match tokio::time::timeout(remaining, run_concurrent).await {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    last_error = Some(format!(
+                                        "sync block `{}` timed out after {}ms",
+                                        group_id,
+                                        dur.as_millis()
+                                    ));
+                                    if attempt < max_retries {
+                                        continue;
                                     }
+                                    break;
                                 }
                             }
-                            Ok(signal @ ExecSignal::Emit { .. }) => {
-                                emit_signal = Some(signal);
+                        } else {
+                            run_concurrent.await
+                        };
+
+                        // Merge results: collect all traces, merge vars
+                        let mut merged_vars = vars.clone();
+                        let mut had_error = false;
+                        let mut emit_signal: Option<ExecSignal> = None;
+
+                        for (local_vars, local_trace, local_emit_trace, local_step, result) in
+                            results
+                        {
+                            trace.extend(local_trace);
+                            emit_trace.extend(local_emit_trace);
+                            if local_step > *step {
+                                *step = local_step;
                             }
-                            Ok(ExecSignal::Break) => {
-                                // Break inside sync statement — treat as continue
-                            }
-                            Err(e) => {
-                                last_error = Some(e);
-                                had_error = true;
+
+                            match result {
+                                Ok(ExecSignal::Continue) => {
+                                    for (k, v) in &local_vars {
+                                        if !vars.contains_key(k) || local_vars.get(k) != vars.get(k)
+                                        {
+                                            merged_vars.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                }
+                                Ok(signal @ ExecSignal::Emit { .. }) => {
+                                    emit_signal = Some(signal);
+                                }
+                                Ok(ExecSignal::Break) => {
+                                    // Break inside sync statement — treat as continue
+                                }
+                                Err(e) => {
+                                    last_error = Some(e);
+                                    had_error = true;
+                                }
                             }
                         }
-                    }
 
-                    if let Some(signal) = emit_signal {
-                        return Ok(signal);
-                    }
+                        if let Some(signal) = emit_signal {
+                            return Ok(signal);
+                        }
 
-                    if had_error {
-                        if attempt < max_retries { continue; }
+                        if had_error {
+                            if attempt < max_retries {
+                                continue;
+                            }
+                            break;
+                        }
+
+                        // Export from merged vars
+                        for (target, export) in
+                            sync_block.targets.iter().zip(sync_block.exports.iter())
+                        {
+                            if let Some(v) = resolve_var_path(&merged_vars, export) {
+                                vars.insert(target.clone(), v);
+                            } else if safe {
+                                vars.insert(target.clone(), Value::Null);
+                            } else {
+                                return Err(format!(
+                                    "Sync export `{}` not found in local scope",
+                                    export
+                                ));
+                            }
+                        }
+                        succeeded = true;
                         break;
                     }
 
-                    // Export from merged vars
-                    for (target, export) in
-                        sync_block.targets.iter().zip(sync_block.exports.iter())
-                    {
-                        if let Some(v) = resolve_var_path(&merged_vars, export) {
-                            vars.insert(target.clone(), v);
-                        } else if safe {
-                            vars.insert(target.clone(), Value::Null);
+                    if !succeeded {
+                        if safe {
+                            for target in &sync_block.targets {
+                                vars.insert(target.clone(), Value::Null);
+                            }
+                        } else if let Some(err) = last_error {
+                            return Err(err);
+                        }
+                    }
+                }
+                Statement::SendNowait(sn) => {
+                    let mut resolved_args = Vec::new();
+                    for arg_expr in &sn.args {
+                        let val = eval_expr(arg_expr, vars, flow_registry, host, codecs).await?;
+                        resolved_args.push(val);
+                    }
+
+                    let target = sn.target.clone();
+                    let fr_clone: Option<FlowRegistry> = flow_registry.cloned();
+
+                    *step += 1;
+                    trace.push(NodeTraceEvent {
+                        step: *step,
+                        node_id: format!("send_{}", sn.target.replace('.', "_")),
+                        op: format!("send.nowait.{}", sn.target),
+                        bind: String::new(),
+                        when: "true".to_string(),
+                        status: "spawned".to_string(),
+                        args: resolved_args.clone(),
+                        output: None,
+                        error: None,
+                        duration_ms: 0,
+                        sync_group: sync_group.map(|s| s.to_string()),
+                    });
+
+                    tokio::task::spawn_local(async move {
+                        let codecs_local = CodecRegistry::default_registry();
+                        let host_local: Rc<dyn Host> = Rc::new(NativeHost::new());
+                        let result = if let Some(ref fr) = fr_clone {
+                            try_dispatch_flow(
+                                &target,
+                                &resolved_args,
+                                Some(fr),
+                                &codecs_local,
+                                &host_local,
+                            )
+                            .await
                         } else {
-                            return Err(format!(
-                                "Sync export `{}` not found in local scope",
-                                export
-                            ));
+                            None
+                        };
+                        let result = match result {
+                            Some(r) => Some(r),
+                            None => Some(
+                                execute_op(&target, &resolved_args, &*host_local, &codecs_local)
+                                    .await,
+                            ),
+                        };
+                        if let Some(Err(e)) = result {
+                            eprintln!("send nowait `{target}` failed: {e}");
                         }
-                    }
-                    succeeded = true;
-                    break;
+                    });
                 }
-
-                if !succeeded {
-                    if safe {
-                        for target in &sync_block.targets {
-                            vars.insert(target.clone(), Value::Null);
-                        }
-                    } else if let Some(err) = last_error {
-                        return Err(err);
-                    }
+                Statement::Break => {
+                    return Ok(ExecSignal::Break);
                 }
-            }
-            Statement::SendNowait(sn) => {
-                let mut resolved_args = Vec::new();
-                for arg_expr in &sn.args {
-                    let val = eval_expr(arg_expr, vars, flow_registry, host, codecs).await?;
-                    resolved_args.push(val);
-                }
-
-                let target = sn.target.clone();
-                let fr_clone: Option<FlowRegistry> = flow_registry.cloned();
-
-                *step += 1;
-                trace.push(NodeTraceEvent {
-                    step: *step,
-                    node_id: format!("send_{}", sn.target.replace('.', "_")),
-                    op: format!("send.nowait.{}", sn.target),
-                    bind: String::new(),
-                    when: "true".to_string(),
-                    status: "spawned".to_string(),
-                    args: resolved_args.clone(),
-                    output: None,
-                    error: None,
-                    duration_ms: 0,
-                    sync_group: sync_group.map(|s| s.to_string()),
-                });
-
-                tokio::task::spawn_local(async move {
-                    let codecs_local = CodecRegistry::default_registry();
-                    let host_local: Rc<dyn Host> = Rc::new(NativeHost::new());
-                    let result = if let Some(ref fr) = fr_clone {
-                        try_dispatch_flow(&target, &resolved_args, Some(fr), &codecs_local, &host_local).await
-                    } else {
-                        None
-                    };
-                    let result = match result {
-                        Some(r) => Some(r),
-                        None => {
-                            Some(execute_op(&target, &resolved_args, &*host_local, &codecs_local).await)
-                        }
-                    };
-                    if let Some(Err(e)) = result {
-                        eprintln!("send nowait `{target}` failed: {e}");
-                    }
-                });
-            }
-            Statement::Break => {
-                return Ok(ExecSignal::Break);
-            }
-            Statement::BareLoop(block) => {
-                loop {
+                Statement::BareLoop(block) => loop {
                     match execute_statements(
-                        &block.body, vars, trace, emit_trace, step,
-                        flow_registry, sync_counter, sync_group, step_ctrl, host, codecs, source_tx,
-                    ).await? {
+                        &block.body,
+                        vars,
+                        trace,
+                        emit_trace,
+                        step,
+                        flow_registry,
+                        sync_counter,
+                        sync_group,
+                        step_ctrl,
+                        host,
+                        codecs,
+                        source_tx,
+                    )
+                    .await?
+                    {
                         ExecSignal::Continue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => break,
                     }
-                }
-            }
-            Statement::SourceLoop(sl) => {
-                let fr = flow_registry.ok_or_else(|| format!("source `{}` requires a flow registry", sl.source_op))?;
-                let mut resolved_args = Vec::new();
-                for arg in &sl.source_args {
-                    match arg {
-                        Arg::Lit { lit } => resolved_args.push(lit.clone()),
-                        Arg::Var { var } => {
-                            let val = resolve_var_path(vars, var).ok_or_else(|| {
-                                format!("source `{}` references unknown var `{}`", sl.source_op, var)
-                            })?;
-                            resolved_args.push(val);
+                },
+                Statement::SourceLoop(sl) => {
+                    let fr = flow_registry.ok_or_else(|| {
+                        format!("source `{}` requires a flow registry", sl.source_op)
+                    })?;
+                    let mut resolved_args = Vec::new();
+                    for arg in &sl.source_args {
+                        match arg {
+                            Arg::Lit { lit } => resolved_args.push(lit.clone()),
+                            Arg::Var { var } => {
+                                let val = resolve_var_path(vars, var).ok_or_else(|| {
+                                    format!(
+                                        "source `{}` references unknown var `{}`",
+                                        sl.source_op, var
+                                    )
+                                })?;
+                                resolved_args.push(val);
+                            }
+                        }
+                    }
+                    let mut rx = dispatch_source(&sl.source_op, &resolved_args, fr, codecs, host)
+                        .ok_or_else(|| {
+                        format!("source `{}` not found in registry", sl.source_op)
+                    })?;
+                    while let Some(event) = rx.recv().await {
+                        vars.insert(sl.bind.clone(), event);
+                        match execute_statements(
+                            &sl.body,
+                            vars,
+                            trace,
+                            emit_trace,
+                            step,
+                            flow_registry,
+                            sync_counter,
+                            sync_group,
+                            step_ctrl,
+                            host,
+                            codecs,
+                            None,
+                        )
+                        .await?
+                        {
+                            ExecSignal::Continue => {}
+                            signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                            ExecSignal::Break => break,
                         }
                     }
                 }
-                let mut rx = dispatch_source(&sl.source_op, &resolved_args, fr, codecs, host)
-                    .ok_or_else(|| format!("source `{}` not found in registry", sl.source_op))?;
-                while let Some(event) = rx.recv().await {
-                    vars.insert(sl.bind.clone(), event);
-                    match execute_statements(
-                        &sl.body, vars, trace, emit_trace, step,
-                        flow_registry, sync_counter, sync_group, step_ctrl, host, codecs, None,
-                    ).await? {
-                        ExecSignal::Continue => {}
-                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
-                        ExecSignal::Break => break,
+                Statement::On(on_block) => {
+                    // Resolve source args
+                    let mut resolved_args = Vec::new();
+                    for arg in &on_block.source_args {
+                        match arg {
+                            Arg::Lit { lit } => resolved_args.push(lit.clone()),
+                            Arg::Var { var } => {
+                                let val = resolve_var_path(vars, var).ok_or_else(|| {
+                                    format!(
+                                        "on block `{}` references unknown var `{}`",
+                                        on_block.source_op, var
+                                    )
+                                })?;
+                                resolved_args.push(val);
+                            }
+                        }
+                    }
+                    // Loop: call source op directly, bind result, execute body
+                    loop {
+                        let event = execute_op(
+                            &on_block.source_op,
+                            &resolved_args,
+                            host.as_ref(),
+                            codecs,
+                        )
+                        .await?;
+                        vars.insert(on_block.bind.clone(), event);
+                        match execute_statements(
+                            &on_block.body,
+                            vars,
+                            trace,
+                            emit_trace,
+                            step,
+                            flow_registry,
+                            sync_counter,
+                            sync_group,
+                            step_ctrl,
+                            host,
+                            codecs,
+                            source_tx,
+                        )
+                        .await?
+                        {
+                            ExecSignal::Continue => {}
+                            signal @ ExecSignal::Emit { .. } => {
+                                if let Some(tx) = source_tx {
+                                    if let ExecSignal::Emit { value, .. } = &signal {
+                                        let _ = tx.send(value.clone());
+                                    }
+                                } else {
+                                    return Ok(signal);
+                                }
+                            }
+                            ExecSignal::Break => break,
+                        }
                     }
                 }
             }
         }
-    }
-    Ok(ExecSignal::Continue)
+        Ok(ExecSignal::Continue)
     })
 }
 
@@ -3124,19 +3536,29 @@ async fn execute_flow_inner(
         &host,
         codecs,
         None,
-    ).await? {
+    )
+    .await?
+    {
         if let Some(port) = flow.outputs.iter().find(|p| p.name == output) {
             let type_errors = registry.validate(&value, &port.type_name, &output);
             if !type_errors.is_empty() {
-                let msgs: Vec<_> = type_errors.iter().map(|e| e.message.clone()).collect();
+                let msgs: Vec<_> = type_errors
+                    .iter()
+                    .map(|e| format!("{}: {}", e.path, e.message))
+                    .collect();
                 return Err(format!(
                     "output `{}` does not conform to type `{}`: {}",
-                    output, port.type_name, msgs.join(", ")
+                    output,
+                    port.type_name,
+                    msgs.join(", ")
                 ));
             }
         }
         outputs.insert(output.clone(), value.clone());
-        vars.insert(value_var, value);
+        // Only insert into vars if value_var is a simple variable name
+        if !value_var.contains(' ') && !value_var.contains('"') {
+            vars.insert(value_var, value);
+        }
     }
 
     Ok(RunReport {
@@ -3156,7 +3578,13 @@ pub fn execute_flow_stepping(
     registry: &TypeRegistry,
     flow_registry: Option<&FlowRegistry>,
     codecs: CodecRegistry,
-) -> Result<(StepHandle, std::thread::JoinHandle<Result<RunReport, String>>), String> {
+) -> Result<
+    (
+        StepHandle,
+        std::thread::JoinHandle<Result<RunReport, String>>,
+    ),
+    String,
+> {
     let (controller, handle) = create_step_channels();
 
     let flow = flow.clone();
@@ -3170,16 +3598,19 @@ pub fn execute_flow_stepping(
             .build()
             .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
         let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, execute_flow_inner(
-            &flow,
-            ir_clone,
-            inputs,
-            &registry,
-            flow_registry.as_ref(),
-            Some(&controller),
-            &codecs,
-            None,
-        ))
+        local.block_on(
+            &rt,
+            execute_flow_inner(
+                &flow,
+                ir_clone,
+                inputs,
+                &registry,
+                flow_registry.as_ref(),
+                Some(&controller),
+                &codecs,
+                None,
+            ),
+        )
     });
 
     Ok((handle, join))
@@ -3219,7 +3650,10 @@ mod tests {
     ) -> Result<RunReport, String> {
         let rt = make_rt();
         let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, execute_flow(flow, ir, inputs, registry, flow_registry, codecs, None))
+        local.block_on(
+            &rt,
+            execute_flow(flow, ir, inputs, registry, flow_registry, codecs, None),
+        )
     }
 
     fn run_flow_with_inputs(source: &str, inputs: Vec<(&str, Value)>) -> Value {
@@ -3231,14 +3665,15 @@ mod tests {
         for (k, v) in inputs {
             input_map.insert(k.to_string(), v);
         }
-        let report = test_execute_flow(&flow, ir_data, input_map, &registry, None, &codecs).unwrap();
+        let report =
+            test_execute_flow(&flow, ir_data, input_map, &registry, None, &codecs).unwrap();
         report.outputs
     }
 
     #[test]
     fn output_validation_catches_type_mismatch() {
         let src = r#"
-type HttpRequest
+type TestRequest
   path text
   params dict
 done
@@ -3257,7 +3692,7 @@ docs BadEmitFlow
 done
 
 func BadEmitFlow
-  take request as HttpRequest
+  take request as TestRequest
   emit response as StrictResponse
   fail error as AuthError
 body
@@ -3274,7 +3709,14 @@ done
             "request".to_string(),
             serde_json::json!({"path": "/test", "params": {"email": "a@b.com"}}),
         );
-        let result = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry());
+        let result = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        );
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("should fail output validation"),
@@ -3351,7 +3793,15 @@ done
         let ir_val = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({"text": "{\"a\":1}"}));
-        let report = test_execute_flow(&flow, ir_val, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let outputs = report.outputs.as_object().unwrap();
         let result = outputs.get("result").expect("should emit result");
         assert_eq!(result.get("decoded"), Some(&json!({"a": 1})));
@@ -3359,40 +3809,9 @@ done
     }
 
     #[test]
-    fn math_divide_works() {
-        let result = test_op("math.divide", &[json!(10.0), json!(3.0)]).unwrap();
-        let v = result.as_f64().unwrap();
-        assert!((v - 3.333333333).abs() < 0.001);
-    }
-
-    #[test]
-    fn math_divide_by_zero_errors() {
-        let result = test_op("math.divide", &[json!(10.0), json!(0.0)]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("division by zero"));
-    }
-
-    #[test]
-    fn math_multiply_works() {
-        let result = test_op("math.multiply", &[json!(3.0), json!(4.0)]).unwrap();
-        assert_eq!(result, json!(12.0));
-    }
-
-    #[test]
-    fn math_add_subtract_works() {
-        assert_eq!(test_op("math.add", &[json!(2.0), json!(3.0)]).unwrap(), json!(5.0));
-        assert_eq!(test_op("math.subtract", &[json!(10.0), json!(3.0)]).unwrap(), json!(7.0));
-    }
-
-    #[test]
     fn math_floor_works() {
         assert_eq!(test_op("math.floor", &[json!(3.7)]).unwrap(), json!(3));
         assert_eq!(test_op("math.floor", &[json!(2.0)]).unwrap(), json!(2));
-    }
-
-    #[test]
-    fn math_mod_works() {
-        assert_eq!(test_op("math.mod", &[json!(10.0), json!(3.0)]).unwrap(), json!(1.0));
     }
 
     #[test]
@@ -3474,7 +3893,15 @@ done
             "request".to_string(),
             json!({"path": "/test", "params": {}}),
         );
-        let report = test_execute_flow(&flow, ir_val, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let sync_events: Vec<_> = report
             .trace
             .iter()
@@ -3494,7 +3921,7 @@ done
     #[test]
     fn sync_safe_exports_null() {
         // Test that :safe => true handles missing exports by inserting null.
-        // We use math.divide with division by zero to trigger a failure in the sync body,
+        // We use division by zero to trigger a failure in the sync body,
         // causing the bind variable to not be set, so the export is missing.
         let src = r#"
 type Req
@@ -3518,9 +3945,9 @@ func SafeSync
   emit response as Resp
   fail error as Err
 body
-  zero = math.subtract(0.0, 0.0)
+  zero = 0.0 - 0.0
   [data] = sync :safe => true
-    data_local = math.divide(1.0, zero)
+    data_local = 1.0 / zero
   done [data_local]
   response = http.error_response(200, "ok")
   emit response
@@ -3532,7 +3959,15 @@ done
         let ir_val = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("request".to_string(), json!({"path": "/test"}));
-        let report = test_execute_flow(&flow, ir_val, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         assert!(
             report.outputs.get("response").is_some(),
             "should produce output despite sync failure"
@@ -3547,7 +3982,15 @@ done
             "request".to_string(),
             json!({"path": "/test", "params": {}}),
         );
-        let report = test_execute_flow(&flow, ir_val, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         assert!(
             report.outputs.get("response").is_some(),
             "sync with retry should succeed"
@@ -3600,7 +4043,14 @@ done
         inputs.insert("request".to_string(), json!({"path": "/test"}));
         // With 1ms timeout, this may or may not timeout depending on execution speed.
         // The important thing is it doesn't panic and handles the timeout path.
-        let _result = test_execute_flow(&flow, ir_val, inputs, &registry, None, &CodecRegistry::default_registry());
+        let _result = test_execute_flow(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        );
     }
 
     #[test]
@@ -3644,8 +4094,15 @@ done
             json!({"path": "/test", "params": {"email": "a@b.com"}}),
         );
 
-        let (handle, join) =
-            execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
+        let (handle, join) = execute_flow_stepping(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            CodecRegistry::default_registry(),
+        )
+        .unwrap();
 
         // Discard the initial "ready" snapshot (op=None) sent before any nodes run
         let ready = handle
@@ -3716,8 +4173,15 @@ done
             json!({"path": "/test", "params": {"email": "a@b.com"}}),
         );
 
-        let (handle, join) =
-            execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
+        let (handle, join) = execute_flow_stepping(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            CodecRegistry::default_registry(),
+        )
+        .unwrap();
 
         let snap = handle
             .snapshot_rx
@@ -3767,10 +4231,13 @@ done
         let ir_val = ir::lower_to_ir(&flow).unwrap();
 
         // Find the node_id for "email" (the auth.extract_email node)
-        let target_node_id = ir_val.nodes.iter()
+        let target_node_id = ir_val
+            .nodes
+            .iter()
             .find(|n| n.bind == "email")
             .expect("should have email node")
-            .id.clone();
+            .id
+            .clone();
 
         let mut inputs = HashMap::new();
         inputs.insert(
@@ -3778,8 +4245,15 @@ done
             json!({"path": "/test", "params": {"email": "a@b.com"}}),
         );
 
-        let (handle, join) =
-            execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
+        let (handle, join) = execute_flow_stepping(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            CodecRegistry::default_registry(),
+        )
+        .unwrap();
 
         // Initial "ready" snapshot arrives with no op (emitted before first statement).
         let init = handle
@@ -3799,8 +4273,14 @@ done
         // Set breakpoint on the email node and run to breakpoint
         let mut bp = HashSet::new();
         bp.insert(target_node_id.clone());
-        handle.command_tx.send(StepCommand::SetBreakpoints(bp)).unwrap();
-        handle.command_tx.send(StepCommand::RunToBreakpoint).unwrap();
+        handle
+            .command_tx
+            .send(StepCommand::SetBreakpoints(bp))
+            .unwrap();
+        handle
+            .command_tx
+            .send(StepCommand::RunToBreakpoint)
+            .unwrap();
 
         // Should pause at the email node
         let snap2 = handle
@@ -3853,10 +4333,13 @@ done
         let flow = parser::parse_runtime_func_from_module_v1(&module).unwrap();
         let ir_val = ir::lower_to_ir(&flow).unwrap();
 
-        let response_node_id = ir_val.nodes.iter()
+        let response_node_id = ir_val
+            .nodes
+            .iter()
             .find(|n| n.bind == "response")
             .expect("should have response node")
-            .id.clone();
+            .id
+            .clone();
 
         let mut inputs = HashMap::new();
         inputs.insert(
@@ -3864,8 +4347,15 @@ done
             json!({"path": "/test", "params": {"email": "a@b.com"}}),
         );
 
-        let (handle, join) =
-            execute_flow_stepping(&flow, ir_val, inputs, &registry, None, CodecRegistry::default_registry()).unwrap();
+        let (handle, join) = execute_flow_stepping(
+            &flow,
+            ir_val,
+            inputs,
+            &registry,
+            None,
+            CodecRegistry::default_registry(),
+        )
+        .unwrap();
 
         // Initial "ready" snapshot (op=None, emitted before first statement).
         let _ = handle
@@ -3892,8 +4382,14 @@ done
         // Now set breakpoint on response and run to it
         let mut bp = HashSet::new();
         bp.insert(response_node_id.clone());
-        handle.command_tx.send(StepCommand::SetBreakpoints(bp)).unwrap();
-        handle.command_tx.send(StepCommand::RunToBreakpoint).unwrap();
+        handle
+            .command_tx
+            .send(StepCommand::SetBreakpoints(bp))
+            .unwrap();
+        handle
+            .command_tx
+            .send(StepCommand::RunToBreakpoint)
+            .unwrap();
 
         let snap3 = handle
             .snapshot_rx
@@ -3904,12 +4400,6 @@ done
         handle.command_tx.send(StepCommand::Continue).unwrap();
         let report = join.join().expect("thread should not panic").unwrap();
         assert!(report.outputs.get("response").is_some());
-    }
-
-    #[test]
-    fn math_power_works() {
-        let result = test_op("math.power", &[json!(2.0), json!(10.0)]).unwrap();
-        assert_eq!(result, json!(1024.0));
     }
 
     #[test]
@@ -3946,44 +4436,6 @@ done
     fn obj_set_works() {
         let result = test_op("obj.set", &[json!({"a": 1}), json!("b"), json!(2)]).unwrap();
         assert_eq!(result, json!({"a": 1, "b": 2}));
-    }
-
-    // --- list.get ---
-
-    #[test]
-    fn list_get_by_index() {
-        let result = test_op("list.get", &[json!([10, 20, 30]), json!(1)]).unwrap();
-        assert_eq!(result, json!(20));
-    }
-
-    #[test]
-    fn list_get_negative_index() {
-        let result = test_op("list.get", &[json!([10, 20, 30]), json!(-1)]).unwrap();
-        assert_eq!(result, json!(30));
-    }
-
-    #[test]
-    fn list_get_negative_two() {
-        let result = test_op("list.get", &[json!(["a", "b", "c"]), json!(-2)]).unwrap();
-        assert_eq!(result, json!("b"));
-    }
-
-    #[test]
-    fn list_get_out_of_bounds() {
-        let err = test_op("list.get", &[json!([1, 2]), json!(5)]).unwrap_err();
-        assert!(err.contains("out of bounds"));
-    }
-
-    #[test]
-    fn list_get_negative_out_of_bounds() {
-        let err = test_op("list.get", &[json!([1]), json!(-2)]).unwrap_err();
-        assert!(err.contains("out of bounds"));
-    }
-
-    #[test]
-    fn list_get_empty() {
-        let err = test_op("list.get", &[json!([]), json!(0)]).unwrap_err();
-        assert!(err.contains("out of bounds"));
     }
 
     // --- list.len ---
@@ -4219,8 +4671,17 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({"value": 10.0}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry())?;
-        let out = report.outputs.get("result")
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )?;
+        let out = report
+            .outputs
+            .get("result")
             .ok_or_else(|| "no result output".to_string())?;
         Ok(out.get("v").cloned().unwrap_or(out.clone()))
     }
@@ -4232,7 +4693,10 @@ done
 
     #[test]
     fn expr_arithmetic_mul_div() {
-        assert_eq!(run_expr_value("_r = 10.0 / 2.0 * 3.0").unwrap(), json!(15.0));
+        assert_eq!(
+            run_expr_value("_r = 10.0 / 2.0 * 3.0").unwrap(),
+            json!(15.0)
+        );
     }
 
     #[test]
@@ -4260,7 +4724,10 @@ done
 
     #[test]
     fn expr_string_concatenation() {
-        assert_eq!(run_expr_value("_r = \"hello\" + \" world\"").unwrap(), json!("hello world"));
+        assert_eq!(
+            run_expr_value("_r = \"hello\" + \" world\"").unwrap(),
+            json!("hello world")
+        );
     }
 
     #[test]
@@ -4270,7 +4737,10 @@ done
 
     #[test]
     fn expr_variable_path_in_expression() {
-        assert_eq!(run_expr_value("_r = input.value + 5.0").unwrap(), json!(15.0));
+        assert_eq!(
+            run_expr_value("_r = input.value + 5.0").unwrap(),
+            json!(15.0)
+        );
     }
 
     #[test]
@@ -4313,7 +4783,7 @@ func Calc
   emit result as dict
   fail error as dict
 body
-  a = math.add(2.0, 3.0)
+  a = 2.0 + 3.0
   b = a * 4.0
   _wrapped = fmt.wrap_field("v", b)
   emit _wrapped
@@ -4325,7 +4795,15 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let out = report.outputs.get("result").unwrap();
         assert_eq!(out.get("v").unwrap(), &json!(20.0));
     }
@@ -4342,7 +4820,7 @@ func Calc
   emit result as dict
   fail error as dict
 body
-  x = math.add(2.0, 3.0) * 2.0
+  x = (2.0 + 3.0) * 2.0
   _wrapped = fmt.wrap_field("v", x)
   emit _wrapped
 done
@@ -4353,7 +4831,15 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let out = report.outputs.get("result").unwrap();
         assert_eq!(out.get("v").unwrap(), &json!(10.0));
     }
@@ -4368,27 +4854,42 @@ done
 
     #[test]
     fn str_upper_works() {
-        assert_eq!(test_op("str.upper", &[json!("hello")]).unwrap(), json!("HELLO"));
+        assert_eq!(
+            test_op("str.upper", &[json!("hello")]).unwrap(),
+            json!("HELLO")
+        );
     }
 
     #[test]
     fn str_lower_works() {
-        assert_eq!(test_op("str.lower", &[json!("HELLO")]).unwrap(), json!("hello"));
+        assert_eq!(
+            test_op("str.lower", &[json!("HELLO")]).unwrap(),
+            json!("hello")
+        );
     }
 
     #[test]
     fn str_trim_works() {
-        assert_eq!(test_op("str.trim", &[json!("  hi  ")]).unwrap(), json!("hi"));
+        assert_eq!(
+            test_op("str.trim", &[json!("  hi  ")]).unwrap(),
+            json!("hi")
+        );
     }
 
     #[test]
     fn str_trim_start_works() {
-        assert_eq!(test_op("str.trim_start", &[json!("  hi  ")]).unwrap(), json!("hi  "));
+        assert_eq!(
+            test_op("str.trim_start", &[json!("  hi  ")]).unwrap(),
+            json!("hi  ")
+        );
     }
 
     #[test]
     fn str_trim_end_works() {
-        assert_eq!(test_op("str.trim_end", &[json!("  hi  ")]).unwrap(), json!("  hi"));
+        assert_eq!(
+            test_op("str.trim_end", &[json!("  hi  ")]).unwrap(),
+            json!("  hi")
+        );
     }
 
     #[test]
@@ -4410,46 +4911,89 @@ done
     #[test]
     fn str_replace_works() {
         assert_eq!(
-            test_op("str.replace", &[json!("hello world"), json!("world"), json!("rust")]).unwrap(),
+            test_op(
+                "str.replace",
+                &[json!("hello world"), json!("world"), json!("rust")]
+            )
+            .unwrap(),
             json!("hello rust")
         );
     }
 
     #[test]
     fn str_contains_works() {
-        assert_eq!(test_op("str.contains", &[json!("hello"), json!("ell")]).unwrap(), json!(true));
-        assert_eq!(test_op("str.contains", &[json!("hello"), json!("xyz")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("str.contains", &[json!("hello"), json!("ell")]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("str.contains", &[json!("hello"), json!("xyz")]).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn str_starts_with_works() {
-        assert_eq!(test_op("str.starts_with", &[json!("hello"), json!("hel")]).unwrap(), json!(true));
-        assert_eq!(test_op("str.starts_with", &[json!("hello"), json!("lo")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("str.starts_with", &[json!("hello"), json!("hel")]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("str.starts_with", &[json!("hello"), json!("lo")]).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn str_ends_with_works() {
-        assert_eq!(test_op("str.ends_with", &[json!("hello"), json!("llo")]).unwrap(), json!(true));
-        assert_eq!(test_op("str.ends_with", &[json!("hello"), json!("hel")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("str.ends_with", &[json!("hello"), json!("llo")]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("str.ends_with", &[json!("hello"), json!("hel")]).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn str_slice_works() {
-        assert_eq!(test_op("str.slice", &[json!("hello"), json!(1), json!(4)]).unwrap(), json!("ell"));
-        assert_eq!(test_op("str.slice", &[json!("hello"), json!(0), json!(100)]).unwrap(), json!("hello"));
-        assert_eq!(test_op("str.slice", &[json!("hello"), json!(3), json!(1)]).unwrap(), json!(""));
+        assert_eq!(
+            test_op("str.slice", &[json!("hello"), json!(1), json!(4)]).unwrap(),
+            json!("ell")
+        );
+        assert_eq!(
+            test_op("str.slice", &[json!("hello"), json!(0), json!(100)]).unwrap(),
+            json!("hello")
+        );
+        assert_eq!(
+            test_op("str.slice", &[json!("hello"), json!(3), json!(1)]).unwrap(),
+            json!("")
+        );
     }
 
     #[test]
     fn str_index_of_works() {
-        assert_eq!(test_op("str.index_of", &[json!("hello"), json!("ll")]).unwrap(), json!(2));
-        assert_eq!(test_op("str.index_of", &[json!("hello"), json!("xyz")]).unwrap(), json!(-1));
+        assert_eq!(
+            test_op("str.index_of", &[json!("hello"), json!("ll")]).unwrap(),
+            json!(2)
+        );
+        assert_eq!(
+            test_op("str.index_of", &[json!("hello"), json!("xyz")]).unwrap(),
+            json!(-1)
+        );
     }
 
     #[test]
     fn str_repeat_works() {
-        assert_eq!(test_op("str.repeat", &[json!("ab"), json!(3)]).unwrap(), json!("ababab"));
-        assert_eq!(test_op("str.repeat", &[json!("x"), json!(0)]).unwrap(), json!(""));
+        assert_eq!(
+            test_op("str.repeat", &[json!("ab"), json!(3)]).unwrap(),
+            json!("ababab")
+        );
+        assert_eq!(
+            test_op("str.repeat", &[json!("x"), json!(0)]).unwrap(),
+            json!("")
+        );
     }
 
     #[test]
@@ -4476,7 +5020,15 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let out = report.outputs.get("result").unwrap();
         assert_eq!(out.get("v").unwrap(), &json!("hello world!"));
     }
@@ -4504,7 +5056,15 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({"name": "Ada"}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let out = report.outputs.get("result").unwrap();
         assert_eq!(out.get("v").unwrap(), &json!("name is Ada"));
     }
@@ -4533,7 +5093,15 @@ done
         let flow_ir = ir::lower_to_ir(&flow).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), json!({}));
-        let report = test_execute_flow(&flow, flow_ir, inputs, &registry, None, &CodecRegistry::default_registry()).unwrap();
+        let report = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        )
+        .unwrap();
         let out = report.outputs.get("result").unwrap();
         assert_eq!(out.get("v").unwrap(), &json!("count is 42"));
     }
@@ -4557,7 +5125,11 @@ done
     fn civil_from_days_roundtrip() {
         for days in [-10000, -1, 0, 1, 10000, 19797] {
             let (y, m, d) = civil_from_days(days);
-            assert_eq!(days_from_civil(y, m, d), days, "roundtrip failed for {days}");
+            assert_eq!(
+                days_from_civil(y, m, d),
+                days,
+                "roundtrip failed for {days}"
+            );
         }
     }
 
@@ -4618,9 +5190,19 @@ done
 
     #[test]
     fn date_from_parts_epoch() {
-        let r = test_op("date.from_parts", &[
-            json!(1970), json!(1), json!(1), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
+        let r = test_op(
+            "date.from_parts",
+            &[
+                json!(1970),
+                json!(1),
+                json!(1),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         assert_eq!(r["unix_ms"], 0);
         assert_eq!(r["tz_offset_min"], 0);
     }
@@ -4628,18 +5210,38 @@ done
     #[test]
     fn date_from_parts_known() {
         // 2024-03-15T10:30:00 UTC
-        let r = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(10), json!(30), json!(0), json!(0)
-        ]).unwrap();
+        let r = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(10),
+                json!(30),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         let expected = 19797 * 86_400_000_i64 + 10 * 3_600_000 + 30 * 60_000;
         assert_eq!(r["unix_ms"], expected);
     }
 
     #[test]
     fn date_to_parts_roundtrip() {
-        let date = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(10), json!(30), json!(45), json!(123)
-        ]).unwrap();
+        let date = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(10),
+                json!(30),
+                json!(45),
+                json!(123),
+            ],
+        )
+        .unwrap();
         let parts = test_op("date.to_parts", &[date]).unwrap();
         assert_eq!(parts["year"], 2024);
         assert_eq!(parts["month"], 3);
@@ -4652,9 +5254,19 @@ done
 
     #[test]
     fn date_with_tz_preserves_instant() {
-        let utc = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(10), json!(0), json!(0), json!(0)
-        ]).unwrap();
+        let utc = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(10),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         let ist = test_op("date.with_tz", &[utc.clone(), json!(330)]).unwrap();
         // Same unix_ms
         assert_eq!(utc["unix_ms"], ist["unix_ms"]);
@@ -4667,9 +5279,19 @@ done
 
     #[test]
     fn date_add_days() {
-        let date = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
+        let date = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         let later = test_op("date.add_days", &[date.clone(), json!(10)]).unwrap();
         let diff = test_op("date.diff", &[later, date]).unwrap();
         assert_eq!(diff, json!(10 * 86_400_000_i64));
@@ -4677,34 +5299,93 @@ done
 
     #[test]
     fn date_diff_and_compare() {
-        let a = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
-        let b = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(10), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
-        assert_eq!(test_op("date.compare", &[a.clone(), b.clone()]).unwrap(), json!(1));
-        assert_eq!(test_op("date.compare", &[b.clone(), a.clone()]).unwrap(), json!(-1));
-        assert_eq!(test_op("date.compare", &[a.clone(), a.clone()]).unwrap(), json!(0));
+        let a = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
+        let b = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(10),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            test_op("date.compare", &[a.clone(), b.clone()]).unwrap(),
+            json!(1)
+        );
+        assert_eq!(
+            test_op("date.compare", &[b.clone(), a.clone()]).unwrap(),
+            json!(-1)
+        );
+        assert_eq!(
+            test_op("date.compare", &[a.clone(), a.clone()]).unwrap(),
+            json!(0)
+        );
     }
 
     #[test]
     fn date_weekday_epoch() {
         // 1970-01-01 = Thursday = 4
-        let date = test_op("date.from_parts", &[
-            json!(1970), json!(1), json!(1), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
+        let date = test_op(
+            "date.from_parts",
+            &[
+                json!(1970),
+                json!(1),
+                json!(1),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         assert_eq!(test_op("date.weekday", &[date]).unwrap(), json!(4));
     }
 
     #[test]
     fn date_epoch_roundtrip() {
-        let epoch = test_op("date.from_parts", &[
-            json!(2000), json!(1), json!(1), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
-        let target = test_op("date.from_parts", &[
-            json!(2000), json!(1), json!(2), json!(0), json!(0), json!(0), json!(0)
-        ]).unwrap();
+        let epoch = test_op(
+            "date.from_parts",
+            &[
+                json!(2000),
+                json!(1),
+                json!(1),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
+        let target = test_op(
+            "date.from_parts",
+            &[
+                json!(2000),
+                json!(1),
+                json!(2),
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
         let offset = test_op("date.to_epoch", &[target.clone(), epoch.clone()]).unwrap();
         assert_eq!(offset, json!(86_400_000_i64));
         let reconstructed = test_op("date.from_epoch", &[epoch, offset]).unwrap();
@@ -4729,20 +5410,52 @@ done
     #[test]
     fn date_cross_timezone_comparison() {
         // 10:00 UTC == 15:30 IST (same instant)
-        let utc = test_op("date.from_parts", &[
-            json!(2024), json!(3), json!(15), json!(10), json!(0), json!(0), json!(0)
-        ]).unwrap();
-        let ist = test_op("date.from_parts_tz", &[
-            json!(2024), json!(3), json!(15), json!(15), json!(30), json!(0), json!(0), json!(330)
-        ]).unwrap();
+        let utc = test_op(
+            "date.from_parts",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(10),
+                json!(0),
+                json!(0),
+                json!(0),
+            ],
+        )
+        .unwrap();
+        let ist = test_op(
+            "date.from_parts_tz",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(15),
+                json!(30),
+                json!(0),
+                json!(0),
+                json!(330),
+            ],
+        )
+        .unwrap();
         assert_eq!(test_op("date.compare", &[utc, ist]).unwrap(), json!(0));
     }
 
     #[test]
     fn date_from_parts_tz() {
-        let r = test_op("date.from_parts_tz", &[
-            json!(2024), json!(3), json!(15), json!(15), json!(30), json!(0), json!(0), json!(330)
-        ]).unwrap();
+        let r = test_op(
+            "date.from_parts_tz",
+            &[
+                json!(2024),
+                json!(3),
+                json!(15),
+                json!(15),
+                json!(30),
+                json!(0),
+                json!(0),
+                json!(330),
+            ],
+        )
+        .unwrap();
         // 15:30 IST = 10:00 UTC
         let expected = 19797 * 86_400_000_i64 + 10 * 3_600_000;
         assert_eq!(r["unix_ms"], expected);
@@ -4787,7 +5500,10 @@ done
     fn stamp_diff_and_add() {
         let a = test_op("stamp.from_ns", &[json!(5_000_000_000_i64)]).unwrap();
         let b = test_op("stamp.from_ns", &[json!(3_000_000_000_i64)]).unwrap();
-        assert_eq!(test_op("stamp.diff", &[a.clone(), b.clone()]).unwrap(), json!(2_000_000_000_i64));
+        assert_eq!(
+            test_op("stamp.diff", &[a.clone(), b.clone()]).unwrap(),
+            json!(2_000_000_000_i64)
+        );
         let c = test_op("stamp.add", &[b, json!(2_000_000_000_i64)]).unwrap();
         assert_eq!(c["ns"], a["ns"]);
     }
@@ -4835,12 +5551,24 @@ done
         let e = make_date(5000, 0);
         let tr = test_op("trange.new", &[s, e]).unwrap();
         // Inside
-        assert_eq!(test_op("trange.contains", &[tr.clone(), make_date(3000, 0)]).unwrap(), json!(true));
+        assert_eq!(
+            test_op("trange.contains", &[tr.clone(), make_date(3000, 0)]).unwrap(),
+            json!(true)
+        );
         // Outside
-        assert_eq!(test_op("trange.contains", &[tr.clone(), make_date(6000, 0)]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("trange.contains", &[tr.clone(), make_date(6000, 0)]).unwrap(),
+            json!(false)
+        );
         // Boundary (inclusive)
-        assert_eq!(test_op("trange.contains", &[tr.clone(), make_date(1000, 0)]).unwrap(), json!(true));
-        assert_eq!(test_op("trange.contains", &[tr, make_date(5000, 0)]).unwrap(), json!(true));
+        assert_eq!(
+            test_op("trange.contains", &[tr.clone(), make_date(1000, 0)]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("trange.contains", &[tr, make_date(5000, 0)]).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
@@ -4848,7 +5576,10 @@ done
         let a = test_op("trange.new", &[make_date(1000, 0), make_date(5000, 0)]).unwrap();
         let b = test_op("trange.new", &[make_date(3000, 0), make_date(8000, 0)]).unwrap();
         let c = test_op("trange.new", &[make_date(6000, 0), make_date(9000, 0)]).unwrap();
-        assert_eq!(test_op("trange.overlaps", &[a.clone(), b]).unwrap(), json!(true));
+        assert_eq!(
+            test_op("trange.overlaps", &[a.clone(), b]).unwrap(),
+            json!(true)
+        );
         assert_eq!(test_op("trange.overlaps", &[a, c]).unwrap(), json!(false));
     }
 
@@ -4873,7 +5604,10 @@ done
         assert_eq!(test_op("type.of", &[json!(42)]).unwrap(), json!("long"));
         assert_eq!(test_op("type.of", &[json!(3.14)]).unwrap(), json!("real"));
         assert_eq!(test_op("type.of", &[json!([1, 2])]).unwrap(), json!("list"));
-        assert_eq!(test_op("type.of", &[json!({"a": 1})]).unwrap(), json!("dict"));
+        assert_eq!(
+            test_op("type.of", &[json!({"a": 1})]).unwrap(),
+            json!("dict")
+        );
         assert_eq!(test_op("type.of", &[Value::Null]).unwrap(), json!("void"));
         // no args → void
         assert_eq!(test_op("type.of", &[]).unwrap(), json!("void"));
@@ -4887,8 +5621,14 @@ done
         assert_eq!(test_op("to.text", &[json!(true)]).unwrap(), json!("true"));
         assert_eq!(test_op("to.text", &[json!(false)]).unwrap(), json!("false"));
         assert_eq!(test_op("to.text", &[Value::Null]).unwrap(), json!(""));
-        assert_eq!(test_op("to.text", &[json!([1, 2])]).unwrap(), json!("[1,2]"));
-        assert_eq!(test_op("to.text", &[json!({"a": 1})]).unwrap(), json!("{\"a\":1}"));
+        assert_eq!(
+            test_op("to.text", &[json!([1, 2])]).unwrap(),
+            json!("[1,2]")
+        );
+        assert_eq!(
+            test_op("to.text", &[json!({"a": 1})]).unwrap(),
+            json!("{\"a\":1}")
+        );
     }
 
     #[test]
@@ -4953,15 +5693,25 @@ done
     fn env_get_missing_returns_default() {
         let val = test_op("env.get", &[json!("DATAFLOW_NONEXISTENT_XYZ")]).unwrap();
         assert_eq!(val, json!(""));
-        let val2 = test_op("env.get", &[json!("DATAFLOW_NONEXISTENT_XYZ"), json!("fallback")]).unwrap();
+        let val2 = test_op(
+            "env.get",
+            &[json!("DATAFLOW_NONEXISTENT_XYZ"), json!("fallback")],
+        )
+        .unwrap();
         assert_eq!(val2, json!("fallback"));
     }
 
     #[test]
     fn env_has() {
         test_op("env.set", &[json!("DATAFLOW_HAS_TEST"), json!("yes")]).unwrap();
-        assert_eq!(test_op("env.has", &[json!("DATAFLOW_HAS_TEST")]).unwrap(), json!(true));
-        assert_eq!(test_op("env.has", &[json!("DATAFLOW_NONEXISTENT_XYZ")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("env.has", &[json!("DATAFLOW_HAS_TEST")]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("env.has", &[json!("DATAFLOW_NONEXISTENT_XYZ")]).unwrap(),
+            json!(false)
+        );
         test_op("env.remove", &[json!("DATAFLOW_HAS_TEST")]).unwrap();
     }
 
@@ -4974,9 +5724,15 @@ done
     #[test]
     fn env_remove() {
         test_op("env.set", &[json!("DATAFLOW_RM_TEST"), json!("temp")]).unwrap();
-        assert_eq!(test_op("env.has", &[json!("DATAFLOW_RM_TEST")]).unwrap(), json!(true));
+        assert_eq!(
+            test_op("env.has", &[json!("DATAFLOW_RM_TEST")]).unwrap(),
+            json!(true)
+        );
         test_op("env.remove", &[json!("DATAFLOW_RM_TEST")]).unwrap();
-        assert_eq!(test_op("env.has", &[json!("DATAFLOW_RM_TEST")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("env.has", &[json!("DATAFLOW_RM_TEST")]).unwrap(),
+            json!(false)
+        );
     }
 
     // -----------------------------------------------------------------
@@ -5009,8 +5765,14 @@ done
 
     #[test]
     fn regex_match_basic() {
-        assert_eq!(test_op("regex.match", &[json!("hello123"), json!(r"\d+")]).unwrap(), json!(true));
-        assert_eq!(test_op("regex.match", &[json!("hello"), json!(r"\d+")]).unwrap(), json!(false));
+        assert_eq!(
+            test_op("regex.match", &[json!("hello123"), json!(r"\d+")]).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            test_op("regex.match", &[json!("hello"), json!(r"\d+")]).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
@@ -5021,7 +5783,11 @@ done
 
     #[test]
     fn regex_find_with_groups() {
-        let result = test_op("regex.find", &[json!("2024-01-15"), json!(r"(\d{4})-(\d{2})-(\d{2})")]).unwrap();
+        let result = test_op(
+            "regex.find",
+            &[json!("2024-01-15"), json!(r"(\d{4})-(\d{2})-(\d{2})")],
+        )
+        .unwrap();
         assert_eq!(result["matched"], json!(true));
         assert_eq!(result["text"], json!("2024-01-15"));
         assert_eq!(result["groups"], json!(["2024", "01", "15"]));
@@ -5041,13 +5807,21 @@ done
 
     #[test]
     fn regex_replace_first() {
-        let result = test_op("regex.replace", &[json!("foo bar foo"), json!("foo"), json!("baz")]).unwrap();
+        let result = test_op(
+            "regex.replace",
+            &[json!("foo bar foo"), json!("foo"), json!("baz")],
+        )
+        .unwrap();
         assert_eq!(result, json!("baz bar foo"));
     }
 
     #[test]
     fn regex_replace_all() {
-        let result = test_op("regex.replace_all", &[json!("foo bar foo"), json!("foo"), json!("baz")]).unwrap();
+        let result = test_op(
+            "regex.replace_all",
+            &[json!("foo bar foo"), json!("foo"), json!("baz")],
+        )
+        .unwrap();
         assert_eq!(result, json!("baz bar baz"));
     }
 
@@ -5106,7 +5880,12 @@ done
     fn random_shuffle_preserves_elements() {
         let input = json!([1, 2, 3, 4, 5]);
         let result = test_op("random.shuffle", &[input.clone()]).unwrap();
-        let mut sorted_result: Vec<i64> = result.as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+        let mut sorted_result: Vec<i64> = result
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
         sorted_result.sort();
         assert_eq!(sorted_result, vec![1, 2, 3, 4, 5]);
     }
@@ -5124,7 +5903,10 @@ done
     #[test]
     fn hash_sha256_known_value() {
         let result = test_op("hash.sha256", &[json!("hello")]).unwrap();
-        assert_eq!(result.as_str().unwrap(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            result.as_str().unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]
@@ -5144,14 +5926,21 @@ done
 
     #[test]
     fn hash_hmac_sha512_explicit() {
-        let result = test_op("hash.hmac", &[json!("hello"), json!("secret"), json!("sha512")]).unwrap();
+        let result = test_op(
+            "hash.hmac",
+            &[json!("hello"), json!("secret"), json!("sha512")],
+        )
+        .unwrap();
         let s = result.as_str().unwrap();
         assert_eq!(s.len(), 128);
     }
 
     #[test]
     fn hash_hmac_bad_algorithm() {
-        let result = test_op("hash.hmac", &[json!("hello"), json!("secret"), json!("md5")]);
+        let result = test_op(
+            "hash.hmac",
+            &[json!("hello"), json!("secret"), json!("md5")],
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unsupported algorithm"));
     }
@@ -5195,7 +5984,11 @@ done
         let hash = test_op("crypto.hash_password", &[json!("mypassword")]).unwrap();
         let s = hash.as_str().unwrap();
         assert!(s.starts_with("$2"));
-        let valid = test_op("crypto.verify_password", &[json!("mypassword"), hash.clone()]).unwrap();
+        let valid = test_op(
+            "crypto.verify_password",
+            &[json!("mypassword"), hash.clone()],
+        )
+        .unwrap();
         assert_eq!(valid, json!(true));
     }
 
@@ -5215,8 +6008,14 @@ done
 
         let result = test_op("crypto.verify_token", &[token, json!("secret")]).unwrap();
         assert_eq!(result.get("valid").unwrap(), &json!(true));
-        assert_eq!(result.get("payload").unwrap().get("sub").unwrap(), &json!("user123"));
-        assert_eq!(result.get("payload").unwrap().get("role").unwrap(), &json!("admin"));
+        assert_eq!(
+            result.get("payload").unwrap().get("sub").unwrap(),
+            &json!("user123")
+        );
+        assert_eq!(
+            result.get("payload").unwrap().get("role").unwrap(),
+            &json!("admin")
+        );
     }
 
     #[test]
@@ -5229,7 +6028,11 @@ done
 
     #[test]
     fn crypto_verify_token_malformed() {
-        let result = test_op("crypto.verify_token", &[json!("not.a.valid.token.here"), json!("secret")]).unwrap();
+        let result = test_op(
+            "crypto.verify_token",
+            &[json!("not.a.valid.token.here"), json!("secret")],
+        )
+        .unwrap();
         assert_eq!(result.get("valid").unwrap(), &json!(false));
     }
 
@@ -5262,7 +6065,9 @@ done
     async fn db_open_in_memory() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         assert!(handle.as_str().unwrap().starts_with("db_"));
         let closed = execute_op("db.close", &[handle], &h, &c).await.unwrap();
         assert_eq!(closed, json!(true));
@@ -5272,18 +6077,33 @@ done
     async fn db_exec_create_and_insert() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         let ddl = execute_op(
             "db.exec",
-            &[handle.clone(), json!("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         assert_eq!(ddl["rows_affected"], json!(0));
         let ins = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO t (name) VALUES (?1)"), json!(["Alice"])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO t (name) VALUES (?1)"),
+                json!(["Alice"]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         assert_eq!(ins["rows_affected"], json!(1));
         let _ = execute_op("db.close", &[handle], &h, &c).await.unwrap();
     }
@@ -5292,27 +6112,55 @@ done
     async fn db_query_returns_rows() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("CREATE TABLE people (name TEXT, age INTEGER)")],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("CREATE TABLE people (name TEXT, age INTEGER)"),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO people VALUES (?1, ?2)"), json!(["Alice", 30])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO people VALUES (?1, ?2)"),
+                json!(["Alice", 30]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO people VALUES (?1, ?2)"), json!(["Bob", 25])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO people VALUES (?1, ?2)"),
+                json!(["Bob", 25]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let rows = execute_op(
             "db.query",
-            &[handle.clone(), json!("SELECT name, age FROM people ORDER BY age")],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("SELECT name, age FROM people ORDER BY age"),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let arr = rows.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["name"], json!("Bob"));
@@ -5326,27 +6174,56 @@ done
     async fn db_query_with_params() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("CREATE TABLE kv (key TEXT, val TEXT)")],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("CREATE TABLE kv (key TEXT, val TEXT)"),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO kv VALUES (?1, ?2)"), json!(["a", "1"])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO kv VALUES (?1, ?2)"),
+                json!(["a", "1"]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO kv VALUES (?1, ?2)"), json!(["b", "2"])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO kv VALUES (?1, ?2)"),
+                json!(["b", "2"]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let rows = execute_op(
             "db.query",
-            &[handle.clone(), json!("SELECT val FROM kv WHERE key = ?1"), json!(["a"])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("SELECT val FROM kv WHERE key = ?1"),
+                json!(["a"]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let arr = rows.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["val"], json!("1"));
@@ -5357,17 +6234,25 @@ done
     async fn db_query_empty_result() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         let _ = execute_op(
             "db.exec",
             &[handle.clone(), json!("CREATE TABLE empty (x INTEGER)")],
-            &h, &c,
-        ).await.unwrap();
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let rows = execute_op(
             "db.query",
             &[handle.clone(), json!("SELECT x FROM empty")],
-            &h, &c,
-        ).await.unwrap();
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         assert_eq!(rows, json!([]));
         let _ = execute_op("db.close", &[handle], &h, &c).await.unwrap();
     }
@@ -5385,22 +6270,37 @@ done
     async fn db_null_params() {
         let h = NativeHost::new();
         let c = CodecRegistry::default_registry();
-        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c).await.unwrap();
+        let handle = execute_op("db.open", &[json!(":memory:")], &h, &c)
+            .await
+            .unwrap();
         let _ = execute_op(
             "db.exec",
             &[handle.clone(), json!("CREATE TABLE nullable (val TEXT)")],
-            &h, &c,
-        ).await.unwrap();
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let _ = execute_op(
             "db.exec",
-            &[handle.clone(), json!("INSERT INTO nullable VALUES (?1)"), json!([null])],
-            &h, &c,
-        ).await.unwrap();
+            &[
+                handle.clone(),
+                json!("INSERT INTO nullable VALUES (?1)"),
+                json!([null]),
+            ],
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let rows = execute_op(
             "db.query",
             &[handle.clone(), json!("SELECT val FROM nullable")],
-            &h, &c,
-        ).await.unwrap();
+            &h,
+            &c,
+        )
+        .await
+        .unwrap();
         let arr = rows.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["val"], json!(null));
@@ -5411,7 +6311,11 @@ done
     fn db_legacy_mock_ops_still_work() {
         let result = test_op("db.query_user_by_email", &[json!("ada@example.com")]).unwrap();
         assert_eq!(result["email"], json!("ada@example.com"));
-        let result = test_op("db.query_credentials", &[json!({"email": "ada@example.com"})]).unwrap();
+        let result = test_op(
+            "db.query_credentials",
+            &[json!({"email": "ada@example.com"})],
+        )
+        .unwrap();
         assert!(result.get("password_hash").is_some());
     }
 
@@ -5427,7 +6331,11 @@ done
 
     #[test]
     fn log_error_with_context() {
-        let result = test_op("log.error", &[json!("connection failed"), json!({"host": "db.local"})]).unwrap();
+        let result = test_op(
+            "log.error",
+            &[json!("connection failed"), json!({"host": "db.local"})],
+        )
+        .unwrap();
         assert_eq!(result, json!(true));
     }
 
@@ -5454,7 +6362,15 @@ done
 
     #[test]
     fn error_new_with_details() {
-        let result = test_op("error.new", &[json!("VALIDATION"), json!("bad input"), json!({"field": "email"})]).unwrap();
+        let result = test_op(
+            "error.new",
+            &[
+                json!("VALIDATION"),
+                json!("bad input"),
+                json!({"field": "email"}),
+            ],
+        )
+        .unwrap();
         assert_eq!(result["code"], json!("VALIDATION"));
         assert_eq!(result["message"], json!("bad input"));
         assert_eq!(result["details"]["field"], json!("email"));
@@ -5462,10 +6378,17 @@ done
 
     #[test]
     fn error_wrap_prepends_context() {
-        let err = test_op("error.new", &[json!("DB_ERROR"), json!("connection refused")]).unwrap();
+        let err = test_op(
+            "error.new",
+            &[json!("DB_ERROR"), json!("connection refused")],
+        )
+        .unwrap();
         let wrapped = test_op("error.wrap", &[err, json!("login failed")]).unwrap();
         assert_eq!(wrapped["code"], json!("DB_ERROR"));
-        assert_eq!(wrapped["message"], json!("login failed: connection refused"));
+        assert_eq!(
+            wrapped["message"],
+            json!("login failed: connection refused")
+        );
     }
 
     #[test]
@@ -5524,8 +6447,16 @@ done
             report.outputs.get("response").is_some(),
             "should produce output after send nowait"
         );
-        let spawn_events: Vec<_> = report.trace.iter().filter(|e| e.status == "spawned").collect();
-        assert_eq!(spawn_events.len(), 1, "should have exactly one spawned trace event");
+        let spawn_events: Vec<_> = report
+            .trace
+            .iter()
+            .filter(|e| e.status == "spawned")
+            .collect();
+        assert_eq!(
+            spawn_events.len(),
+            1,
+            "should have exactly one spawned trace event"
+        );
         assert!(
             spawn_events[0].op.starts_with("send.nowait."),
             "spawned event op should start with send.nowait."
@@ -5572,7 +6503,12 @@ done
         inputs.insert("request".to_string(), json!({"name": "World"}));
         let codecs = CodecRegistry::default_registry();
         let report = test_execute_flow(&flow, ir_val, inputs, &registry, None, &codecs).unwrap();
-        let greeting = report.outputs.get("response").unwrap().get("greeting").unwrap();
+        let greeting = report
+            .outputs
+            .get("response")
+            .unwrap()
+            .get("greeting")
+            .unwrap();
         assert_eq!(greeting, &json!("Hello World"));
     }
 
@@ -5634,7 +6570,11 @@ done
 
     #[test]
     fn url_parse_full() {
-        let result = test_op("url.parse", &[json!("http://example.com/users/42?sort=name#top")]).unwrap();
+        let result = test_op(
+            "url.parse",
+            &[json!("http://example.com/users/42?sort=name#top")],
+        )
+        .unwrap();
         assert_eq!(result["path"], json!("/users/42"));
         assert_eq!(result["query"], json!("sort=name"));
         assert_eq!(result["fragment"], json!("top"));
@@ -5688,35 +6628,64 @@ done
     #[test]
     fn route_match_static() {
         let result = test_op("route.match", &[json!("/about"), json!("/about")]).unwrap();
-        assert_eq!(result["matched"], json!(true));
+        assert_eq!(result, json!(true));
     }
 
     #[test]
-    fn route_match_params() {
+    fn route_match_with_params() {
         let result = test_op("route.match", &[json!("/users/:id"), json!("/users/42")]).unwrap();
-        assert_eq!(result["matched"], json!(true));
-        assert_eq!(result["params"]["id"], json!("42"));
+        assert_eq!(result, json!(true));
     }
 
     #[test]
     fn route_match_wildcard() {
-        let result = test_op("route.match", &[json!("/files/*path"), json!("/files/a/b/c.txt")]).unwrap();
-        assert_eq!(result["matched"], json!(true));
-        assert_eq!(result["params"]["path"], json!("a/b/c.txt"));
+        let result = test_op(
+            "route.match",
+            &[json!("/files/*path"), json!("/files/a/b/c.txt")],
+        )
+        .unwrap();
+        assert_eq!(result, json!(true));
     }
 
     #[test]
     fn route_match_no_match() {
         let result = test_op("route.match", &[json!("/users/:id"), json!("/posts/42")]).unwrap();
-        assert_eq!(result["matched"], json!(false));
+        assert_eq!(result, json!(false));
     }
 
     #[test]
-    fn route_match_multi_params() {
-        let result = test_op("route.match", &[json!("/users/:uid/posts/:pid"), json!("/users/5/posts/99")]).unwrap();
-        assert_eq!(result["matched"], json!(true));
-        assert_eq!(result["params"]["uid"], json!("5"));
-        assert_eq!(result["params"]["pid"], json!("99"));
+    fn route_params_extracts_params() {
+        let result =
+            test_op("route.params", &[json!("/users/:id"), json!("/users/42")]).unwrap();
+        assert_eq!(result["id"], json!("42"));
+    }
+
+    #[test]
+    fn route_params_multi() {
+        let result = test_op(
+            "route.params",
+            &[json!("/users/:uid/posts/:pid"), json!("/users/5/posts/99")],
+        )
+        .unwrap();
+        assert_eq!(result["uid"], json!("5"));
+        assert_eq!(result["pid"], json!("99"));
+    }
+
+    #[test]
+    fn route_params_wildcard() {
+        let result = test_op(
+            "route.params",
+            &[json!("/files/*path"), json!("/files/a/b/c.txt")],
+        )
+        .unwrap();
+        assert_eq!(result["path"], json!("a/b/c.txt"));
+    }
+
+    #[test]
+    fn route_params_no_match_returns_empty() {
+        let result =
+            test_op("route.params", &[json!("/users/:id"), json!("/posts/42")]).unwrap();
+        assert_eq!(result, json!({}));
     }
 
     // --- HTML ops tests ---
@@ -5724,7 +6693,10 @@ done
     #[test]
     fn html_escape_all_chars() {
         let result = test_op("html.escape", &[json!("<script>alert('x\"&')</script>")]).unwrap();
-        assert_eq!(result, json!("&lt;script&gt;alert(&#x27;x&quot;&amp;&#x27;)&lt;/script&gt;"));
+        assert_eq!(
+            result,
+            json!("&lt;script&gt;alert(&#x27;x&quot;&amp;&#x27;)&lt;/script&gt;")
+        );
     }
 
     #[test]
@@ -5738,19 +6710,31 @@ done
 
     #[test]
     fn tmpl_render_simple_var() {
-        let result = test_op("tmpl.render", &[json!("Hello, {{name}}!"), json!({"name": "World"})]).unwrap();
+        let result = test_op(
+            "tmpl.render",
+            &[json!("Hello, {{name}}!"), json!({"name": "World"})],
+        )
+        .unwrap();
         assert_eq!(result, json!("Hello, World!"));
     }
 
     #[test]
     fn tmpl_render_html_escape() {
-        let result = test_op("tmpl.render", &[json!("{{content}}"), json!({"content": "<b>bold</b>"})]).unwrap();
+        let result = test_op(
+            "tmpl.render",
+            &[json!("{{content}}"), json!({"content": "<b>bold</b>"})],
+        )
+        .unwrap();
         assert_eq!(result, json!("&lt;b&gt;bold&lt;/b&gt;"));
     }
 
     #[test]
     fn tmpl_render_raw_triple() {
-        let result = test_op("tmpl.render", &[json!("{{{content}}}"), json!({"content": "<b>bold</b>"})]).unwrap();
+        let result = test_op(
+            "tmpl.render",
+            &[json!("{{{content}}}"), json!({"content": "<b>bold</b>"})],
+        )
+        .unwrap();
         assert_eq!(result, json!("<b>bold</b>"));
     }
 
@@ -6005,5 +6989,42 @@ done
         let flow = crate::parser::parse_runtime_flow_v1(source).unwrap();
         let ir = crate::ir::lower_to_ir(&flow).unwrap();
         assert!(!ir.nodes.is_empty());
+    }
+
+    #[test]
+    fn emit_dotted_path() {
+        let source = r#"
+func EmitDotted
+  take x as dict
+  emit result as text
+  fail error as text
+body
+  emit x.name
+done
+"#;
+        let result = run_flow_with_inputs(source, vec![("x", json!({"name": "Alice"}))]);
+        assert_eq!(result["result"], "Alice");
+    }
+
+    #[test]
+    fn fail_interpolation() {
+        let source = r#"
+func FailInterp
+  take msg as text
+  emit result as text
+  fail error as text
+body
+  fail "error: #{msg}"
+done
+"#;
+        let flow = parser::parse_runtime_flow_v1(source).unwrap();
+        let ir_data = ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let mut input_map = HashMap::new();
+        input_map.insert("msg".to_string(), json!("bad input"));
+        let report =
+            test_execute_flow(&flow, ir_data, input_map, &registry, None, &codecs).unwrap();
+        assert_eq!(report.outputs["error"], "error: bad input");
     }
 }

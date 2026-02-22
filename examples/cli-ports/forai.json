@@ -1,0 +1,9 @@
+{
+  "name": "cli-ports",
+  "version": "0.1.0",
+  "description": "Discovers listening TCP ports using lsof",
+  "main": "main.fa",
+  "build": {
+    "targets": ["wasm", "bundle"]
+  }
+}

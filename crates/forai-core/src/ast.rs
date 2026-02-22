@@ -47,7 +47,8 @@ pub enum TopDecl {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct UsesDecl {
-    pub module: String,
+    pub name: String,  // bound name (e.g. "lib" or "Round")
+    pub path: String,  // path string (e.g. "./lib" or "./round.fa")
     pub span: Span,
 }
 
@@ -127,8 +128,13 @@ pub struct FieldDecl {
 
 #[derive(Debug, Clone)]
 pub enum TypeKind {
-    Scalar { base_type: String, constraints: Vec<TypeConstraint> },
-    Struct { fields: Vec<FieldDecl> },
+    Scalar {
+        base_type: String,
+        constraints: Vec<TypeConstraint>,
+    },
+    Struct {
+        fields: Vec<FieldDecl>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -169,14 +175,26 @@ pub enum Arg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Mod, Pow,    // arithmetic
-    Eq, Neq, Lt, Gt, LtEq, GtEq,    // comparison
-    And, Or,                          // logical
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow, // arithmetic
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq, // comparison
+    And,
+    Or, // logical
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOp {
-    Neg, Not,
+    Neg,
+    Not,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,13 +207,31 @@ pub enum InterpExpr {
 pub enum Expr {
     Var(String),
     Lit(Value),
-    BinOp { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    UnaryOp { op: UnaryOp, expr: Box<Expr> },
-    Call { func: String, args: Vec<Expr> },
+    BinOp {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
+    Call {
+        func: String,
+        args: Vec<Expr>,
+    },
     Interp(Vec<InterpExpr>),
-    Ternary { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    Ternary {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
     ListLit(Vec<Expr>),
     DictLit(Vec<(String, Expr)>),
+    Index {
+        expr: Box<Expr>,
+        index: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,7 +257,7 @@ pub struct NodeAssign {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emit {
     pub output: String,
-    pub value_var: String,
+    pub value_expr: Expr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +315,15 @@ pub struct SourceLoopBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnBlock {
+    pub event_tag: String,       // "request", "input", etc.
+    pub source_op: String,       // "http.server.accept", "term.prompt"
+    pub source_args: Vec<Arg>,   // args to the source call
+    pub bind: String,            // "req", "raw"
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Statement {
     Node(NodeAssign),
     ExprAssign(ExprAssign),
@@ -290,6 +335,7 @@ pub enum Statement {
     Break,
     BareLoop(BareLoopBlock),
     SourceLoop(SourceLoopBlock),
+    On(OnBlock),
 }
 
 // --- Flow-level state/send-nowait AST types ---

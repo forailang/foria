@@ -1,4 +1,4 @@
-use crate::ast::{Arg, Expr, Flow, Pattern, Statement};
+use crate::ast::{Arg, Expr, Flow, InterpExpr, Pattern, Statement};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -124,6 +124,9 @@ fn expr_to_text(expr: &Expr) -> String {
             let strs: Vec<String> = pairs.iter().map(|(k, v)| format!("{}: {}", k, expr_to_text(v))).collect();
             format!("{{{}}}", strs.join(", "))
         }
+        Expr::Index { expr, index } => {
+            format!("{}[{}]", expr_to_text(expr), expr_to_text(index))
+        }
     }
 }
 
@@ -131,6 +134,51 @@ fn pattern_to_text(pattern: &Pattern) -> String {
     match pattern {
         Pattern::Ident(v) => v.clone(),
         Pattern::Lit(v) => v.to_string(),
+    }
+}
+
+fn collect_expr_vars(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Var(v) => out.push(v.clone()),
+        Expr::Lit(_) => {}
+        Expr::BinOp { lhs, rhs, .. } => {
+            collect_expr_vars(lhs, out);
+            collect_expr_vars(rhs, out);
+        }
+        Expr::UnaryOp { expr: inner, .. } => {
+            collect_expr_vars(inner, out);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_expr_vars(a, out);
+            }
+        }
+        Expr::Interp(parts) => {
+            for part in parts {
+                if let InterpExpr::Expr(e) = part {
+                    collect_expr_vars(e, out);
+                }
+            }
+        }
+        Expr::Ternary { cond, then_expr, else_expr } => {
+            collect_expr_vars(cond, out);
+            collect_expr_vars(then_expr, out);
+            collect_expr_vars(else_expr, out);
+        }
+        Expr::ListLit(items) => {
+            for item in items {
+                collect_expr_vars(item, out);
+            }
+        }
+        Expr::DictLit(pairs) => {
+            for (_, v) in pairs {
+                collect_expr_vars(v, out);
+            }
+        }
+        Expr::Index { expr, index } => {
+            collect_expr_vars(expr, out);
+            collect_expr_vars(index, out);
+        }
     }
 }
 
@@ -218,48 +266,6 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                         when: when.clone(),
                     });
 
-                    // Collect var references from expression for edges
-                    fn collect_expr_vars(expr: &crate::ast::Expr, out: &mut Vec<String>) {
-                        match expr {
-                            crate::ast::Expr::Var(v) => out.push(v.clone()),
-                            crate::ast::Expr::Lit(_) => {}
-                            crate::ast::Expr::BinOp { lhs, rhs, .. } => {
-                                collect_expr_vars(lhs, out);
-                                collect_expr_vars(rhs, out);
-                            }
-                            crate::ast::Expr::UnaryOp { expr: inner, .. } => {
-                                collect_expr_vars(inner, out);
-                            }
-                            crate::ast::Expr::Call { args, .. } => {
-                                for a in args {
-                                    collect_expr_vars(a, out);
-                                }
-                            }
-                            crate::ast::Expr::Interp(parts) => {
-                                for part in parts {
-                                    if let crate::ast::InterpExpr::Expr(e) = part {
-                                        collect_expr_vars(e, out);
-                                    }
-                                }
-                            }
-                            crate::ast::Expr::Ternary { cond, then_expr, else_expr } => {
-                                collect_expr_vars(cond, out);
-                                collect_expr_vars(then_expr, out);
-                                collect_expr_vars(else_expr, out);
-                            }
-                            crate::ast::Expr::ListLit(items) => {
-                                for item in items {
-                                    collect_expr_vars(item, out);
-                                }
-                            }
-                            crate::ast::Expr::DictLit(pairs) => {
-                                for (_, v) in pairs {
-                                    collect_expr_vars(v, out);
-                                }
-                            }
-                        }
-                    }
-
                     let mut vars_used = Vec::new();
                     collect_expr_vars(&ea.expr, &mut vars_used);
                     for (idx, var) in vars_used.iter().enumerate() {
@@ -290,30 +296,84 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                     );
                 }
                 Statement::Emit(emit) => {
-                    let Some(source) = local_scope.get(&emit.value_var) else {
-                        return Err(format!("Emit references unknown var `{}`", emit.value_var));
-                    };
-
                     let when = condition.unwrap_or("true").to_string();
-                    emits.push(IrEmit {
-                        output: emit.output.clone(),
-                        value_var: emit.value_var.clone(),
-                        when: when.clone(),
-                    });
 
-                    edges.push(IrEdge {
-                        from: IrEndpoint {
-                            kind: source.kind.clone(),
-                            id: source.id.clone(),
-                            port: None,
-                        },
-                        to: IrEndpoint {
-                            kind: "output".to_string(),
-                            id: emit.output.clone(),
-                            port: None,
-                        },
-                        when,
-                    });
+                    if let Expr::Var(ref name) = emit.value_expr {
+                        // Simple variable — use existing scope lookup (support dotted paths)
+                        let base = name.split('.').next().unwrap_or(name);
+                        let Some(source) = local_scope.get(base) else {
+                            return Err(format!("Emit references unknown var `{}`", name));
+                        };
+                        emits.push(IrEmit {
+                            output: emit.output.clone(),
+                            value_var: name.clone(),
+                            when: when.clone(),
+                        });
+                        edges.push(IrEdge {
+                            from: IrEndpoint {
+                                kind: source.kind.clone(),
+                                id: source.id.clone(),
+                                port: None,
+                            },
+                            to: IrEndpoint {
+                                kind: "output".to_string(),
+                                id: emit.output.clone(),
+                                port: None,
+                            },
+                            when,
+                        });
+                    } else {
+                        // Complex expression — desugar to synthetic node + edge
+                        let synth_id = format!("_emit_{}", emit.output);
+                        let expr_text = expr_to_text(&emit.value_expr);
+                        nodes.push(IrNode {
+                            id: synth_id.clone(),
+                            op: format!("expr:{}", expr_text),
+                            bind: synth_id.clone(),
+                            args: vec![],
+                            when: when.clone(),
+                        });
+
+                        let mut vars_used = Vec::new();
+                        collect_expr_vars(&emit.value_expr, &mut vars_used);
+                        for (idx, var) in vars_used.iter().enumerate() {
+                            let base = var.split('.').next().unwrap_or(var);
+                            if let Some(source) = local_scope.get(base) {
+                                edges.push(IrEdge {
+                                    from: IrEndpoint {
+                                        kind: source.kind.clone(),
+                                        id: source.id.clone(),
+                                        port: None,
+                                    },
+                                    to: IrEndpoint {
+                                        kind: "node".to_string(),
+                                        id: synth_id.clone(),
+                                        port: Some(format!("arg{idx}")),
+                                    },
+                                    when: when.clone(),
+                                });
+                            }
+                        }
+
+                        emits.push(IrEmit {
+                            output: emit.output.clone(),
+                            value_var: expr_text,
+                            when: when.clone(),
+                        });
+                        edges.push(IrEdge {
+                            from: IrEndpoint {
+                                kind: "node".to_string(),
+                                id: synth_id,
+                                port: None,
+                            },
+                            to: IrEndpoint {
+                                kind: "output".to_string(),
+                                id: emit.output.clone(),
+                                port: None,
+                            },
+                            when,
+                        });
+                    }
                 }
                 Statement::Case(case_block) => {
                     let expr_text = expr_to_text(&case_block.expr);
@@ -433,6 +493,29 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                         &sl.body,
                         Some(&cond),
                         &loop_scope,
+                        nodes,
+                        edges,
+                        emits,
+                        true,
+                    )?;
+                }
+                Statement::On(on_block) => {
+                    let cond = combine_cond(
+                        condition,
+                        &format!("on(:{} from {} as {})", on_block.event_tag, on_block.source_op, on_block.bind),
+                    );
+                    let mut on_scope = local_scope.clone();
+                    on_scope.insert(
+                        on_block.bind.clone(),
+                        Producer {
+                            kind: "on_event".to_string(),
+                            id: on_block.bind.clone(),
+                        },
+                    );
+                    walk(
+                        &on_block.body,
+                        Some(&cond),
+                        &on_scope,
                         nodes,
                         edges,
                         emits,

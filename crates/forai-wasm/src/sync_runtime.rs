@@ -40,7 +40,11 @@ pub fn execute_flow(
         }
     }
     if !validation_errors.is_empty() {
-        let fail_output = flow.outputs.get(1).map(|p| p.name.clone()).unwrap_or_default();
+        let fail_output = flow
+            .outputs
+            .get(1)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         let error_details: Vec<Value> = validation_errors
             .iter()
             .map(|e| json!({"path": e.path, "constraint": e.constraint, "message": e.message}))
@@ -48,20 +52,29 @@ pub fn execute_flow(
         let error_value = json!({"kind": "validation_error", "errors": error_details});
         let mut outputs = serde_json::Map::new();
         outputs.insert(fail_output, error_value);
-        return Ok(RunResult { outputs: Value::Object(outputs) });
+        return Ok(RunResult {
+            outputs: Value::Object(outputs),
+        });
     }
 
     let mut vars = inputs;
     let mut outputs = serde_json::Map::new();
 
-    if let ExecSignal::Emit { output, value_var, value } = execute_statements(
-        &flow.body, &mut vars, flow_registry, host, codecs,
-    )? {
+    if let ExecSignal::Emit {
+        output,
+        value_var,
+        value,
+    } = execute_statements(&flow.body, &mut vars, flow_registry, host, codecs)?
+    {
         outputs.insert(output, value.clone());
-        vars.insert(value_var, value);
+        if !value_var.contains(' ') && !value_var.contains('"') {
+            vars.insert(value_var, value);
+        }
     }
 
-    Ok(RunResult { outputs: Value::Object(outputs) })
+    Ok(RunResult {
+        outputs: Value::Object(outputs),
+    })
 }
 
 fn execute_statements(
@@ -96,12 +109,14 @@ fn execute_statements(
                 vars.insert(ea.bind.clone(), value);
             }
             Statement::Emit(emit) => {
-                let value = resolve_var_path(vars, &emit.value_var).ok_or_else(|| {
-                    format!("Emit references unknown var `{}`", emit.value_var)
-                })?;
+                let value = eval_expr(&emit.value_expr, vars, flow_registry, host, codecs)?;
+                let label = match &emit.value_expr {
+                    Expr::Var(name) => name.clone(),
+                    _ => format!("{:?}", emit.value_expr),
+                };
                 return Ok(ExecSignal::Emit {
                     output: emit.output.clone(),
-                    value_var: emit.value_var.clone(),
+                    value_var: label,
                     value,
                 });
             }
@@ -120,7 +135,13 @@ fn execute_statements(
                     }
                 }
                 if !matched {
-                    match execute_statements(&case_block.else_body, vars, flow_registry, host, codecs)? {
+                    match execute_statements(
+                        &case_block.else_body,
+                        vars,
+                        flow_registry,
+                        host,
+                        codecs,
+                    )? {
                         ExecSignal::Continue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => return Ok(ExecSignal::Break),
@@ -128,7 +149,8 @@ fn execute_statements(
                 }
             }
             Statement::Loop(loop_block) => {
-                let collection = eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)?;
+                let collection =
+                    eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)?;
                 let items = collection.as_array().ok_or_else(|| {
                     format!("Loop collection must be an array, got `{}`", collection)
                 })?;
@@ -148,15 +170,13 @@ fn execute_statements(
                     vars.remove(&loop_block.item);
                 }
             }
-            Statement::BareLoop(block) => {
-                loop {
-                    match execute_statements(&block.body, vars, flow_registry, host, codecs)? {
-                        ExecSignal::Continue => {}
-                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
-                        ExecSignal::Break => break,
-                    }
+            Statement::BareLoop(block) => loop {
+                match execute_statements(&block.body, vars, flow_registry, host, codecs)? {
+                    ExecSignal::Continue => {}
+                    signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                    ExecSignal::Break => break,
                 }
-            }
+            },
             Statement::Sync(sync_block) => {
                 // In WASM, sync blocks run sequentially (no concurrency)
                 let mut merged_vars = vars.clone();
@@ -165,7 +185,9 @@ fn execute_statements(
                     match execute_statements(
                         std::slice::from_ref(stmt),
                         &mut local_vars,
-                        flow_registry, host, codecs,
+                        flow_registry,
+                        host,
+                        codecs,
                     )? {
                         ExecSignal::Continue => {
                             for (k, v) in &local_vars {
@@ -203,6 +225,9 @@ fn execute_statements(
             Statement::SourceLoop(_) => {
                 return Err("SourceLoop not supported in WASM runtime".to_string());
             }
+            Statement::On(_) => {
+                return Err("On block not supported in WASM runtime".to_string());
+            }
         }
     }
     Ok(ExecSignal::Continue)
@@ -225,7 +250,9 @@ fn dispatch_op(
             if args.len() != program.flow.inputs.len() {
                 return Err(format!(
                     "flow `{}` expects {} args but got {}",
-                    op, program.flow.inputs.len(), args.len()
+                    op,
+                    program.flow.inputs.len(),
+                    args.len()
                 ));
             }
             let mut input_map = HashMap::new();
@@ -233,18 +260,30 @@ fn dispatch_op(
                 input_map.insert(port.name.clone(), args[idx].clone());
             }
             let result = execute_flow(
-                &program.flow, program.ir.clone(), input_map,
-                &program.registry, flow_registry, codecs, host,
+                &program.flow,
+                program.ir.clone(),
+                input_map,
+                &program.registry,
+                flow_registry,
+                codecs,
+                host,
             )?;
-            let outputs = result.outputs.as_object()
+            let outputs = result
+                .outputs
+                .as_object()
                 .ok_or_else(|| format!("flow `{op}` produced invalid outputs shape"))?;
-            let success = outputs.get(&program.emit_name).cloned();
-            let failure = outputs.get(&program.fail_name).cloned();
+            let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+            let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+            if program.emit_name.is_none() {
+                return Ok(serde_json::Value::Null);
+            }
             return match (success, failure) {
                 (Some(v), None) => Ok(v),
                 (None, Some(f)) => Err(format!("flow `{op}` emitted on fail track: {f}")),
                 (None, None) => Err(format!("flow `{op}` produced no outputs")),
-                (Some(_), Some(_)) => Err(format!("flow `{op}` produced both emit and fail outputs")),
+                (Some(_), Some(_)) => {
+                    Err(format!("flow `{op}` produced both emit and fail outputs"))
+                }
             };
         }
     }
@@ -305,7 +344,11 @@ fn eval_expr(
             }
             Ok(json!(result))
         }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             let cond_val = eval_expr(cond, vars, flow_registry, host, codecs)?;
             let is_truthy = match &cond_val {
                 Value::Bool(b) => *b,
@@ -364,7 +407,9 @@ fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
         BinOp::Div => {
             let a = l.as_f64().ok_or("Division requires numbers")?;
             let b = r.as_f64().ok_or("Division requires numbers")?;
-            if b == 0.0 { return Err("Division by zero".to_string()); }
+            if b == 0.0 {
+                return Err("Division by zero".to_string());
+            }
             if l.is_i64() && r.is_i64() && l.as_i64().unwrap() % r.as_i64().unwrap() == 0 {
                 return Ok(json!(l.as_i64().unwrap() / r.as_i64().unwrap()));
             }
@@ -372,12 +417,16 @@ fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
         }
         BinOp::Mod => {
             if let (Some(a), Some(b)) = (l.as_i64(), r.as_i64()) {
-                if b == 0 { return Err("Modulo by zero".to_string()); }
+                if b == 0 {
+                    return Err("Modulo by zero".to_string());
+                }
                 return Ok(json!(a % b));
             }
             let a = l.as_f64().ok_or("Mod requires numbers")?;
             let b = r.as_f64().ok_or("Mod requires numbers")?;
-            if b == 0.0 { return Err("Modulo by zero".to_string()); }
+            if b == 0.0 {
+                return Err("Modulo by zero".to_string());
+            }
             Ok(json!(a % b))
         }
         BinOp::Pow => {
@@ -393,11 +442,15 @@ fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
         BinOp::GtEq => compare_values(l, r, |ord| ord != std::cmp::Ordering::Less),
         BinOp::And => {
             let lb = is_truthy(l);
-            if !lb { return Ok(json!(false)); }
+            if !lb {
+                return Ok(json!(false));
+            }
             Ok(json!(is_truthy(r)))
         }
         BinOp::Or => {
-            if is_truthy(l) { return Ok(json!(true)); }
+            if is_truthy(l) {
+                return Ok(json!(true));
+            }
             Ok(json!(is_truthy(r)))
         }
     }
@@ -406,8 +459,12 @@ fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
 fn eval_unary(op: UnaryOp, v: &Value) -> Result<Value, String> {
     match op {
         UnaryOp::Neg => {
-            if let Some(i) = v.as_i64() { return Ok(json!(-i)); }
-            if let Some(f) = v.as_f64() { return Ok(json!(-f)); }
+            if let Some(i) = v.as_i64() {
+                return Ok(json!(-i));
+            }
+            if let Some(f) = v.as_f64() {
+                return Ok(json!(-f));
+            }
             Err(format!("Cannot negate {v}"))
         }
         UnaryOp::Not => Ok(json!(!is_truthy(v))),
@@ -418,9 +475,14 @@ fn pattern_matches(value: &Value, pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Lit(lit) => values_equal(value, lit),
         Pattern::Ident(name) => {
-            if name == "_" { return true; }
-            if let Some(s) = value.as_str() { s == name }
-            else { false }
+            if name == "_" {
+                return true;
+            }
+            if let Some(s) = value.as_str() {
+                s == name
+            } else {
+                false
+            }
         }
     }
 }
@@ -457,8 +519,11 @@ fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Number(n) => {
-            if let Some(i) = n.as_i64() { i.to_string() }
-            else { n.to_string() }
+            if let Some(i) = n.as_i64() {
+                i.to_string()
+            } else {
+                n.to_string()
+            }
         }
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
@@ -467,8 +532,12 @@ fn value_to_string(v: &Value) -> String {
 }
 
 fn num_binop(l: &Value, r: &Value, f: fn(f64, f64) -> f64, name: &str) -> Result<Value, String> {
-    let a = l.as_f64().ok_or_else(|| format!("{name} requires numbers"))?;
-    let b = r.as_f64().ok_or_else(|| format!("{name} requires numbers"))?;
+    let a = l
+        .as_f64()
+        .ok_or_else(|| format!("{name} requires numbers"))?;
+    let b = r
+        .as_f64()
+        .ok_or_else(|| format!("{name} requires numbers"))?;
     let result = f(a, b);
     if l.is_i64() && r.is_i64() {
         if let Some(i) = serde_json::Number::from_f64(result) {
@@ -480,9 +549,15 @@ fn num_binop(l: &Value, r: &Value, f: fn(f64, f64) -> f64, name: &str) -> Result
     Ok(json!(result))
 }
 
-fn compare_values(l: &Value, r: &Value, pred: fn(std::cmp::Ordering) -> bool) -> Result<Value, String> {
+fn compare_values(
+    l: &Value,
+    r: &Value,
+    pred: fn(std::cmp::Ordering) -> bool,
+) -> Result<Value, String> {
     if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
-        return Ok(json!(pred(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal))));
+        return Ok(json!(pred(
+            a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+        )));
     }
     if let (Some(a), Some(b)) = (l.as_str(), r.as_str()) {
         return Ok(json!(pred(a.cmp(b))));

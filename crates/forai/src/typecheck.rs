@@ -30,13 +30,20 @@ fn take_type_to_op_type(type_name: &str) -> InferredType {
         "http_server" => InferredType::Known(OpType::HttpServer),
         "http_conn" => InferredType::Known(OpType::HttpConn),
         "ws_conn" => InferredType::Known(OpType::WsConn),
+        "ProcessOutput" | "HttpRequest" | "HttpResponse" | "Date" | "Stamp"
+        | "TimeRange" | "WebSocketMessage" | "ErrorObject" | "URLParts" => {
+            InferredType::Known(OpType::Struct(type_name.to_string()))
+        }
         _ => InferredType::Unknown,
     }
 }
 
 fn infer_expr_type(expr: &Expr, var_types: &HashMap<String, InferredType>) -> InferredType {
     match expr {
-        Expr::Var(name) => var_types.get(name).cloned().unwrap_or(InferredType::Unknown),
+        Expr::Var(name) => var_types
+            .get(name)
+            .cloned()
+            .unwrap_or(InferredType::Unknown),
         Expr::Lit(v) => {
             if v.is_string() {
                 InferredType::Known(OpType::Text)
@@ -70,7 +77,10 @@ fn is_string_literal(expr: &Expr) -> bool {
 }
 
 fn is_handle_type(t: &OpType) -> bool {
-    matches!(t, OpType::DbConn | OpType::HttpServer | OpType::HttpConn | OpType::WsConn)
+    matches!(
+        t,
+        OpType::DbConn | OpType::HttpServer | OpType::HttpConn | OpType::WsConn
+    )
 }
 
 fn unwrap_optional(t: &OpType) -> &OpType {
@@ -275,7 +285,20 @@ fn check_statements(
                 let mut loop_scope = var_types.clone();
                 check_statements(func_name, &sl.body, &mut loop_scope, errors);
             }
-            Statement::Emit(_) | Statement::Break | Statement::SendNowait(_) => {}
+            Statement::On(on_block) => {
+                check_node_args(func_name, &on_block.source_op, &on_block.source_args, var_types, errors);
+                if let Some(sig) = op_types::op_signature(&on_block.source_op) {
+                    var_types.insert(on_block.bind.clone(), InferredType::Known(sig.returns));
+                } else {
+                    var_types.insert(on_block.bind.clone(), InferredType::Unknown);
+                }
+                let mut on_scope = var_types.clone();
+                check_statements(func_name, &on_block.body, &mut on_scope, errors);
+            }
+            Statement::Emit(emit) => {
+                check_expr_calls(func_name, &emit.value_expr, var_types, errors);
+            }
+            Statement::Break | Statement::SendNowait(_) => {}
         }
     }
 }
@@ -300,7 +323,11 @@ fn check_expr_calls(
         Expr::UnaryOp { expr: inner, .. } => {
             check_expr_calls(func_name, inner, var_types, errors);
         }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             check_expr_calls(func_name, cond, var_types, errors);
             check_expr_calls(func_name, then_expr, var_types, errors);
             check_expr_calls(func_name, else_expr, var_types, errors);
@@ -321,6 +348,10 @@ fn check_expr_calls(
                     check_expr_calls(func_name, e, var_types, errors);
                 }
             }
+        }
+        Expr::Index { expr, index } => {
+            check_expr_calls(func_name, expr, var_types, errors);
+            check_expr_calls(func_name, index, var_types, errors);
         }
         Expr::Var(_) | Expr::Lit(_) => {}
     }
@@ -351,7 +382,7 @@ pub fn typecheck_func(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Arg, Emit, ExprAssign, NodeAssign, Statement, TakeDecl, Span};
+    use crate::ast::{Arg, Emit, ExprAssign, NodeAssign, Span, Statement, TakeDecl};
     use serde_json::json;
 
     fn span() -> Span {
@@ -359,7 +390,11 @@ mod tests {
     }
 
     fn take(name: &str, type_name: &str) -> TakeDecl {
-        TakeDecl { name: name.to_string(), type_name: type_name.to_string(), span: span() }
+        TakeDecl {
+            name: name.to_string(),
+            type_name: type_name.to_string(),
+            span: span(),
+        }
     }
 
     fn node(bind: &str, op: &str, args: Vec<Arg>) -> Statement {
@@ -372,7 +407,9 @@ mod tests {
     }
 
     fn var_arg(name: &str) -> Arg {
-        Arg::Var { var: name.to_string() }
+        Arg::Var {
+            var: name.to_string(),
+        }
     }
 
     fn lit_arg(val: serde_json::Value) -> Arg {
@@ -380,18 +417,28 @@ mod tests {
     }
 
     fn expr_assign(bind: &str, expr: Expr) -> Statement {
-        Statement::ExprAssign(ExprAssign { bind: bind.to_string(), expr })
+        Statement::ExprAssign(ExprAssign {
+            bind: bind.to_string(),
+            expr,
+        })
     }
 
     fn emit(output: &str, var: &str) -> Statement {
-        Statement::Emit(Emit { output: output.to_string(), value_var: var.to_string() })
+        Statement::Emit(Emit {
+            output: output.to_string(),
+            value_expr: Expr::Var(var.to_string()),
+        })
     }
 
     #[test]
     fn happy_path_db_conn() {
         let takes = vec![take("conn", "db_conn")];
         let body = vec![
-            node("result", "db.exec", vec![var_arg("conn"), lit_arg(json!("CREATE TABLE t(id)"))]),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("conn"), lit_arg(json!("CREATE TABLE t(id)"))],
+            ),
             emit("response", "result"),
         ];
         assert!(typecheck_func("TestFunc", &takes, &body).is_ok());
@@ -400,9 +447,11 @@ mod tests {
     #[test]
     fn type_mismatch_text_for_db_conn() {
         let takes = vec![take("name", "text")];
-        let body = vec![
-            node("result", "db.exec", vec![var_arg("name"), lit_arg(json!("SELECT 1"))]),
-        ];
+        let body = vec![node(
+            "result",
+            "db.exec",
+            vec![var_arg("name"), lit_arg(json!("SELECT 1"))],
+        )];
         let err = typecheck_func("TestFunc", &takes, &body).unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
@@ -410,19 +459,32 @@ mod tests {
 
     #[test]
     fn literal_rejected_for_handle() {
-        let body = vec![
-            node("result", "db.exec", vec![lit_arg(json!("my_db")), lit_arg(json!("SELECT 1"))]),
-        ];
+        let body = vec![node(
+            "result",
+            "db.exec",
+            vec![lit_arg(json!("my_db")), lit_arg(json!("SELECT 1"))],
+        )];
         let err = typecheck_func("TestFunc", &[], &body).unwrap_err();
-        assert!(err.contains("handles cannot be constructed from literals"), "got: {err}");
+        assert!(
+            err.contains("handles cannot be constructed from literals"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn unknown_passes_through() {
         // Variable from obj.get → Unknown, should not error
         let body = vec![
-            node("req", "obj.get", vec![var_arg("input"), lit_arg(json!("conn"))]),
-            node("result", "db.exec", vec![var_arg("req"), lit_arg(json!("SELECT 1"))]),
+            node(
+                "req",
+                "obj.get",
+                vec![var_arg("input"), lit_arg(json!("conn"))],
+            ),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("req"), lit_arg(json!("SELECT 1"))],
+            ),
         ];
         assert!(typecheck_func("TestFunc", &[], &body).is_ok());
     }
@@ -430,9 +492,11 @@ mod tests {
     #[test]
     fn cross_handle_mismatch() {
         let takes = vec![take("srv", "http_server")];
-        let body = vec![
-            node("result", "db.exec", vec![var_arg("srv"), lit_arg(json!("SELECT 1"))]),
-        ];
+        let body = vec![node(
+            "result",
+            "db.exec",
+            vec![var_arg("srv"), lit_arg(json!("SELECT 1"))],
+        )];
         let err = typecheck_func("TestFunc", &takes, &body).unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'http_server'"), "got: {err}");
@@ -442,7 +506,11 @@ mod tests {
     fn inference_from_producer() {
         let body = vec![
             node("conn", "db.open", vec![lit_arg(json!(":memory:"))]),
-            node("result", "db.exec", vec![var_arg("conn"), lit_arg(json!("SELECT 1"))]),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("conn"), lit_arg(json!("SELECT 1"))],
+            ),
         ];
         assert!(typecheck_func("TestFunc", &[], &body).is_ok());
     }
@@ -450,13 +518,106 @@ mod tests {
     #[test]
     fn expr_assign_call_checked() {
         let takes = vec![take("name", "text")];
-        let body = vec![
-            expr_assign("result", Expr::Call {
+        let body = vec![expr_assign(
+            "result",
+            Expr::Call {
                 func: "db.exec".to_string(),
                 args: vec![Expr::Var("name".to_string()), Expr::Lit(json!("SELECT 1"))],
-            }),
-        ];
+            },
+        )];
         let err = typecheck_func("TestFunc", &takes, &body).unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
+    }
+
+    // --- Struct type tests ---
+
+    #[test]
+    fn exec_run_returns_process_output() {
+        let body = vec![
+            node("out", "exec.run", vec![lit_arg(json!("ls"))]),
+            emit("result", "out"),
+        ];
+        assert!(typecheck_func("TestFunc", &[], &body).is_ok());
+    }
+
+    #[test]
+    fn struct_type_mismatch_with_handle() {
+        // exec.run returns ProcessOutput; passing it to db.exec (expects db_conn) should fail
+        let body = vec![
+            node("out", "exec.run", vec![lit_arg(json!("ls"))]),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("out"), lit_arg(json!("SELECT 1"))],
+            ),
+        ];
+        let err = typecheck_func("TestFunc", &[], &body).unwrap_err();
+        assert!(err.contains("expected 'db_conn'"), "got: {err}");
+        assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
+    }
+
+    #[test]
+    fn date_ops_chain() {
+        // date.now → date.add should pass (Date → Date)
+        let body = vec![
+            node("d", "date.now", vec![]),
+            node("d2", "date.add", vec![var_arg("d"), lit_arg(json!(86400000))]),
+            emit("result", "d2"),
+        ];
+        assert!(typecheck_func("TestFunc", &[], &body).is_ok());
+    }
+
+    #[test]
+    fn text_rejected_for_date() {
+        // text var passed to date.to_unix_ms (expects Date) should fail
+        let takes = vec![take("s", "text")];
+        let body = vec![node("ms", "date.to_unix_ms", vec![var_arg("s")])];
+        let err = typecheck_func("TestFunc", &takes, &body).unwrap_err();
+        assert!(err.contains("expected 'Date'"), "got: {err}");
+        assert!(err.contains("got 'text'"), "got: {err}");
+    }
+
+    #[test]
+    fn take_struct_type_resolves() {
+        // ProcessOutput take passed to date.to_unix_ms (expects Date) should fail
+        let takes = vec![take("po", "ProcessOutput")];
+        let body = vec![node("ms", "date.to_unix_ms", vec![var_arg("po")])];
+        let err = typecheck_func("TestFunc", &takes, &body).unwrap_err();
+        assert!(err.contains("expected 'Date'"), "got: {err}");
+        assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
+    }
+
+    #[test]
+    fn cross_struct_mismatch() {
+        // Date passed to trange.duration_ms (expects TimeRange) should fail
+        let body = vec![
+            node("d", "date.now", vec![]),
+            node("ms", "trange.duration_ms", vec![var_arg("d")]),
+        ];
+        let err = typecheck_func("TestFunc", &[], &body).unwrap_err();
+        assert!(err.contains("expected 'TimeRange'"), "got: {err}");
+        assert!(err.contains("got 'Date'"), "got: {err}");
+    }
+
+    #[test]
+    fn expr_assign_struct_inference() {
+        // exec.run via expr assignment, then misuse in db.exec
+        let body = vec![
+            expr_assign(
+                "out",
+                Expr::Call {
+                    func: "exec.run".to_string(),
+                    args: vec![Expr::Lit(json!("ls"))],
+                },
+            ),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("out"), lit_arg(json!("SELECT 1"))],
+            ),
+        ];
+        let err = typecheck_func("TestFunc", &[], &body).unwrap_err();
+        assert!(err.contains("expected 'db_conn'"), "got: {err}");
+        assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
     }
 }

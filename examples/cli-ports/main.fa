@@ -1,0 +1,22 @@
+use Scan from "./Scan.fa"
+use Display from "./Display.fa"
+
+docs main
+    CLI tool that lists all listening TCP ports on the system.
+    Runs lsof, parses the output, deduplicates entries, and displays
+    a colored table showing port, PID, and command for each listener.
+done
+
+flow main
+body
+    step Scan() then
+        next :result to ports
+    done
+    step Display(ports to :ports) done
+done
+
+test main
+    mock Scan => true
+    mock Display => true
+    _ = main()
+done

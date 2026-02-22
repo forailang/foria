@@ -1,0 +1,57 @@
+docs Scan
+    Runs lsof to discover listening TCP ports on the system.
+    Parses each LISTEN line to extract the port number, command name, and PID.
+    Deduplicates entries where the same port appears for both IPv4 and IPv6.
+    Returns a list of dicts with port, command, and pid fields.
+done
+
+func Scan
+    emit result as list
+    fail error as text
+body
+    out = exec.run("lsof", ["-i", "-P", "-n"])
+    if !out.ok
+        fail out.stderr
+    done
+
+    lines = str.split(out.stdout, "\n")
+    entries = list.new()
+    seen = obj.new()
+
+    loop lines as line
+        trimmed = str.trim(line)
+        has_listen = str.contains(trimmed, "(LISTEN)")
+        if has_listen
+            parts = regex.split(trimmed, "\\s+")
+            plen = list.len(parts)
+            if plen > 1
+                raw_cmd = parts[0]
+                command = str.replace(raw_cmd, "\\x20", " ")
+                pid = parts[1]
+                name_col = parts[plen - 2]
+                port_parts = str.split(name_col, ":")
+                port_str = port_parts[list.len(port_parts) - 1]
+                port_clean = regex.find(port_str, "(\\d+)")
+                matched = obj.get(port_clean, "matched")
+                if matched
+                    groups = obj.get(port_clean, "groups")
+                    port = groups[0]
+                    already = obj.has(seen, port)
+                    if !already
+                        entry = {port: port, command: command, pid: pid}
+                        entries = list.append(entries, entry)
+                        seen = obj.set(seen, port, true)
+                    done
+                done
+            done
+        done
+    done
+
+    emit entries
+done
+
+test Scan
+    # Scan calls exec.run("lsof") which requires system access — stub test
+    ok = true
+    must ok == true
+done
