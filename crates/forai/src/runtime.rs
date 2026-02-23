@@ -856,7 +856,7 @@ fn read_trange_arg(
     Ok(obj)
 }
 
-async fn execute_op(
+pub(crate) async fn execute_op(
     op: &str,
     args: &[Value],
     host: &dyn Host,
@@ -2920,10 +2920,14 @@ fn execute_statements<'a>(
                                 status: "failed".to_string(),
                                 args,
                                 output: None,
-                                error: Some(error),
+                                error: Some(error.clone()),
                                 duration_ms: start.elapsed().as_millis(),
                                 sync_group: sync_group.map(|s| s.to_string()),
                             });
+                            return Err(format!(
+                                "op `{}` (bound to `{}`) failed: {}",
+                                node.op, node.bind, error
+                            ));
                         }
                     }
                     *step += 1;

@@ -16,6 +16,7 @@ enum Block {
     Loop,     // loop block
     Sync,     // sync block
     Step,     // step...then block
+    Branch,   // branch...done block
 }
 
 /// Format a `.fa` source string, returning the formatted version.
@@ -194,6 +195,9 @@ pub fn format_source(source: &str) -> String {
                 }
                 "step" if trimmed.contains(" then") && !single_line_done => {
                     stack.push(Block::Step);
+                }
+                "branch" if !single_line_done => {
+                    stack.push(Block::Branch);
                 }
                 _ => {
                     // Check for sync assignment: `[vars] = sync` or `x = sync`
@@ -963,6 +967,29 @@ body
     \"\"\"
     html = tmpl.render(template, data)
     return html
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn branch_indent() {
+        let input = "\
+flow main
+body
+    state srv = http.server.listen(3030)
+    step sources.Requests(srv to :srv) then
+        next :req to req
+    done
+    state path = obj.get(req, \"path\")
+    branch when route.match(\"/\", path)
+        step routes.Home(path to :path) done
+    done
+    branch when route.match(\"/about\", path)
+        state x = log.info(path)
+        step routes.About(path to :path) done
+    done
 done
 ";
         let formatted = format_source(input);

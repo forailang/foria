@@ -477,6 +477,31 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                     )?;
                 }
                 Statement::SourceLoop(sl) => {
+                    let when = condition.unwrap_or("true").to_string();
+                    for (idx, arg) in sl.source_args.iter().enumerate() {
+                        if let Arg::Var { var } = arg {
+                            let base = var.split('.').next().unwrap_or(var);
+                            let Some(source) = local_scope.get(base) else {
+                                return Err(format!(
+                                    "SourceLoop `{}` references unknown var `{}`",
+                                    sl.source_op, var
+                                ));
+                            };
+                            edges.push(IrEdge {
+                                from: IrEndpoint {
+                                    kind: source.kind.clone(),
+                                    id: source.id.clone(),
+                                    port: None,
+                                },
+                                to: IrEndpoint {
+                                    kind: "source_loop".to_string(),
+                                    id: sl.source_op.clone(),
+                                    port: Some(format!("arg{idx}")),
+                                },
+                                when: when.clone(),
+                            });
+                        }
+                    }
                     let cond = combine_cond(
                         condition,
                         &format!("source_loop({} as {})", sl.source_op, sl.bind),

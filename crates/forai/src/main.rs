@@ -750,6 +750,25 @@ async fn run() -> Result<(), String> {
                 return Err(format!("no .fa files found at {}", path.display()));
             }
 
+            // Format first, then check
+            let fmt_changed = match formatter::fmt_path(&path, false) {
+                Ok((changed, _)) => changed,
+                Err(e) => {
+                    eprintln!("fmt: {e}");
+                    vec![]
+                }
+            };
+            if !fmt_changed.is_empty() {
+                for f in &fmt_changed {
+                    eprintln!("formatted {}", f.display());
+                }
+                // Re-collect files after formatting
+                files = mcp::collect_fa_files(&path);
+                if path.is_file() {
+                    mcp::expand_with_imports(&mut files);
+                }
+            }
+
             let mut errors: Vec<String> = Vec::new();
             let mut warnings: Vec<String> = Vec::new();
             let mut ok_count = 0;

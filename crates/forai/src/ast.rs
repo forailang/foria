@@ -364,6 +364,14 @@ pub enum FlowStatement {
     State(FlowStateDecl),
     SendNowait(FlowSendNowait),
     Branch(FlowBranchBlock),
+    Log(FlowLogStmt),
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct FlowLogStmt {
+    pub args: Vec<Arg>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

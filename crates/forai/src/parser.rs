@@ -1,7 +1,8 @@
 use crate::ast::{
     Arg, BareLoopBlock, BinOp, CaseArm, CaseBlock, ConstraintValue, ContinuationWire, DocsDecl,
     Emit, EnumDecl, Expr, ExprAssign, FieldDecl, FieldDocsEntry, Flow, FlowBranchBlock, FlowDecl,
-    FlowEmitStmt, FlowGraph, FlowSendNowait, FlowStateDecl, FlowStatement, FuncDecl, InterpExpr,
+    FlowEmitStmt, FlowGraph, FlowLogStmt, FlowSendNowait, FlowStateDecl, FlowStatement, FuncDecl,
+    InterpExpr,
     LoopBlock, ModuleAst, NextWire, NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping,
     SendNowait, Span, Statement, StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl,
     TestDecl, TopDecl, TypeConstraint, TypeDecl, TypeKind, UnaryOp, UsesDecl,
@@ -386,6 +387,16 @@ fn lower_flow_statements(
                         out.extend(lowered_body);
                     }
                 }
+            }
+            FlowStatement::Log(log) => {
+                let bind = format!("_log_{}", *counter);
+                *counter += 1;
+                out.push(Statement::Node(NodeAssign {
+                    bind: bind.clone(),
+                    node_id: bind,
+                    op: "log.info".to_string(),
+                    args: log.args.clone(),
+                }));
             }
         }
     }
@@ -1301,6 +1312,9 @@ impl FlowBodyParser {
         if self.peek_keyword("send") {
             return self.parse_flow_send_nowait();
         }
+        if self.peek_keyword("log") {
+            return self.parse_flow_log();
+        }
         if self.peek_keyword("emit") {
             let emit = self.parse_flow_emit_inner()?;
             return Ok(FlowStatement::Emit(emit));
@@ -1312,7 +1326,7 @@ impl FlowBodyParser {
         if self.peek_keyword("branch") {
             return self.parse_flow_branch();
         }
-        self.err_here("expected `step`, `state`, `send`, `emit`, `fail`, or `branch` in flow body")
+        self.err_here("expected `step`, `state`, `send`, `log`, `emit`, `fail`, or `branch` in flow body")
     }
 
     // Parse: state <bind> = <callee>(<arg1>, <arg2>, ...)
@@ -1332,6 +1346,48 @@ impl FlowBodyParser {
             args,
             span,
         }))
+    }
+
+    // Parse: log <arg1>, <arg2>
+    fn parse_flow_log(&mut self) -> Result<FlowStatement, ParseError> {
+        let span = self.current().span;
+        self.expect_keyword("log")?;
+        let mut args = Vec::new();
+        // Parse comma-separated args until newline/eof
+        loop {
+            match self.current().kind.clone() {
+                TokenKind::StringLit(s) => {
+                    self.bump();
+                    args.push(Arg::Lit { lit: json!(s) });
+                }
+                TokenKind::Number(n) => {
+                    self.bump();
+                    if let Ok(v) = n.parse::<i64>() {
+                        args.push(Arg::Lit { lit: json!(v) });
+                    } else if let Ok(v) = n.parse::<f64>() {
+                        args.push(Arg::Lit { lit: json!(v) });
+                    } else {
+                        return self.err_here("invalid numeric literal in log");
+                    }
+                }
+                TokenKind::Ident(v) if v == "true" || v == "false" => {
+                    let b = v == "true";
+                    self.bump();
+                    args.push(Arg::Lit { lit: json!(b) });
+                }
+                TokenKind::Ident(_) => {
+                    let ident = self.expect_ident("expected identifier")?;
+                    args.push(Arg::Var { var: ident });
+                }
+                _ => return self.err_here("expected argument after `log`"),
+            }
+            if self.at_eof() || matches!(self.current().kind, TokenKind::Newline) {
+                break;
+            }
+            self.expect_symbol(',')?;
+        }
+        self.expect_line_end("expected newline after log statement")?;
+        Ok(FlowStatement::Log(FlowLogStmt { args, span }))
     }
 
     // Parse: send nowait <target>(<arg1>, <arg2>, ...)
@@ -3819,6 +3875,81 @@ done
                 assert_eq!(sn.args, vec!["conn"]);
             }
             _ => panic!("expected SendNowait"),
+        }
+    }
+
+    #[test]
+    fn parses_log_in_flow() {
+        let src = r#"
+flow Server
+  take port as Long
+  emit result as ServerResult
+  fail error as ServerError
+body
+  state conn = db.open(port)
+  log "server started", conn
+  step handler.Run(conn to :conn) then
+    next :result to res
+    emit res to :result
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 3);
+        match &graph.body[1] {
+            FlowStatement::Log(log) => {
+                assert_eq!(log.args.len(), 2);
+                assert_eq!(
+                    log.args[0],
+                    Arg::Lit {
+                        lit: json!("server started")
+                    }
+                );
+                assert_eq!(
+                    log.args[1],
+                    Arg::Var {
+                        var: "conn".to_string()
+                    }
+                );
+            }
+            _ => panic!("expected Log"),
+        }
+    }
+
+    #[test]
+    fn lower_log_to_node() {
+        let src = r#"
+flow Server
+  take port as Long
+  emit result as ServerResult
+  fail error as ServerError
+body
+  log "started"
+  step handler.Run(port to :port) then
+    next :result to res
+    emit res to :result
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // log node + step node + emit
+        match &flow.body[0] {
+            Statement::Node(n) => {
+                assert_eq!(n.op, "log.info");
+                assert!(n.bind.starts_with("_log_"));
+                assert_eq!(n.args.len(), 1);
+                assert_eq!(
+                    n.args[0],
+                    Arg::Lit {
+                        lit: json!("started")
+                    }
+                );
+            }
+            _ => panic!("expected Node for log"),
         }
     }
 

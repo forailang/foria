@@ -21,3 +21,6 @@ plans/
 # Claude memory (local session data)
 .claude/
 
+# Context manager
+.cm/
+

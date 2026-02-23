@@ -422,6 +422,22 @@ async fn run_test_body(
                 }
                 continue;
             }
+
+            // Fallback: try as a runtime op (e.g. route.match, obj.get, etc.)
+            if callee.contains('.') {
+                let args: Vec<Value> = arg_exprs
+                    .iter()
+                    .map(|a| eval_value_expr(a, &env))
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| format!("line {line_no}: op arg error: {e}"))?;
+                let h = NativeHost::new();
+                let codecs = CodecRegistry::default_registry();
+                let result = runtime::execute_op(callee, &args, &h, &codecs)
+                    .await
+                    .map_err(|e| format!("line {line_no}: op `{callee}` failed: {e}"))?;
+                env.insert(var, result);
+                continue;
+            }
         }
 
         if let Some(caps) = assign_re.captures(line) {
@@ -431,6 +447,29 @@ async fn run_test_body(
                 .map_err(|e| format!("line {line_no}: assignment error: {e}"))?;
             env.insert(var, value);
             continue;
+        }
+
+        // Bare op call (no assignment): e.g. log.info("message")
+        if let Some((op_name, rest)) = line.split_once('(') {
+            let op_name = op_name.trim();
+            if rest.ends_with(')') && op_name.contains('.') {
+                let args_raw = &rest[..rest.len() - 1];
+                let args: Vec<Value> = if args_raw.trim().is_empty() {
+                    vec![]
+                } else {
+                    split_csv(args_raw)
+                        .into_iter()
+                        .map(|a| eval_value_expr(&a, &env))
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| format!("line {line_no}: op arg error: {e}"))?
+                };
+                let h = NativeHost::new();
+                let codecs = CodecRegistry::default_registry();
+                runtime::execute_op(op_name, &args, &h, &codecs)
+                    .await
+                    .map_err(|e| format!("line {line_no}: op `{op_name}` failed: {e}"))?;
+                continue;
+            }
         }
 
         return Err(format!("line {line_no}: unsupported test syntax `{line}`"));

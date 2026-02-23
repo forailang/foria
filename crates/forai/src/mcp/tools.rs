@@ -202,6 +202,19 @@ async fn tool_check(args: &Value) -> CallToolResult {
         return CallToolResult::error(format!("No .fa files found at {}", path.display()));
     }
 
+    // Format first, then check
+    let fmt_changed = match crate::formatter::fmt_path(&path, false) {
+        Ok((changed, _)) => changed,
+        Err(_) => vec![],
+    };
+    if !fmt_changed.is_empty() {
+        // Re-collect files after formatting
+        files = collect_fa_files(&path);
+        if path.is_file() {
+            expand_with_imports(&mut files);
+        }
+    }
+
     let mut diagnostics = Vec::new();
     let mut warnings = Vec::new();
     let mut ok_count = 0;
