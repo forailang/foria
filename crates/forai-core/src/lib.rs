@@ -5,4 +5,5 @@ pub mod ir;
 pub mod loader;
 pub mod pure_ops;
 pub mod sync_host;
+pub mod sync_runtime;
 pub mod types;
