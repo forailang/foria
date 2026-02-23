@@ -114,5 +114,57 @@
       "done [${1:a}, ${2:b}]"
     ],
     "description": "sync concurrent block"
+  },
+  "source": {
+    "prefix": "source",
+    "body": [
+      "docs ${1:Name}",
+      "  ${2:Description.}",
+      "done",
+      "",
+      "source ${1:Name}",
+      "  emit ${3:event} as ${4:text}",
+      "  fail ${5:error} as ${6:text}",
+      "body",
+      "  on :${7:event} from ${8:op()} to ${9:item}",
+      "    emit ${9:item}",
+      "  done",
+      "done"
+    ],
+    "description": "source declaration with on event handler"
+  },
+  "branch": {
+    "prefix": "branch",
+    "body": [
+      "branch when ${1:condition}",
+      "  $0",
+      "done"
+    ],
+    "description": "branch conditional pipeline"
+  },
+  "log": {
+    "prefix": "log",
+    "body": [
+      "log ${1:\"message\"}"
+    ],
+    "description": "log statement in flow body"
+  },
+  "on": {
+    "prefix": "on",
+    "body": [
+      "on :${1:event} from ${2:source()} to ${3:item}",
+      "  $0",
+      "done"
+    ],
+    "description": "on event handler in source body"
+  },
+  "step": {
+    "prefix": "step",
+    "body": [
+      "step ${1:module}.${2:Func}(${3:arg} to :${4:param}) then",
+      "  next :${5:result} to ${6:var}",
+      "done"
+    ],
+    "description": "step with then/next in flow body"
   }
 }

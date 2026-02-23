@@ -97,7 +97,7 @@
       "name": "keyword.control.concurrent.forai"
     },
     "flow-pipeline": {
-      "match": "\\b(step|next|state|send|nowait)\\b",
+      "match": "\\b(step|next|state|send|nowait|branch|log|on)\\b",
       "name": "keyword.control.flow.forai"
     },
     "testing": {
