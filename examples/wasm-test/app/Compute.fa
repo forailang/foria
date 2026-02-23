@@ -16,5 +16,5 @@ done
 
 test Compute
     r = Compute()
-    must r.result != ""
+    must r != ""
 done

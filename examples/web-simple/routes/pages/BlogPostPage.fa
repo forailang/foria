@@ -1,0 +1,42 @@
+docs BlogPostPage
+    Renders a single blog post as HTML.
+done
+
+type BlogPost
+    slug text
+    title text :required => true
+    content text :required => true
+done
+
+docs BlogPost
+    A blog post for rendering.
+
+    docs slug
+        URL-friendly identifier.
+    done
+    docs title
+        Display title.
+    done
+    docs content
+        Post body text.
+    done
+done
+
+func BlogPostPage
+    take post as BlogPost
+    emit result as text
+    fail error as text
+body
+    title = obj.get(post, "title")
+    content = obj.get(post, "content")
+    html = "<article><h2>#{title}</h2><p>#{content}</p><p><a href=\"/blog\">Back to posts</a></p></article>"
+    emit html
+done
+
+test BlogPostPage
+    post = obj("title", "Test", "content", "Content here")
+    r = BlogPostPage(post)
+    must str.contains(r, "Test")
+    must str.contains(r, "Content here")
+    must str.contains(r, "/blog")
+done

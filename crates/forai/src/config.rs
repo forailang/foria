@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ProjectConfig {
     pub name: String,
 
@@ -40,12 +41,14 @@ pub struct BuildConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct TestConfig {
     #[serde(default = "default_test_out")]
     pub out: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct DocsConfig {
     #[serde(default = "default_docs_out")]
     pub out: String,
@@ -113,8 +116,8 @@ pub fn load_config(dir: &Path) -> Result<(ProjectConfig, PathBuf), String> {
     let text = fs::read_to_string(&config_path)
         .map_err(|e| format!("failed to read {}: {e}", config_path.display()))?;
 
-    let config: ProjectConfig = serde_json::from_str(&text)
-        .map_err(|e| format!("invalid forai.json: {e}"))?;
+    let config: ProjectConfig =
+        serde_json::from_str(&text).map_err(|e| format!("invalid forai.json: {e}"))?;
 
     Ok((config, dir.to_path_buf()))
 }

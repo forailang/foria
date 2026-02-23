@@ -21,6 +21,10 @@ pub fn is_io_op(op: &str) -> bool {
         | "http.server.accept"
         | "http.server.respond"
         | "http.server.close"
+        // HTTP respond convenience
+        | "http.respond.html"
+        | "http.respond.json"
+        | "http.respond.text"
         // Generic accept
         | "accept"
         // HTTP client (reqwest)

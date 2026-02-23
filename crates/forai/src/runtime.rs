@@ -2235,7 +2235,9 @@ fn eval_expr<'a>(
                 let idx = eval_expr(index, vars, flow_registry, host, codecs).await?;
                 match &collection {
                     Value::Array(arr) => {
-                        let i = idx.as_i64().ok_or_else(|| format!("Index must be an integer, got {idx}"))?;
+                        let i = idx.as_i64().or_else(|| {
+                            idx.as_f64().and_then(|f| { let r = f as i64; if r as f64 == f { Some(r) } else { None } })
+                        }).ok_or_else(|| format!("Index must be an integer, got {idx}"))?;
                         let len = arr.len() as i64;
                         let resolved = if i < 0 { len + i } else { i };
                         if resolved < 0 || resolved >= len {

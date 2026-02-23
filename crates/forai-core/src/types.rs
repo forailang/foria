@@ -97,24 +97,192 @@ fn resolve_constraint(c: &crate::ast::TypeConstraint) -> ResolvedConstraint {
     }
 }
 
+fn builtin_types() -> HashMap<String, TypeDef> {
+    let mut types = HashMap::new();
+    types.insert("text".to_string(), TypeDef::Primitive(PrimitiveType::Text));
+    types.insert("bool".to_string(), TypeDef::Primitive(PrimitiveType::Bool));
+    types.insert("long".to_string(), TypeDef::Primitive(PrimitiveType::Long));
+    types.insert("real".to_string(), TypeDef::Primitive(PrimitiveType::Real));
+    types.insert("uuid".to_string(), TypeDef::Primitive(PrimitiveType::Uuid));
+    types.insert("time".to_string(), TypeDef::Primitive(PrimitiveType::Time));
+    types.insert("list".to_string(), TypeDef::Primitive(PrimitiveType::List));
+    types.insert("dict".to_string(), TypeDef::Primitive(PrimitiveType::Dict));
+    types.insert("void".to_string(), TypeDef::Primitive(PrimitiveType::Void));
+    types.insert(
+        "db_conn".to_string(),
+        TypeDef::Primitive(PrimitiveType::DbConn),
+    );
+    types.insert(
+        "http_server".to_string(),
+        TypeDef::Primitive(PrimitiveType::HttpServer),
+    );
+    types.insert(
+        "http_conn".to_string(),
+        TypeDef::Primitive(PrimitiveType::HttpConn),
+    );
+    types.insert(
+        "ws_conn".to_string(),
+        TypeDef::Primitive(PrimitiveType::WsConn),
+    );
+
+    // Helper closures for building struct fields
+    let req = || vec![ResolvedConstraint {
+        key: "required".to_string(),
+        bool_val: Some(true),
+        number_val: None,
+        regex_val: None,
+    }];
+    let field = |name: &str, ty: &str, required: bool| ResolvedField {
+        name: name.to_string(),
+        type_ref: ty.to_string(),
+        constraints: if required { req() } else { vec![] },
+    };
+
+    // --- Tier 1: Core types ---
+
+    // HttpRequest — returned by http.server.accept
+    types.insert(
+        "HttpRequest".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("method", "text", true),
+                field("path", "text", true),
+                field("query", "text", false),
+                field("headers", "dict", false),
+                field("body", "text", false),
+                field("conn_id", "text", true),
+            ],
+        },
+    );
+
+    // Date — returned by date.now, date.from_iso, date.from_parts, etc.
+    types.insert(
+        "Date".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("unix_ms", "long", true),
+                field("tz_offset_min", "long", true),
+            ],
+        },
+    );
+
+    // Stamp — returned by stamp.now, stamp.from_ns, etc.
+    types.insert(
+        "Stamp".to_string(),
+        TypeDef::Struct {
+            fields: vec![field("ns", "long", true)],
+        },
+    );
+
+    // TimeRange — returned by trange.new
+    types.insert(
+        "TimeRange".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("start", "Date", true),
+                field("end", "Date", true),
+            ],
+        },
+    );
+
+    // HttpResponse — returned by http.get, http.post, http.put, http.delete
+    types.insert(
+        "HttpResponse".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("status", "long", true),
+                field("headers", "dict", true),
+                field("body", "text", true),
+            ],
+        },
+    );
+
+    // --- Tier 2: I/O & utility types ---
+
+    // ProcessOutput — returned by exec.run
+    types.insert(
+        "ProcessOutput".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("code", "long", true),
+                field("stdout", "text", true),
+                field("stderr", "text", true),
+                field("ok", "bool", true),
+            ],
+        },
+    );
+
+    // WebSocketMessage — returned by ws.recv
+    types.insert(
+        "WebSocketMessage".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("type", "text", true),
+                field("data", "text", true),
+            ],
+        },
+    );
+
+    // ErrorObject — returned by error.new
+    types.insert(
+        "ErrorObject".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("code", "text", true),
+                field("message", "text", true),
+                field("details", "dict", false),
+            ],
+        },
+    );
+
+    // URLParts — returned by url.parse
+    types.insert(
+        "URLParts".to_string(),
+        TypeDef::Struct {
+            fields: vec![
+                field("path", "text", true),
+                field("query", "text", true),
+                field("fragment", "text", true),
+            ],
+        },
+    );
+
+    types
+}
+
+/// Returns true if the given type name is a built-in type (primitive or stdlib struct).
+pub fn is_builtin_type(name: &str) -> bool {
+    matches!(
+        name,
+        "text"
+            | "bool"
+            | "long"
+            | "real"
+            | "uuid"
+            | "time"
+            | "list"
+            | "dict"
+            | "void"
+            | "db_conn"
+            | "http_server"
+            | "http_conn"
+            | "ws_conn"
+            | "HttpRequest"
+            | "HttpResponse"
+            | "Date"
+            | "Stamp"
+            | "TimeRange"
+            | "ProcessOutput"
+            | "WebSocketMessage"
+            | "ErrorObject"
+            | "URLParts"
+    )
+}
+
 impl TypeRegistry {
     pub fn from_module(module: &ModuleAst) -> Result<Self, Vec<String>> {
-        let mut types = HashMap::new();
+        let mut types = builtin_types();
         let mut errors = Vec::new();
-
-        types.insert("text".to_string(), TypeDef::Primitive(PrimitiveType::Text));
-        types.insert("bool".to_string(), TypeDef::Primitive(PrimitiveType::Bool));
-        types.insert("long".to_string(), TypeDef::Primitive(PrimitiveType::Long));
-        types.insert("real".to_string(), TypeDef::Primitive(PrimitiveType::Real));
-        types.insert("uuid".to_string(), TypeDef::Primitive(PrimitiveType::Uuid));
-        types.insert("time".to_string(), TypeDef::Primitive(PrimitiveType::Time));
-        types.insert("list".to_string(), TypeDef::Primitive(PrimitiveType::List));
-        types.insert("dict".to_string(), TypeDef::Primitive(PrimitiveType::Dict));
-        types.insert("void".to_string(), TypeDef::Primitive(PrimitiveType::Void));
-        types.insert("db_conn".to_string(), TypeDef::Primitive(PrimitiveType::DbConn));
-        types.insert("http_server".to_string(), TypeDef::Primitive(PrimitiveType::HttpServer));
-        types.insert("http_conn".to_string(), TypeDef::Primitive(PrimitiveType::HttpConn));
-        types.insert("ws_conn".to_string(), TypeDef::Primitive(PrimitiveType::WsConn));
 
         for decl in &module.decls {
             match decl {
@@ -161,10 +329,7 @@ impl TypeRegistry {
                                         .collect(),
                                 })
                                 .collect();
-                            types.insert(
-                                td.name.clone(),
-                                TypeDef::Struct { fields: resolved },
-                            );
+                            types.insert(td.name.clone(), TypeDef::Struct { fields: resolved });
                         }
                     }
                 }
@@ -212,7 +377,9 @@ impl TypeRegistry {
         // Validate that all type references in func/flow take/emit/fail resolve
         for decl in &module.decls {
             let (takes, emits, fails) = match decl {
-                TopDecl::Func(fd) | TopDecl::Sink(fd) | TopDecl::Source(fd) => (&fd.takes, &fd.emits, &fd.fails),
+                TopDecl::Func(fd) | TopDecl::Sink(fd) | TopDecl::Source(fd) => {
+                    (&fd.takes, &fd.emits, &fd.fails)
+                }
                 TopDecl::Flow(fd) => (&fd.takes, &fd.emits, &fd.fails),
                 _ => continue,
             };
@@ -250,21 +417,9 @@ impl TypeRegistry {
     }
 
     pub fn empty() -> Self {
-        let mut types = HashMap::new();
-        types.insert("text".to_string(), TypeDef::Primitive(PrimitiveType::Text));
-        types.insert("bool".to_string(), TypeDef::Primitive(PrimitiveType::Bool));
-        types.insert("long".to_string(), TypeDef::Primitive(PrimitiveType::Long));
-        types.insert("real".to_string(), TypeDef::Primitive(PrimitiveType::Real));
-        types.insert("uuid".to_string(), TypeDef::Primitive(PrimitiveType::Uuid));
-        types.insert("time".to_string(), TypeDef::Primitive(PrimitiveType::Time));
-        types.insert("list".to_string(), TypeDef::Primitive(PrimitiveType::List));
-        types.insert("dict".to_string(), TypeDef::Primitive(PrimitiveType::Dict));
-        types.insert("void".to_string(), TypeDef::Primitive(PrimitiveType::Void));
-        types.insert("db_conn".to_string(), TypeDef::Primitive(PrimitiveType::DbConn));
-        types.insert("http_server".to_string(), TypeDef::Primitive(PrimitiveType::HttpServer));
-        types.insert("http_conn".to_string(), TypeDef::Primitive(PrimitiveType::HttpConn));
-        types.insert("ws_conn".to_string(), TypeDef::Primitive(PrimitiveType::WsConn));
-        TypeRegistry { types }
+        TypeRegistry {
+            types: builtin_types(),
+        }
     }
 
     pub fn type_exists(&self, name: &str) -> bool {
@@ -318,8 +473,10 @@ impl TypeRegistry {
             PrimitiveType::List => value.is_array(),
             PrimitiveType::Dict => value.is_object(),
             PrimitiveType::Void => value.is_null(),
-            PrimitiveType::DbConn | PrimitiveType::HttpServer
-            | PrimitiveType::HttpConn | PrimitiveType::WsConn => value.is_string(),
+            PrimitiveType::DbConn
+            | PrimitiveType::HttpServer
+            | PrimitiveType::HttpConn
+            | PrimitiveType::WsConn => value.is_string(),
         };
         if ok {
             vec![]
@@ -421,10 +578,7 @@ impl TypeRegistry {
                                 errs.push(ValidationError {
                                     path: path.to_string(),
                                     constraint: "max".to_string(),
-                                    message: format!(
-                                        "length {} exceeds maximum {max}",
-                                        s.len()
-                                    ),
+                                    message: format!("length {} exceeds maximum {max}", s.len()),
                                 });
                             }
                         }
@@ -587,7 +741,7 @@ type Email as text :matches => /@/
     #[test]
     fn unknown_type_errors() {
         let registry = TypeRegistry::empty();
-        let errors = registry.validate(&json!("anything"), "HttpRequest", "request");
+        let errors = registry.validate(&json!("anything"), "NoSuchType", "request");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("unknown type"));
     }
@@ -636,7 +790,10 @@ done
     #[test]
     fn parse_primitive_handles() {
         assert_eq!(parse_primitive("db_conn"), Some(PrimitiveType::DbConn));
-        assert_eq!(parse_primitive("http_server"), Some(PrimitiveType::HttpServer));
+        assert_eq!(
+            parse_primitive("http_server"),
+            Some(PrimitiveType::HttpServer)
+        );
         assert_eq!(parse_primitive("http_conn"), Some(PrimitiveType::HttpConn));
         assert_eq!(parse_primitive("ws_conn"), Some(PrimitiveType::WsConn));
     }

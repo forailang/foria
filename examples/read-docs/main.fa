@@ -1,4 +1,4 @@
-uses app
+use app from "./app"
 
 docs main
     Example pipeline passing data from source, through flows, manipulating it with funcs, to a sink.
@@ -7,4 +7,9 @@ done
 flow main
 body
     step app.Start() done
+done
+
+test main
+    mock app.Start => true
+    _ = main()
 done

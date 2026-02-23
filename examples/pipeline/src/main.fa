@@ -1,6 +1,6 @@
-uses sources
-uses lib
-uses sinks
+use sources from "./sources"
+use lib from "./lib"
+use sinks from "./sinks"
 
 docs main
     Pipeline demo with branching and error handling.
@@ -46,4 +46,12 @@ step lib.NumToText(area to :num) then
 done
 step sinks.Print(small_label to :line) done
 done
+done
+
+test main
+    mock sources.RandomNum => 75.0
+    mock lib.Square => 5625.0
+    mock lib.NumToText => "5625"
+    mock sinks.Print => true
+    _ = main()
 done

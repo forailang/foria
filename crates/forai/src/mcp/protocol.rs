@@ -3,6 +3,7 @@ use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcMessage {
+    #[allow(dead_code)]
     pub jsonrpc: String,
     pub id: Option<Value>,
     pub method: Option<String>,
@@ -56,6 +57,7 @@ impl JsonRpcError {
         Self::new(id, -32602, message)
     }
 
+    #[allow(dead_code)]
     pub fn internal(id: Value, message: String) -> Self {
         Self::new(id, -32603, message)
     }

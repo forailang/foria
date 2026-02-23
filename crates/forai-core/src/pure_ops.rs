@@ -1,12 +1,12 @@
 use crate::codec::CodecRegistry;
-use regex::Regex;
-use rand::Rng;
-use uuid::Uuid;
-use sha2::{Sha256, Sha512, Digest};
-use hmac::{Hmac, Mac};
 use base64::Engine;
+use hmac::{Hmac, Mac};
+use rand::Rng;
+use regex::Regex;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256, Sha512};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 pub fn read_string_arg(args: &[Value], index: usize, op: &str) -> Result<String, String> {
     let Some(value) = args.get(index) else {
@@ -24,6 +24,7 @@ pub fn read_i64_arg(args: &[Value], index: usize, op: &str) -> Result<i64, Strin
     };
     value
         .as_i64()
+        .or_else(|| value.as_f64().and_then(|f| { let r = f as i64; if r as f64 == f { Some(r) } else { None } }))
         .ok_or_else(|| format!("Op `{op}` expected integer at arg{index}"))
 }
 
@@ -59,7 +60,6 @@ pub fn read_f64_arg(args: &[Value], index: usize, op: &str) -> Result<f64, Strin
         .as_f64()
         .ok_or_else(|| format!("Op `{op}` expected number at arg{index}"))
 }
-
 
 fn extract_first_number(s: &str) -> Option<f64> {
     let re = Regex::new(r"-?\d+(\.\d+)?").unwrap();
@@ -157,7 +157,27 @@ fn html_unescape(input: &str) -> String {
 // Route matching helper
 // ---------------------------------------------------------------------------
 
-fn match_route(pattern: &str, path: &str) -> Value {
+fn route_match_bool(pattern: &str, path: &str) -> bool {
+    let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    let mut pi = 0;
+    for seg in &pat_segs {
+        if seg.starts_with('*') {
+            return true;
+        }
+        if pi >= path_segs.len() {
+            return false;
+        }
+        if !seg.starts_with(':') && *seg != path_segs[pi] {
+            return false;
+        }
+        pi += 1;
+    }
+    pi == path_segs.len()
+}
+
+fn route_extract_params(pattern: &str, path: &str) -> Value {
     let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut params = serde_json::Map::new();
@@ -171,23 +191,23 @@ fn match_route(pattern: &str, path: &str) -> Value {
             if !key.is_empty() {
                 params.insert(key.to_string(), json!(val));
             }
-            return json!({"matched": true, "params": Value::Object(params)});
+            return Value::Object(params);
         }
         if pi >= path_segs.len() {
-            return json!({"matched": false, "params": {}});
+            return json!({});
         }
         if seg.starts_with(':') {
             let key = &seg[1..];
             params.insert(key.to_string(), json!(path_segs[pi]));
         } else if *seg != path_segs[pi] {
-            return json!({"matched": false, "params": {}});
+            return json!({});
         }
         pi += 1;
     }
     if pi != path_segs.len() {
-        return json!({"matched": false, "params": {}});
+        return json!({});
     }
-    json!({"matched": true, "params": Value::Object(params)})
+    Value::Object(params)
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +383,10 @@ pub fn known_ops() -> &'static [&'static str] {
         "http.server.accept",
         "http.server.respond",
         "http.server.close",
+        // HTTP respond convenience
+        "http.respond.html",
+        "http.respond.json",
+        "http.respond.text",
         "accept",
         // WebSocket client
         "ws.connect",
@@ -375,13 +399,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "headers.get",
         "headers.delete",
         // math
-        "math.divide",
-        "math.multiply",
-        "math.add",
-        "math.subtract",
         "math.floor",
-        "math.mod",
-        "math.power",
         "math.round",
         // time & format
         "time.sleep",
@@ -430,7 +448,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "list.range",
         "list.new",
         "list.append",
-        "list.get",
+
         "list.len",
         "list.contains",
         "list.slice",
@@ -544,6 +562,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "url.decode",
         // route
         "route.match",
+        "route.params",
         // html
         "html.escape",
         "html.unescape",
@@ -586,32 +605,23 @@ fn weekday_from_days(z: i64) -> i64 {
     (z + 3).rem_euclid(7) + 1
 }
 
-#[cfg(test)]
-fn is_leap_year(y: i64) -> bool {
-    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
-}
-
-#[cfg(test)]
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => if is_leap_year(y) { 29 } else { 28 },
-        _ => 0,
-    }
-}
-
 /// Parse ISO 8601 string → (unix_ms, tz_offset_min).
 /// Handles: `2024-03-15`, `2024-03-15T10:30:00`, `…Z`, `…+05:30`, `…-04:00`, `….123Z`.
 fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
     let err = || format!("invalid ISO 8601 datetime: `{s}`");
 
     // Must have at least YYYY-MM-DD (10 chars)
-    if s.len() < 10 { return Err(err()); }
+    if s.len() < 10 {
+        return Err(err());
+    }
     let y: i64 = s[0..4].parse().map_err(|_| err())?;
-    if s.as_bytes()[4] != b'-' { return Err(err()); }
+    if s.as_bytes()[4] != b'-' {
+        return Err(err());
+    }
     let mo: i64 = s[5..7].parse().map_err(|_| err())?;
-    if s.as_bytes()[7] != b'-' { return Err(err()); }
+    if s.as_bytes()[7] != b'-' {
+        return Err(err());
+    }
     let d: i64 = s[8..10].parse().map_err(|_| err())?;
 
     let mut h: i64 = 0;
@@ -623,14 +633,23 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
     let rest = &s[10..];
     if !rest.is_empty() {
         // Expect 'T' separator
-        let rest = rest.strip_prefix('T').or_else(|| rest.strip_prefix('t')).ok_or_else(err)?;
+        let rest = rest
+            .strip_prefix('T')
+            .or_else(|| rest.strip_prefix('t'))
+            .ok_or_else(err)?;
 
         // Parse HH:MM:SS
-        if rest.len() < 8 { return Err(err()); }
+        if rest.len() < 8 {
+            return Err(err());
+        }
         h = rest[0..2].parse().map_err(|_| err())?;
-        if rest.as_bytes()[2] != b':' { return Err(err()); }
+        if rest.as_bytes()[2] != b':' {
+            return Err(err());
+        }
         mi = rest[3..5].parse().map_err(|_| err())?;
-        if rest.as_bytes()[5] != b':' { return Err(err()); }
+        if rest.as_bytes()[5] != b':' {
+            return Err(err());
+        }
         sec = rest[6..8].parse().map_err(|_| err())?;
 
         let mut rest = &rest[8..];
@@ -652,7 +671,9 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
                 }
             }
             // Pad to 3 digits
-            while frac_str.len() < 3 { frac_str.push('0'); }
+            while frac_str.len() < 3 {
+                frac_str.push('0');
+            }
             ms = frac_str.parse().unwrap_or(0);
             rest = &rest[consumed..];
         }
@@ -663,7 +684,9 @@ fn parse_iso_datetime(s: &str) -> Result<(i64, i64), String> {
         } else if rest.starts_with('+') || rest.starts_with('-') {
             let sign: i64 = if rest.starts_with('+') { 1 } else { -1 };
             let tz = &rest[1..];
-            if tz.len() < 5 || tz.as_bytes()[2] != b':' { return Err(err()); }
+            if tz.len() < 5 || tz.as_bytes()[2] != b':' {
+                return Err(err());
+            }
             let tz_h: i64 = tz[0..2].parse().map_err(|_| err())?;
             let tz_m: i64 = tz[3..5].parse().map_err(|_| err())?;
             tz_offset_min = sign * (tz_h * 60 + tz_m);
@@ -702,9 +725,15 @@ fn format_iso_datetime(unix_ms: i64, tz_offset_min: i64) -> String {
     };
 
     if ms == 0 {
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}", y, mo, d, hr, min, sec, tz_str)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+            y, mo, d, hr, min, sec, tz_str
+        )
     } else {
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}", y, mo, d, hr, min, sec, ms, tz_str)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}",
+            y, mo, d, hr, min, sec, ms, tz_str
+        )
     }
 }
 
@@ -722,19 +751,29 @@ fn make_trange(start: Value, end: Value) -> Value {
 
 fn read_date_arg(args: &[Value], index: usize, op: &str) -> Result<(i64, i64), String> {
     let obj = read_object_arg(args, index, op)?;
-    let unix_ms = obj.get("unix_ms").and_then(Value::as_i64)
+    let unix_ms = obj
+        .get("unix_ms")
+        .and_then(Value::as_i64)
         .ok_or_else(|| format!("Op `{op}` arg{index} missing `unix_ms`"))?;
-    let tz = obj.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
+    let tz = obj
+        .get("tz_offset_min")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     Ok((unix_ms, tz))
 }
 
 fn read_stamp_arg(args: &[Value], index: usize, op: &str) -> Result<i64, String> {
     let obj = read_object_arg(args, index, op)?;
-    obj.get("ns").and_then(Value::as_i64)
+    obj.get("ns")
+        .and_then(Value::as_i64)
         .ok_or_else(|| format!("Op `{op}` arg{index} missing `ns`"))
 }
 
-fn read_trange_arg(args: &[Value], index: usize, op: &str) -> Result<serde_json::Map<String, Value>, String> {
+fn read_trange_arg(
+    args: &[Value],
+    index: usize,
+    op: &str,
+) -> Result<serde_json::Map<String, Value>, String> {
     let obj = read_object_arg(args, index, op)?;
     if !obj.contains_key("start") || !obj.contains_key("end") {
         return Err(format!("Op `{op}` arg{index} must have `start` and `end`"));
@@ -814,40 +853,9 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 "body": format!("{{\"ok\":false,\"error\":\"{message}\"}}")
             }))
         }
-        "math.divide" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            if b == 0.0 {
-                return Err(format!("Op `{op}` division by zero"));
-            }
-            Ok(json!(a / b))
-        }
-        "math.multiply" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a * b))
-        }
-        "math.add" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a + b))
-        }
-        "math.subtract" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            Ok(json!(a - b))
-        }
         "math.floor" => {
             let a = read_f64_arg(args, 0, op)?;
             Ok(json!(a.floor() as i64))
-        }
-        "math.mod" => {
-            let a = read_f64_arg(args, 0, op)?;
-            let b = read_f64_arg(args, 1, op)?;
-            if b == 0.0 {
-                return Err(format!("Op `{op}` modulo by zero"));
-            }
-            Ok(json!(a % b))
         }
         "time.split_hms" => {
             let decimal_hours = read_f64_arg(args, 0, op)?;
@@ -866,15 +874,13 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "fmt.wrap_field" => {
             let field_name = read_string_arg(args, 0, op)?;
-            let value = args.get(1).cloned().ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let value = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             let mut obj = serde_json::Map::new();
             obj.insert(field_name, value);
             Ok(Value::Object(obj))
-        }
-        "math.power" => {
-            let base = read_f64_arg(args, 0, op)?;
-            let exp = read_f64_arg(args, 1, op)?;
-            Ok(json!(base.powf(exp)))
         }
         "math.round" => {
             let value = read_f64_arg(args, 0, op)?;
@@ -890,32 +896,30 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "list.new" => Ok(Value::Array(Vec::new())),
         "list.append" => {
-            let list_val = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+            let list_val = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
             let arr = list_val
                 .as_array()
                 .ok_or_else(|| format!("Op `{op}` expected array at arg0"))?;
-            let item = args.get(1).cloned().ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let item = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             let mut new_arr = arr.clone();
             new_arr.push(item);
             Ok(Value::Array(new_arr))
         }
-        "list.get" => {
-            let arr = read_array_arg(args, 0, op)?;
-            let idx = read_i64_arg(args, 1, op)?;
-            let len = arr.len() as i64;
-            let resolved = if idx < 0 { len + idx } else { idx };
-            if resolved < 0 || resolved >= len {
-                return Err(format!("Op `{op}` index {idx} out of bounds (len={len})"));
-            }
-            Ok(arr[resolved as usize].clone())
-        }
+
         "list.len" => {
             let arr = read_array_arg(args, 0, op)?;
             Ok(json!(arr.len() as i64))
         }
         "list.contains" => {
             let arr = read_array_arg(args, 0, op)?;
-            let needle = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let needle = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             Ok(json!(arr.contains(needle)))
         }
         "list.slice" => {
@@ -938,12 +942,17 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "obj.new" => Ok(Value::Object(serde_json::Map::new())),
         "obj.set" => {
-            let obj_val = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+            let obj_val = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
             let map = obj_val
                 .as_object()
                 .ok_or_else(|| format!("Op `{op}` expected object at arg0"))?;
             let key = read_string_arg(args, 1, op)?;
-            let value = args.get(2).cloned().ok_or_else(|| format!("Op `{op}` missing arg2"))?;
+            let value = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| format!("Op `{op}` missing arg2"))?;
             let mut new_map = map.clone();
             new_map.insert(key, value);
             Ok(Value::Object(new_map))
@@ -1046,10 +1055,13 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             Ok(Value::Array(parts))
         }
         "str.join" => {
-            let arr = args.get(0).and_then(Value::as_array)
+            let arr = args
+                .get(0)
+                .and_then(Value::as_array)
                 .ok_or_else(|| format!("Op `{op}` expected array at arg0"))?;
             let sep = read_string_arg(args, 1, op)?;
-            let joined: String = arr.iter()
+            let joined: String = arr
+                .iter()
                 .map(|v| v.as_str().unwrap_or("").to_string())
                 .collect::<Vec<_>>()
                 .join(&sep);
@@ -1115,7 +1127,11 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 Value::String(_) => "text",
                 Value::Bool(_) => "bool",
                 Value::Number(n) => {
-                    if n.is_f64() && n.as_i64().is_none() { "real" } else { "long" }
+                    if n.is_f64() && n.as_i64().is_none() {
+                        "real"
+                    } else {
+                        "long"
+                    }
                 }
                 Value::Array(_) => "list",
                 Value::Object(_) => "dict",
@@ -1128,8 +1144,11 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let s = match v {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => {
-                    if let Some(i) = n.as_i64() { i.to_string() }
-                    else { n.as_f64().unwrap().to_string() }
+                    if let Some(i) = n.as_i64() {
+                        i.to_string()
+                    } else {
+                        n.as_f64().unwrap().to_string()
+                    }
                 }
                 Value::Bool(b) => b.to_string(),
                 Value::Null => String::new(),
@@ -1141,13 +1160,22 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let v = args.first().unwrap_or(&Value::Null);
             let i = match v {
                 Value::Number(n) => {
-                    if let Some(i) = n.as_i64() { i }
-                    else { n.as_f64().unwrap().round() as i64 }
+                    if let Some(i) = n.as_i64() {
+                        i
+                    } else {
+                        n.as_f64().unwrap().round() as i64
+                    }
                 }
-                Value::String(s) => {
-                    extract_first_number(s).map(|f| f.round() as i64).unwrap_or(0)
+                Value::String(s) => extract_first_number(s)
+                    .map(|f| f.round() as i64)
+                    .unwrap_or(0),
+                Value::Bool(b) => {
+                    if *b {
+                        1
+                    } else {
+                        0
+                    }
                 }
-                Value::Bool(b) => if *b { 1 } else { 0 },
                 Value::Array(a) => a.len() as i64,
                 Value::Object(m) => m.len() as i64,
                 Value::Null => 0,
@@ -1159,7 +1187,13 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let f = match v {
                 Value::Number(n) => n.as_f64().unwrap(),
                 Value::String(s) => extract_first_number(s).unwrap_or(0.0),
-                Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                Value::Bool(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 Value::Array(a) => a.len() as f64,
                 Value::Object(m) => m.len() as f64,
                 Value::Null => 0.0,
@@ -1196,7 +1230,8 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             match re.captures(&text) {
                 Some(caps) => {
                     let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                    let groups: Vec<Value> = caps.iter()
+                    let groups: Vec<Value> = caps
+                        .iter()
                         .skip(1)
                         .map(|m| m.map(|m| json!(m.as_str())).unwrap_or(Value::Null))
                         .collect();
@@ -1210,16 +1245,14 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                     "matched": false,
                     "text": "",
                     "groups": []
-                }))
+                })),
             }
         }
         "regex.find_all" => {
             let text = read_string_arg(args, 0, op)?;
             let pattern = read_string_arg(args, 1, op)?;
             let re = Regex::new(&pattern).map_err(|e| format!("Op `{op}` invalid regex: {e}"))?;
-            let matches: Vec<Value> = re.find_iter(&text)
-                .map(|m| json!(m.as_str()))
-                .collect();
+            let matches: Vec<Value> = re.find_iter(&text).map(|m| json!(m.as_str())).collect();
             Ok(Value::Array(matches))
         }
         "regex.replace" => {
@@ -1234,7 +1267,9 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let pattern = read_string_arg(args, 1, op)?;
             let replacement = read_string_arg(args, 2, op)?;
             let re = Regex::new(&pattern).map_err(|e| format!("Op `{op}` invalid regex: {e}"))?;
-            Ok(json!(re.replace_all(&text, replacement.as_str()).to_string()))
+            Ok(json!(
+                re.replace_all(&text, replacement.as_str()).to_string()
+            ))
         }
         "regex.split" => {
             let text = read_string_arg(args, 0, op)?;
@@ -1260,9 +1295,7 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let val: f64 = rand::thread_rng().r#gen();
             Ok(json!(val))
         }
-        "random.uuid" => {
-            Ok(json!(Uuid::new_v4().to_string()))
-        }
+        "random.uuid" => Ok(json!(Uuid::new_v4().to_string())),
         "random.choice" => {
             let arr = read_array_arg(args, 0, op)?;
             if arr.is_empty() {
@@ -1397,7 +1430,13 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         "date.compare" => {
             let (a_ms, _) = read_date_arg(args, 0, op)?;
             let (b_ms, _) = read_date_arg(args, 1, op)?;
-            Ok(json!(if a_ms < b_ms { -1 } else if a_ms > b_ms { 1 } else { 0 }))
+            Ok(json!(if a_ms < b_ms {
+                -1
+            } else if a_ms > b_ms {
+                1
+            } else {
+                0
+            }))
         }
 
         // -----------------------------------------------------------------
@@ -1448,7 +1487,13 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         "stamp.compare" => {
             let a_ns = read_stamp_arg(args, 0, op)?;
             let b_ns = read_stamp_arg(args, 1, op)?;
-            Ok(json!(if a_ns < b_ns { -1 } else if a_ns > b_ns { 1 } else { 0 }))
+            Ok(json!(if a_ns < b_ns {
+                -1
+            } else if a_ns > b_ns {
+                1
+            } else {
+                0
+            }))
         }
 
         // -----------------------------------------------------------------
@@ -1472,46 +1517,77 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "trange.duration_ms" => {
             let tr = read_trange_arg(args, 0, op)?;
-            let s_ms = tr.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let s_ms = tr
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid start date"))?;
-            let e_ms = tr.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let e_ms = tr
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid end date"))?;
             Ok(json!(e_ms - s_ms))
         }
         "trange.contains" => {
             let tr = read_trange_arg(args, 0, op)?;
             let (d_ms, _) = read_date_arg(args, 1, op)?;
-            let s_ms = tr.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let s_ms = tr
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid start date"))?;
-            let e_ms = tr.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let e_ms = tr
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid end date"))?;
             Ok(json!(d_ms >= s_ms && d_ms <= e_ms))
         }
         "trange.overlaps" => {
             let a = read_trange_arg(args, 0, op)?;
             let b = read_trange_arg(args, 1, op)?;
-            let a_start = a.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let a_start = a
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid a.start"))?;
-            let a_end = a.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let a_end = a
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid a.end"))?;
-            let b_start = b.get("start").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let b_start = b
+                .get("start")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid b.start"))?;
-            let b_end = b.get("end").and_then(|v| v.get("unix_ms")).and_then(Value::as_i64)
+            let b_end = b
+                .get("end")
+                .and_then(|v| v.get("unix_ms"))
+                .and_then(Value::as_i64)
                 .ok_or_else(|| format!("Op `{op}` invalid b.end"))?;
             Ok(json!(a_start <= b_end && b_start <= a_end))
         }
         "trange.shift" => {
             let tr = read_trange_arg(args, 0, op)?;
             let shift_ms = read_i64_arg(args, 1, op)?;
-            let s = tr.get("start").and_then(|v| v.as_object())
+            let s = tr
+                .get("start")
+                .and_then(|v| v.as_object())
                 .ok_or_else(|| format!("Op `{op}` invalid start"))?;
-            let e = tr.get("end").and_then(|v| v.as_object())
+            let e = tr
+                .get("end")
+                .and_then(|v| v.as_object())
                 .ok_or_else(|| format!("Op `{op}` invalid end"))?;
             let s_ms = s.get("unix_ms").and_then(Value::as_i64).unwrap_or(0);
             let s_tz = s.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
             let e_ms = e.get("unix_ms").and_then(Value::as_i64).unwrap_or(0);
             let e_tz = e.get("tz_offset_min").and_then(Value::as_i64).unwrap_or(0);
-            Ok(make_trange(make_date(s_ms + shift_ms, s_tz), make_date(e_ms + shift_ms, e_tz)))
+            Ok(make_trange(
+                make_date(s_ms + shift_ms, s_tz),
+                make_date(e_ms + shift_ms, e_tz),
+            ))
         }
 
         // -----------------------------------------------------------------
@@ -1522,37 +1598,59 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let mut hasher = Sha256::new();
             hasher.update(data.as_bytes());
             let result = hasher.finalize();
-            Ok(json!(result.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+            Ok(json!(
+                result
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ))
         }
         "hash.sha512" => {
             let data = read_string_arg(args, 0, op)?;
             let mut hasher = Sha512::new();
             hasher.update(data.as_bytes());
             let result = hasher.finalize();
-            Ok(json!(result.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+            Ok(json!(
+                result
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ))
         }
         "hash.hmac" => {
             let data = read_string_arg(args, 0, op)?;
             let key = read_string_arg(args, 1, op)?;
-            let algo = args.get(2)
-                .and_then(|v| v.as_str())
-                .unwrap_or("sha256");
+            let algo = args.get(2).and_then(|v| v.as_str()).unwrap_or("sha256");
             match algo {
                 "sha256" => {
                     let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes())
                         .map_err(|e| format!("Op `{op}` HMAC key error: {e}"))?;
                     mac.update(data.as_bytes());
                     let result = mac.finalize();
-                    Ok(json!(result.into_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()))
+                    Ok(json!(
+                        result
+                            .into_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ))
                 }
                 "sha512" => {
                     let mut mac = Hmac::<Sha512>::new_from_slice(key.as_bytes())
                         .map_err(|e| format!("Op `{op}` HMAC key error: {e}"))?;
                     mac.update(data.as_bytes());
                     let result = mac.finalize();
-                    Ok(json!(result.into_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()))
+                    Ok(json!(
+                        result
+                            .into_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ))
                 }
-                _ => Err(format!("Op `{op}` unsupported algorithm `{algo}`, expected `sha256` or `sha512`"))
+                _ => Err(format!(
+                    "Op `{op}` unsupported algorithm `{algo}`, expected `sha256` or `sha512`"
+                )),
             }
         }
 
@@ -1566,7 +1664,8 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "base64.decode" => {
             let encoded = read_string_arg(args, 0, op)?;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes())
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
                 .map_err(|e| format!("Op `{op}` invalid base64: {e}"))?;
             let text = String::from_utf8(bytes)
                 .map_err(|e| format!("Op `{op}` decoded bytes are not valid UTF-8: {e}"))?;
@@ -1579,7 +1678,8 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "base64.decode_url" => {
             let encoded = read_string_arg(args, 0, op)?;
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_bytes())
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded.as_bytes())
                 .map_err(|e| format!("Op `{op}` invalid URL-safe base64: {e}"))?;
             let text = String::from_utf8(bytes)
                 .map_err(|e| format!("Op `{op}` decoded bytes are not valid UTF-8: {e}"))?;
@@ -1591,8 +1691,8 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         // -----------------------------------------------------------------
         "crypto.hash_password" => {
             let password = read_string_arg(args, 0, op)?;
-            let hash = bcrypt::hash(password, 12)
-                .map_err(|e| format!("Op `{op}` bcrypt error: {e}"))?;
+            let hash =
+                bcrypt::hash(password, 12).map_err(|e| format!("Op `{op}` bcrypt error: {e}"))?;
             Ok(json!(hash))
         }
         "crypto.verify_password" => {
@@ -1603,7 +1703,9 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             Ok(json!(valid))
         }
         "crypto.sign_token" => {
-            let payload = args.get(0).ok_or_else(|| format!("Op `{op}` missing arg0 (payload)"))?;
+            let payload = args
+                .get(0)
+                .ok_or_else(|| format!("Op `{op}` missing arg0 (payload)"))?;
             if !payload.is_object() {
                 return Err(format!("Op `{op}` arg0 must be a dict, got {}", payload));
             }
@@ -1686,7 +1788,10 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            outer.insert("message".to_string(), json!(format!("{context}: {orig_msg}")));
+            outer.insert(
+                "message".to_string(),
+                json!(format!("{context}: {orig_msg}")),
+            );
             Ok(Value::Object(outer))
         }
         "error.code" => {
@@ -1736,7 +1841,11 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 if opts.get("secure").and_then(Value::as_bool).unwrap_or(false) {
                     header.push_str("; Secure");
                 }
-                if opts.get("http_only").and_then(Value::as_bool).unwrap_or(false) {
+                if opts
+                    .get("http_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     header.push_str("; HttpOnly");
                 }
                 if let Some(ss) = opts.get("same_site").and_then(Value::as_str) {
@@ -1806,7 +1915,12 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         "route.match" => {
             let pattern = read_string_arg(args, 0, op)?;
             let path = read_string_arg(args, 1, op)?;
-            Ok(match_route(&pattern, &path))
+            Ok(json!(route_match_bool(&pattern, &path)))
+        }
+        "route.params" => {
+            let pattern = read_string_arg(args, 0, op)?;
+            let path = read_string_arg(args, 1, op)?;
+            Ok(route_extract_params(&pattern, &path))
         }
 
         // --- HTML ops ---
@@ -1822,7 +1936,9 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         // --- Template ops ---
         "tmpl.render" => {
             let template = read_string_arg(args, 0, op)?;
-            let data = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let data = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
             Ok(json!(mustache_render(&template, data)))
         }
 
@@ -1830,19 +1946,29 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         "codec.decode" => {
             let format = read_string_arg(args, 0, op)?;
             let text = read_string_arg(args, 1, op)?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.decode: unknown format `{format}`"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.decode: unknown format `{format}`"))?;
             codec.decode(&text)
         }
         "codec.encode" => {
             let format = read_string_arg(args, 0, op)?;
-            let value = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.encode: unknown format `{format}`"))?;
+            let value = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.encode: unknown format `{format}`"))?;
             codec.encode(value).map(|s| Value::String(s))
         }
         "codec.encode_pretty" => {
             let format = read_string_arg(args, 0, op)?;
-            let value = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1"))?;
-            let codec = codecs.get(&format).ok_or_else(|| format!("codec.encode_pretty: unknown format `{format}`"))?;
+            let value = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1"))?;
+            let codec = codecs
+                .get(&format)
+                .ok_or_else(|| format!("codec.encode_pretty: unknown format `{format}`"))?;
             codec.encode_pretty(value).map(|s| Value::String(s))
         }
 
@@ -1856,14 +1982,18 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                             codec.decode(&text)
                         }
                         "encode" => {
-                            let value = args.first().ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+                            let value = args
+                                .first()
+                                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
                             codec.encode(value).map(|s| Value::String(s))
                         }
                         "encode_pretty" => {
-                            let value = args.first().ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+                            let value = args
+                                .first()
+                                .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
                             codec.encode_pretty(value).map(|s| Value::String(s))
                         }
-                        _ => Err(format!("unknown op `{op}`"))
+                        _ => Err(format!("unknown op `{op}`")),
                     };
                 }
             }
@@ -1871,4 +2001,3 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
     }
 }
-

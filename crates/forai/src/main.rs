@@ -1,8 +1,16 @@
 // Shared types from forai-core
-mod ast { pub use forai_core::ast::*; }
-mod codec { pub use forai_core::codec::*; }
-mod host { pub use forai_core::host::*; }
-mod ir { pub use forai_core::ir::*; }
+mod ast {
+    pub use forai_core::ast::*;
+}
+mod codec {
+    pub use forai_core::codec::*;
+}
+mod host {
+    pub use forai_core::host::*;
+}
+mod ir {
+    pub use forai_core::ir::*;
+}
 mod types;
 
 // Loader: types from core, loading logic local
@@ -12,10 +20,12 @@ mod loader;
 mod cli;
 mod config;
 mod debugger;
-mod formatter;
 mod doc;
+mod formatter;
 mod host_native;
 mod lexer;
+mod lsp;
+mod mcp;
 mod op_types;
 mod parser;
 mod runtime;
@@ -24,8 +34,6 @@ mod stdlib_docs;
 mod tester;
 mod typecheck;
 mod wasm_runner;
-mod lsp;
-mod mcp;
 
 use crate::ast::{Flow, Statement, TopDecl};
 use crate::cli::{CliCommand, parse_cli, usage};
@@ -73,12 +81,12 @@ fn extract_embedded_bundle() -> Option<Vec<u8>> {
 }
 
 fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("cannot locate own executable: {e}"))?;
-    let exe_bytes = fs::read(&exe_path)
-        .map_err(|e| format!("failed to read {}: {e}", exe_path.display()))?;
-    let wasm_bytes = fs::read(wasm_path)
-        .map_err(|e| format!("failed to read {}: {e}", wasm_path.display()))?;
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("cannot locate own executable: {e}"))?;
+    let exe_bytes =
+        fs::read(&exe_path).map_err(|e| format!("failed to read {}: {e}", exe_path.display()))?;
+    let wasm_bytes =
+        fs::read(wasm_path).map_err(|e| format!("failed to read {}: {e}", wasm_path.display()))?;
 
     // Step 1: Write exe to output
     fs::write(out_path, &exe_bytes)
@@ -92,7 +100,10 @@ fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String>
         let _ = fs::set_permissions(out_path, perms);
     }
     let strip_result = if cfg!(target_os = "macos") {
-        std::process::Command::new("strip").arg("-x").arg(out_path).output()
+        std::process::Command::new("strip")
+            .arg("-x")
+            .arg(out_path)
+            .output()
     } else {
         std::process::Command::new("strip").arg(out_path).output()
     };
@@ -101,7 +112,10 @@ fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String>
             let orig_size = exe_bytes.len();
             let stripped_size = fs::metadata(out_path).map(|m| m.len()).unwrap_or(0) as usize;
             if stripped_size < orig_size {
-                eprintln!("  strip    saved {:.1} MB", (orig_size - stripped_size) as f64 / 1_048_576.0);
+                eprintln!(
+                    "  strip    saved {:.1} MB",
+                    (orig_size - stripped_size) as f64 / 1_048_576.0
+                );
             }
         }
         _ => eprintln!("  strip    skipped (not available)"),
@@ -109,13 +123,15 @@ fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String>
 
     // Step 3: Compress WASM payload with gzip
     let compressed = {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
-        encoder.write_all(&wasm_bytes)
+        encoder
+            .write_all(&wasm_bytes)
             .map_err(|e| format!("gzip compression failed: {e}"))?;
-        encoder.finish()
+        encoder
+            .finish()
             .map_err(|e| format!("gzip finish failed: {e}"))?
     };
 
@@ -169,11 +185,26 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
                 out.push(sl.source_op.clone());
                 collect_ops(&sl.body, out);
             }
+            Statement::On(on_block) => {
+                out.push(on_block.source_op.clone());
+                collect_ops(&on_block.body, out);
+            }
         }
     }
 }
 
-pub(crate) fn compile_source(source_path: &PathBuf) -> Result<(Flow, Ir, TypeRegistry, FlowRegistry), String> {
+fn format_unknown_op(file: &Path, op: &str) -> String {
+    let base = format!("{}: unknown op `{op}`", file.display());
+    if let Some(hint) = sema::unknown_op_fix_hint(op) {
+        format!("{base} — {hint}")
+    } else {
+        base
+    }
+}
+
+pub(crate) fn compile_source(
+    source_path: &PathBuf,
+) -> Result<(Flow, Ir, TypeRegistry, FlowRegistry), String> {
     if source_path.extension().and_then(|s| s.to_str()) != Some("fa") {
         return Err(format!(
             "Source must use the .fa extension, got `{}`",
@@ -235,7 +266,7 @@ pub(crate) fn compile_source(source_path: &PathBuf) -> Result<(Flow, Ir, TypeReg
     if !unknown.is_empty() {
         let rendered = unknown
             .iter()
-            .map(|op| format!("{}: unknown op `{op}`", source_path.display()))
+            .map(|op| format_unknown_op(source_path, op))
             .collect::<Vec<String>>()
             .join("\n");
         return Err(rendered);
@@ -261,12 +292,19 @@ pub(crate) fn compile_source(source_path: &PathBuf) -> Result<(Flow, Ir, TypeReg
 fn embed_bundle_in_wasm(bundle_json: &[u8], out_path: &Path) -> Result<(), String> {
     let runtime_wasm = find_runtime_wasm()?;
 
-    let mut wasm = fs::read(&runtime_wasm)
-        .map_err(|e| format!("failed to read runtime WASM {}: {e}", runtime_wasm.display()))?;
+    let mut wasm = fs::read(&runtime_wasm).map_err(|e| {
+        format!(
+            "failed to read runtime WASM {}: {e}",
+            runtime_wasm.display()
+        )
+    })?;
 
     // Validate WASM magic number
     if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
-        return Err(format!("{} is not a valid WASM module", runtime_wasm.display()));
+        return Err(format!(
+            "{} is not a valid WASM module",
+            runtime_wasm.display()
+        ));
     }
 
     // Append a custom section (id=0) with name "forai_program"
@@ -315,50 +353,115 @@ fn find_runtime_wasm() -> Result<PathBuf, String> {
     // 1. Environment variable
     if let Ok(path) = std::env::var("DATAFLOW_WASM_RUNTIME") {
         let p = PathBuf::from(path);
-        if p.exists() { return Ok(p); }
+        if p.exists() {
+            return Ok(p);
+        }
     }
 
     // 2. Adjacent to the current binary
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let adjacent = dir.join("forai-wasm.wasm");
-            if adjacent.exists() { return Ok(adjacent); }
+            if adjacent.exists() {
+                return Ok(adjacent);
+            }
         }
     }
 
     // 3. Workspace target directory (development builds)
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip1/release/forai-wasm.wasm");
-    if dev_path.exists() { return Ok(dev_path); }
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
 
     let dev_debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip1/debug/forai-wasm.wasm");
-    if dev_debug.exists() { return Ok(dev_debug); }
+    if dev_debug.exists() {
+        return Ok(dev_debug);
+    }
 
-    Err("WASM runtime not found. Build it first: cargo build -p forai-wasm --target wasm32-wasip1 --release".to_string())
+    // 5. Auto-build the WASM runtime
+    match build_wasm_runtime() {
+        Ok(p) => Ok(p),
+        Err(e) => Err(format!("WASM runtime not found and auto-build failed: {e}")),
+    }
+}
+
+fn build_wasm_runtime() -> Result<PathBuf, String> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    eprintln!("  wasm     building runtime...");
+    let output = std::process::Command::new("cargo")
+        .args(["build", "-p", "forai-wasm", "--target", "wasm32-wasip1", "--release"])
+        .current_dir(&workspace_root)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !output.status.success() {
+        return Err("cargo build failed for forai-wasm".to_string());
+    }
+    let wasm_path = workspace_root.join("target/wasm32-wasip1/release/forai-wasm.wasm");
+    if wasm_path.exists() {
+        Ok(wasm_path)
+    } else {
+        Err("WASM runtime build succeeded but output file not found".to_string())
+    }
 }
 
 fn find_browser_js() -> Result<PathBuf, String> {
     // 1. Environment variable
     if let Ok(path) = std::env::var("DATAFLOW_BROWSER_JS") {
         let p = PathBuf::from(path);
-        if p.exists() { return Ok(p); }
+        if p.exists() {
+            return Ok(p);
+        }
     }
 
     // 2. Adjacent to current binary
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let adjacent = dir.join("forai-browser.js");
-            if adjacent.exists() { return Ok(adjacent); }
+            if adjacent.exists() {
+                return Ok(adjacent);
+            }
         }
     }
 
     // 3. Workspace browser/dist directory (development builds)
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../browser/dist/forai-browser.js");
-    if dev_path.exists() { return Ok(dev_path); }
+    let dev_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser/dist/forai-browser.js");
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
 
-    Err("Browser JS runtime not found. Build it first: cd browser && npm run build".to_string())
+    // 4. Auto-build the browser JS runtime
+    match build_browser_js() {
+        Ok(p) => Ok(p),
+        Err(e) => Err(format!("Browser JS runtime not found and auto-build failed: {e}")),
+    }
+}
+
+fn build_browser_js() -> Result<PathBuf, String> {
+    let browser_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser");
+    if !browser_dir.join("package.json").exists() {
+        return Err("Browser JS runtime not found and browser/ directory not available".to_string());
+    }
+    eprintln!("  browser  building JS runtime...");
+    let output = std::process::Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&browser_dir)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run npm: {e}"))?;
+    if !output.status.success() {
+        return Err("npm run build failed for browser JS".to_string());
+    }
+    let js_path = browser_dir.join("dist/forai-browser.js");
+    if js_path.exists() {
+        Ok(js_path)
+    } else {
+        Err("Browser JS build succeeded but output file not found".to_string())
+    }
 }
 
 fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Result<(), String> {
@@ -368,16 +471,14 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Re
 
     // Copy WASM directly (no Asyncify transform — Worker+SAB architecture handles async ops)
     let dest_wasm = browser_dir.join(format!("{name}.wasm"));
-    fs::copy(wasm_path, &dest_wasm)
-        .map_err(|e| format!("failed to copy WASM: {e}"))?;
+    fs::copy(wasm_path, &dest_wasm).map_err(|e| format!("failed to copy WASM: {e}"))?;
     let wasm_size = fs::metadata(&dest_wasm).map(|m| m.len()).unwrap_or(0);
     eprintln!("  wasm ok ({:.1} MB)", wasm_size as f64 / 1_048_576.0);
 
     // Copy the pre-built browser JS runtime
     let browser_js = find_browser_js()?;
     let dest_js = browser_dir.join("forai-browser.js");
-    fs::copy(&browser_js, &dest_js)
-        .map_err(|e| format!("failed to copy browser JS: {e}"))?;
+    fs::copy(&browser_js, &dest_js).map_err(|e| format!("failed to copy browser JS: {e}"))?;
 
     // Also copy sourcemap if it exists
     let sourcemap = browser_js.with_extension("js.map");
@@ -387,7 +488,8 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Re
     }
 
     // Generate index.html
-    let html = format!(r#"<!DOCTYPE html>
+    let html = format!(
+        r#"<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -426,11 +528,11 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Re
   </script>
 </body>
 </html>
-"#);
+"#
+    );
 
     let html_path = browser_dir.join("index.html");
-    fs::write(&html_path, html)
-        .map_err(|e| format!("failed to write index.html: {e}"))?;
+    fs::write(&html_path, html).map_err(|e| format!("failed to write index.html: {e}"))?;
 
     Ok(())
 }
@@ -491,20 +593,21 @@ async fn run() -> Result<(), String> {
                 ));
             }
 
-            eprintln!("building {} v{}", config.name, config.version);
+            eprintln!("building {} v{}\n", config.name, config.version);
 
             // Step 0: Format
             let src_dir = source_path.parent().unwrap_or(&project_root);
             let (formatted, fmt_total) = formatter::fmt_path(src_dir, false)?;
             if !formatted.is_empty() {
-                eprintln!("  fmt      {} file(s) formatted", formatted.len());
-            } else if fmt_total > 0 {
+                eprintln!("  fmt      {} reformatted ({} files)", formatted.len(), fmt_total);
+            } else {
                 eprintln!("  fmt      ok ({} files)", fmt_total);
             }
 
-            // Step 1: Compile
+            // Step 1: Compile and generate docs
             let (flow, ir, registry, flow_registry) = compile_source(&source_path)?;
             generate_docs_for_source(&source_path, Some(&project_root));
+            eprintln!("  docs     ok ({} files)", fmt_total);
 
             // Step 2: Write IR to output directory
             let out_dir = project_root.join(&config.build.out);
@@ -516,22 +619,32 @@ async fn run() -> Result<(), String> {
             fs::write(&ir_path, format!("{rendered}\n"))
                 .map_err(|e| format!("failed to write {}: {e}", ir_path.display()))?;
 
-            eprintln!("  compile  ok → {}", ir_path.display());
-
-            // Step 3: Run tests if test files exist
-            let test_dir = source_path.parent().unwrap_or(Path::new("."));
-            let summary = tester::run_tests_at_path_async(test_dir).await?;
+            // Step 3: Run tests (quiet: suppress per-test output, collect warnings)
+            let summary = tester::run_tests_at_path_build(&project_root).await?;
             if summary.total > 0 {
-                eprintln!(
-                    "  tests    {} passed, {} failed",
-                    summary.passed, summary.failed
-                );
                 if summary.failed > 0 {
+                    eprintln!("  test     FAILED ({} passed, {} failed)", summary.passed, summary.failed);
+                    for f in &summary.failures {
+                        eprintln!("      FAIL  {}", f.name);
+                        eprintln!("            > {}", f.error);
+                    }
                     return Err(format!("{} test(s) failed", summary.failed));
+                } else {
+                    eprintln!("  test     ok ({} tests)", summary.passed);
+                }
+            }
+            if !summary.warnings.is_empty() {
+                eprintln!();
+                for w in &summary.warnings {
+                    eprintln!("WARN  {w}");
                 }
             }
 
-            // Step 4: Build WASM artifact with embedded program bundle
+            // Step 4: Build targets
+            let targets = &config.build.targets;
+            let needs_wasm = targets.iter().any(|t| t == "wasm" || t == "bundle" || t == "browser");
+            let mut target_failures: Vec<String> = Vec::new();
+
             let bundle = forai_core::loader::ProgramBundle {
                 entry_flow: flow,
                 entry_ir: ir,
@@ -542,43 +655,264 @@ async fn run() -> Result<(), String> {
                 .map_err(|e| format!("failed to serialize program bundle: {e}"))?;
 
             let wasm_path = out_dir.join(format!("{}.wasm", config.name));
-            let wasm_ok = match embed_bundle_in_wasm(&bundle_json, &wasm_path) {
-                Ok(()) => {
-                    let size = fs::metadata(&wasm_path).map(|m| m.len()).unwrap_or(0);
-                    eprintln!("  wasm     ok → {} ({:.1} MB)", wasm_path.display(), size as f64 / 1_048_576.0);
-                    true
+            let wasm_ok = if needs_wasm {
+                match embed_bundle_in_wasm(&bundle_json, &wasm_path) {
+                    Ok(()) => {
+                        let size = fs::metadata(&wasm_path).map(|m| m.len()).unwrap_or(0);
+                        eprintln!("  wasm     ok ({:.1} MB)", size as f64 / 1_048_576.0);
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("  wasm     FAILED: {e}");
+                        target_failures.push("wasm".to_string());
+                        false
+                    }
                 }
-                Err(e) => {
-                    eprintln!("  wasm     skipped: {e}");
-                    false
+            } else {
+                false
+            };
+
+            if targets.contains(&"bundle".to_string()) {
+                if wasm_ok {
+                    let bundle_path = out_dir.join(&config.name);
+                    match create_native_bundle(&wasm_path, &bundle_path) {
+                        Ok(()) => {
+                            let size = fs::metadata(&bundle_path).map(|m| m.len()).unwrap_or(0);
+                            eprintln!("  bundle   ok ({:.1} MB)", size as f64 / 1_048_576.0);
+                        }
+                        Err(e) => {
+                            eprintln!("  bundle   FAILED: {e}");
+                            target_failures.push("bundle".to_string());
+                        }
+                    }
+                } else {
+                    eprintln!("  bundle   skipped (requires wasm)");
+                    target_failures.push("bundle".to_string());
+                }
+            }
+
+            if targets.contains(&"browser".to_string()) {
+                if wasm_ok {
+                    let browser_dir = out_dir.join("browser");
+                    match create_browser_target(&wasm_path, &browser_dir, &config.name) {
+                        Ok(()) => {
+                            eprintln!("  browser  ok");
+                        }
+                        Err(e) => {
+                            eprintln!("  browser  FAILED: {e}");
+                            target_failures.push("browser".to_string());
+                        }
+                    }
+                } else {
+                    eprintln!("  browser  skipped (requires wasm)");
+                    target_failures.push("browser".to_string());
+                }
+            }
+
+            let docs_dir = project_root.join("docs");
+            if target_failures.is_empty() {
+                eprintln!("\n  build    ok");
+                eprintln!("  output   {}", out_dir.display());
+                eprintln!("  docs     {}", docs_dir.display());
+                Ok(())
+            } else {
+                eprintln!("\n  output   {}", out_dir.display());
+                eprintln!("  docs     {}", docs_dir.display());
+                Err(format!("build failed: {} target(s) failed ({})", target_failures.len(), target_failures.join(", ")))
+            }
+        }
+        CliCommand::Check { path } => {
+            let path = if path.is_relative() {
+                std::env::current_dir()
+                    .map_err(|e| format!("cannot resolve working directory: {e}"))?
+                    .join(&path)
+            } else {
+                path
+            };
+            // When path is ".", walk up to find project root
+            let path = {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| path.clone());
+                if path == cwd {
+                    match config::find_config(&path) {
+                        Ok((_, root)) => root,
+                        Err(_) => path,
+                    }
+                } else {
+                    path
                 }
             };
 
-            // Step 5: Create native bundle (self-extracting executable) if requested
-            if wasm_ok && config.build.targets.contains(&"bundle".to_string()) {
-                let bundle_path = out_dir.join(&config.name);
-                match create_native_bundle(&wasm_path, &bundle_path) {
-                    Ok(()) => {
-                        let size = fs::metadata(&bundle_path).map(|m| m.len()).unwrap_or(0);
-                        eprintln!("  bundle   ok → {} ({:.1} MB)", bundle_path.display(), size as f64 / 1_048_576.0);
+            let mut files = mcp::collect_fa_files(&path);
+            if path.is_file() {
+                mcp::expand_with_imports(&mut files);
+            }
+            if files.is_empty() {
+                return Err(format!("no .fa files found at {}", path.display()));
+            }
+
+            let mut errors: Vec<String> = Vec::new();
+            let mut warnings: Vec<String> = Vec::new();
+            let mut ok_count = 0;
+
+            for file in &files {
+                let text = match fs::read_to_string(file) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        errors.push(format!("{}:0:0 failed to read: {e}", file.display()));
+                        continue;
                     }
-                    Err(e) => eprintln!("  bundle   failed: {e}"),
+                };
+
+                let module = match parser::parse_module_v1(&text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        errors.push(format!(
+                            "{}:{}:{} {}",
+                            file.display(),
+                            e.span.line,
+                            e.span.col,
+                            e.message
+                        ));
+                        continue;
+                    }
+                };
+
+                let filename = file
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string());
+                if let Err(errs) = sema::validate_module(&module, filename.as_deref()) {
+                    for e in errs {
+                        errors.push(format!("{}:{e}", file.display()));
+                    }
+                    continue;
+                }
+                for w in sema::test_call_warnings(&module) {
+                    warnings.push(format!("{}:{w}", file.display()));
+                }
+
+                if let Err(errs) = types::TypeRegistry::from_module(&module) {
+                    for e in errs {
+                        errors.push(format!("{}:{e}", file.display()));
+                    }
+                    continue;
+                }
+
+                let mut file_ok = true;
+                for decl in &module.decls {
+                    match decl {
+                        TopDecl::Func(f) | TopDecl::Sink(f) | TopDecl::Source(f) => {
+                            match parser::parse_runtime_func_decl_v1(f) {
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "{}: func `{}` parse error: {e}",
+                                        file.display(),
+                                        f.name
+                                    ));
+                                    file_ok = false;
+                                }
+                                Ok(flow) => {
+                                    if let Err(e) =
+                                        typecheck::typecheck_func(&f.name, &f.takes, &flow.body)
+                                    {
+                                        errors.push(format!("{}:{e}", file.display()));
+                                        file_ok = false;
+                                    }
+                                    if let Err(e) = ir::lower_to_ir(&flow) {
+                                        errors.push(format!(
+                                            "{}: func `{}` IR error: {e}",
+                                            file.display(),
+                                            f.name
+                                        ));
+                                        file_ok = false;
+                                    }
+                                }
+                            }
+                        }
+                        TopDecl::Flow(f) => {
+                            match parser::parse_flow_graph_decl_v1(f) {
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "{}: flow `{}` parse error: {e}",
+                                        file.display(),
+                                        f.name
+                                    ));
+                                    file_ok = false;
+                                }
+                                Ok(graph) => {
+                                    match parser::lower_flow_graph_to_flow(&graph) {
+                                        Err(e) => {
+                                            errors.push(format!(
+                                                "{}: flow `{}` lower error: {e}",
+                                                file.display(),
+                                                f.name
+                                            ));
+                                            file_ok = false;
+                                        }
+                                        Ok(flow) => {
+                                            if let Err(e) = ir::lower_to_ir(&flow) {
+                                                errors.push(format!(
+                                                    "{}: flow `{}` IR error: {e}",
+                                                    file.display(),
+                                                    f.name
+                                                ));
+                                                file_ok = false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if file_ok {
+                    ok_count += 1;
                 }
             }
 
-            // Step 6: Create browser target if requested
-            if wasm_ok && config.build.targets.contains(&"browser".to_string()) {
-                let browser_dir = out_dir.join("browser");
-                match create_browser_target(&wasm_path, &browser_dir, &config.name) {
-                    Ok(()) => {
-                        eprintln!("  browser  ok → {}", browser_dir.display());
-                    }
-                    Err(e) => eprintln!("  browser  failed: {e}"),
-                }
+            for w in &warnings {
+                eprintln!("warn: {w}");
             }
 
-            eprintln!("  output   {}", out_dir.display());
-            eprintln!("build ok");
+            if errors.is_empty() {
+                println!("ok — {} file(s) checked", ok_count);
+                Ok(())
+            } else {
+                for e in &errors {
+                    eprintln!("{e}");
+                }
+                Err(format!("{} error(s)", errors.len()))
+            }
+        }
+        CliCommand::Stdlib { query } => {
+            let all_docs = stdlib_docs::all_stdlib_docs();
+            let filtered: Vec<_> = match &query {
+                None => all_docs,
+                Some(q) => {
+                    let q = q.to_lowercase();
+                    all_docs
+                        .into_iter()
+                        .filter(|ns| {
+                            ns.namespace.to_lowercase().contains(&q)
+                                || ns
+                                    .ops
+                                    .iter()
+                                    .any(|op| op.full_name.to_lowercase().contains(&q))
+                        })
+                        .collect()
+                }
+            };
+            if filtered.is_empty() {
+                return Err(format!(
+                    "no stdlib entries matching \"{}\"",
+                    query.as_deref().unwrap_or("")
+                ));
+            }
+            let rendered =
+                serde_json::to_string_pretty(&filtered).map_err(|e| e.to_string())?;
+            println!("{rendered}");
             Ok(())
         }
         CliCommand::Compile {
@@ -649,7 +983,16 @@ async fn run() -> Result<(), String> {
                     }
                 }
 
-                debugger::serve_dev_server(debug_port, flow, ir, inputs, registry, flow_registry, source_text, docs)
+                debugger::serve_dev_server(
+                    debug_port,
+                    flow,
+                    ir,
+                    inputs,
+                    registry,
+                    flow_registry,
+                    source_text,
+                    docs,
+                )
             } else {
                 let inputs = if !args.is_empty() {
                     runtime::load_inputs_from_args(&flow, &args)?
@@ -657,7 +1000,16 @@ async fn run() -> Result<(), String> {
                     runtime::load_inputs(&flow, input.as_ref())?
                 };
                 let codecs = CodecRegistry::default_registry();
-                let report = runtime::execute_flow(&flow, ir, inputs, &registry, Some(&flow_registry), &codecs, None).await?;
+                let report = runtime::execute_flow(
+                    &flow,
+                    ir,
+                    inputs,
+                    &registry,
+                    Some(&flow_registry),
+                    &codecs,
+                    None,
+                )
+                .await?;
 
                 if let Some(rp) = report_path {
                     let full_json =
@@ -669,11 +1021,19 @@ async fn run() -> Result<(), String> {
                 Ok(())
             }
         }
-        CliCommand::RunWasm { wasm_path } => {
-            wasm_runner::run_wasm(&wasm_path).await
-        }
+        CliCommand::RunWasm { wasm_path } => wasm_runner::run_wasm(&wasm_path).await,
         CliCommand::Test { path } => {
-            let summary = tester::run_tests_at_path_async(&path).await?;
+            // When no explicit path given (defaults to "."), discover the project root
+            let test_path = if path == PathBuf::from(".") {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| path.clone());
+                match config::find_config(&cwd) {
+                    Ok((_, root)) => root,
+                    Err(_) => path,
+                }
+            } else {
+                path
+            };
+            let summary = tester::run_tests_at_path_async(&test_path).await?;
             println!(
                 "Tests: {} total, {} passed, {} failed",
                 summary.total, summary.passed, summary.failed
@@ -684,7 +1044,7 @@ async fn run() -> Result<(), String> {
                 Ok(())
             }
         }
-        CliCommand::Doc { path, out } => {
+        CliCommand::Doc { path, out, query } => {
             let base_dir = if path.is_file() {
                 path.parent().unwrap_or(Path::new(".")).to_path_buf()
             } else {
@@ -694,8 +1054,25 @@ async fn run() -> Result<(), String> {
                 generate_docs_for_source(&path, None);
             }
             let artifact = doc::generate_docs_at_path(&path, &base_dir)?;
-            let rendered =
-                serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
+
+            let rendered = if let Some(q) = &query {
+                let q = q.to_lowercase();
+                let filtered = serde_json::json!({
+                    "dataflow_doc": artifact.dataflow_doc,
+                    "modules": artifact.modules.iter()
+                        .filter(|m| {
+                            serde_json::to_string(m)
+                                .unwrap_or_default()
+                                .to_lowercase()
+                                .contains(&q)
+                        })
+                        .collect::<Vec<_>>()
+                });
+                serde_json::to_string_pretty(&filtered).map_err(|e| e.to_string())?
+            } else {
+                serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?
+            };
+
             if let Some(out_path) = out {
                 fs::write(&out_path, format!("{rendered}\n"))
                     .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
@@ -732,7 +1109,11 @@ async fn run() -> Result<(), String> {
                 if changed.is_empty() {
                     eprintln!("all {} file(s) already formatted", total);
                 } else {
-                    eprintln!("{} file(s) formatted, {} already ok", changed.len(), total - changed.len());
+                    eprintln!(
+                        "{} file(s) formatted, {} already ok",
+                        changed.len(),
+                        total - changed.len()
+                    );
                 }
                 Ok(())
             }
@@ -745,31 +1126,31 @@ async fn run() -> Result<(), String> {
             mcp::run_mcp().await;
             Ok(())
         }
-        CliCommand::New { name } => {
-            scaffold_new_project(&name)
-        }
+        CliCommand::New { name } => scaffold_new_project(&name),
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let local = tokio::task::LocalSet::new();
-    local.run_until(async {
-        // Self-extracting bundle: if this binary has an embedded WASM payload, run it directly
-        if let Some(wasm_bytes) = extract_embedded_bundle() {
-            let args: Vec<String> = std::env::args().collect();
-            if let Err(err) = wasm_runner::run_wasm_from_bytes(&wasm_bytes, args).await {
+    local
+        .run_until(async {
+            // Self-extracting bundle: if this binary has an embedded WASM payload, run it directly
+            if let Some(wasm_bytes) = extract_embedded_bundle() {
+                let args: Vec<String> = std::env::args().collect();
+                if let Err(err) = wasm_runner::run_wasm_from_bytes(&wasm_bytes, args).await {
+                    eprintln!("error: {err}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            if let Err(err) = run().await {
                 eprintln!("error: {err}");
                 std::process::exit(1);
             }
-            return;
-        }
-
-        if let Err(err) = run().await {
-            eprintln!("error: {err}");
-            std::process::exit(1);
-        }
-    }).await;
+        })
+        .await;
 }
 
 // --- forai new: project scaffolding ---
@@ -782,10 +1163,10 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
         return Err(format!("directory `{name}` already exists"));
     }
 
-    fs::create_dir_all(root.join("lib"))
-        .map_err(|e| format!("failed to create lib: {e}"))?;
-    fs::create_dir_all(root.join("sinks"))
-        .map_err(|e| format!("failed to create sinks: {e}"))?;
+    fs::create_dir_all(root.join("lib")).map_err(|e| format!("failed to create lib: {e}"))?;
+    fs::create_dir_all(root.join("sinks")).map_err(|e| format!("failed to create sinks: {e}"))?;
+    fs::create_dir_all(root.join("sources"))
+        .map_err(|e| format!("failed to create sources: {e}"))?;
 
     // forai.json
     let forai_json = format!(
@@ -804,19 +1185,19 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
 
     // README.md
     let readme = format!(
-        "# {name}\n\nA forai app.\n\n## Quick Start\n\n```bash\nforai run main.fa         # run the app\nforai test lib            # run lib tests\nforai test sinks          # run sink tests\nforai build               # build WASM artifact\nforai run --debug          # interactive debugger\n```\n\nSee [LANGUAGE.md](LANGUAGE.md) for the full language reference.\n"
+        "# {name}\n\nA forai app.\n\n## Quick Start\n\n```bash\nforai run main.fa         # run the app\nforai test                # run all tests (scans entire project)\nforai build               # build WASM artifact\nforai dev main.fa         # interactive debugger\n```\n\nSee [LANGUAGE.md](LANGUAGE.md) for the full language reference.\n"
     );
     write_scaffold(&root, "README.md", &readme)?;
 
     // CLAUDE.md
     let claude_md = format!(
-        "# CLAUDE.md\n\n## DO THIS FIRST\n\nforai is a new language with its own rules — read [LANGUAGE.md](LANGUAGE.md) before writing any code so you know what you're working with. It takes 2 minutes and will save you from common mistakes.\n\n---\n\nThis file provides guidance to Claude Code when working with this repository.\n\n## What This Is\n\n`{name}` is a forai app. forai is a dataflow programming language where you wire sources, funcs, and sinks together using flows.\n\n## Commands\n\n```bash\nforai run main.fa         # run the app\nforai test lib            # test lib modules\nforai test sinks          # test sinks\nforai build               # build WASM artifact\nforai run --debug          # interactive debugger\n```\n\n## Project Structure\n\n```\nmain.fa          # flow main — entry point (the top-level flowchart)\nlib/             # funcs — computation happens here\nsinks/           # sinks — output and side effects (print, respond, write)\nsources/         # sources — event producers (HTTP, polling, user input)\n```\n\n## Language Reference\n\nSee [LANGUAGE.md](LANGUAGE.md) for the full language reference including syntax, built-in ops, control flow, and patterns.\n\n## Key Rules\n\n- No bare expressions — every line is `var = ...`, `emit`, `fail`, or control flow\n- `emit`/`fail`/`return` take variables, not literals — `ok = true` then `emit ok`\n- Loop collection must be a variable — assign it before `loop`\n- `exec.run` needs separate command and args list — not a combined string\n- One callable per file, name must match filename\n- `docs` blocks are required for every func, flow, sink, and test\n- `uses` resolves relative to the importing file's directory\n"
+        "# CLAUDE.md\n\n## DO THIS FIRST\n\nforai is a new language with its own rules — read [LANGUAGE.md](LANGUAGE.md) before writing any code so you know what you're working with. It takes 2 minutes and will save you from common mistakes.\n\n---\n\nThis file provides guidance to Claude Code when working with this repository.\n\n## What This Is\n\n`{name}` is a forai app. forai is a dataflow programming language where you wire sources, funcs, and sinks together using flows.\n\n## Commands\n\n```bash\nforai run main.fa         # run the app\nforai test                # run ALL tests (scans entire project recursively)\nforai build               # build WASM artifact (also runs all tests)\nforai dev main.fa         # interactive debugger\n```\n\n## Project Structure\n\n```\nmain.fa          # flow main — entry point (the top-level flowchart)\nlib/             # funcs — computation happens here\nsinks/           # sinks — output and side effects (print, respond, write)\nsources/         # sources — event producers (HTTP, polling, user input)\n```\n\n## Language Reference\n\nSee [LANGUAGE.md](LANGUAGE.md) for the full language reference including syntax, built-in ops, control flow, and patterns.\n\n## Key Rules\n\n- No bare expressions — every line is `var = ...`, `emit`, `fail`, or control flow\n- `emit`/`fail`/`return` take variables, not literals — `ok = true` then `emit ok`\n- Loop collection must be a variable — assign it before `loop`\n- `exec.run` needs separate command and args list — not a combined string\n- One callable per file, name must match filename\n- `docs` blocks are required for every func, flow, sink, and test\n- `use ... from \"...\"` paths are relative to the importing file's directory\n- Variable names, wire names, and ports cannot be forai keywords (`done`, `step`, `body`, `emit`, `fail`, `return`, `loop`, `on`, etc.) — use `ok`, `result`, `finished` instead\n"
     );
     write_scaffold(&root, "CLAUDE.md", &claude_md)?;
 
     // AGENTS.md
     let agents_md = format!(
-        "# AGENTS.md\n\n## DO THIS FIRST\n\nforai is a new language with its own rules — read [LANGUAGE.md](LANGUAGE.md) before writing any code so you know what you're working with. It takes 2 minutes and will save you from common mistakes.\n\n---\n\nAgent guidance for `{name}`. See [LANGUAGE.md](LANGUAGE.md) for the full language reference and syntax.\n\n## Commands\n\n```bash\nforai run main.fa         # run the app\nforai test lib            # test lib modules\nforai test sinks          # test sinks\nforai build               # build WASM artifact\nforai fmt lib             # format lib source files\nforai fmt sinks           # format sinks source files\n```\n\n## Project Structure\n\n```\nmain.fa          # flow main — entry point (the top-level flowchart)\nlib/             # funcs — computation happens here\nsinks/           # sinks — output and side effects (print, respond, write)\nsources/         # sources — event producers (HTTP, polling, user input)\n```\n\n## MCP Server\n\nThe `.mcp.json` file configures the `forai mcp` server for this project. Available tools:\n\n| Tool | What it does |\n|------|--------------|\n| `forai_check` | Syntax + semantic validation of `.fa` files |\n| `forai_run` | Compile and execute a flow |\n| `forai_test` | Run test blocks |\n| `forai_fmt` | Format `.fa` source |\n| `forai_stdlib_ref` | Search built-in op reference |\n| `forai_doc_search` | Search module documentation |\n| `forai_flow_graph` | Compile to IR JSON |\n\nOpen this project in Claude Code to use these tools automatically.\n\n## Validation Commands\n\nEach command validates a different surface area:\n\n| Command | What it validates |\n|---------|------------------|\n| `forai_check` | Syntax (parse), semantic rules (docs coverage, emit/fail presence), type constraints |\n| `forai_test` | Everything in `check` + executes `test` blocks including mock/trap assertions |\n| `forai_run` | Everything in `check` + full runtime execution including string interpolation evaluation |\n\n**Key difference**: `forai_check` does **not** evaluate string interpolation expressions. After fixing a syntax issue, always validate with `forai_run` (or `forai_test`) before declaring success.\n\n## Key Gotchas\n\n1. No bare expressions — every line must be `var = ...`, `emit`, `fail`, or control flow\n2. `emit`/`fail`/`return` take variables, not literals — `ok = true` then `emit ok`\n3. Loop collection must be a variable — `loop list.range(0,5) as i` fails; assign the range first\n4. `exec.run` needs separate command and args — `exec.run(\"ls\", [\"-la\"])` not `exec.run(\"ls -la\")`\n5. `uses` is relative to the importing file, not the project root\n6. One callable per file — name must match filename (`func Foo` lives in `Foo.fa`)\n7. `docs` are mandatory — compiler rejects missing `docs` blocks\n8. Flows don't compute — no `+`, no function calls except `step` invocations\n9. `_` discards a return value — use `_ = op(...)` when you don't need the result\n10. All data structures are immutable — `obj.set` and `list.append` return new copies\n11. Reserved keywords cannot be variable names — `body`, `done`, `step`, `state`, `send`, `emit`, `fail`, `return`, `break`, `branch`, `take`, `loop`, `case`, `when`, `else`, `sync`, `nowait`, `init`, `from`, `uses`, `func`, `flow`, `sink`, `source`, `type`, `data`, `enum`, `test`, `docs`, `mock`, `trap`, `must`\n"
+        "# AGENTS.md\n\n## DO THIS FIRST\n\nforai is a new language with its own rules — read [LANGUAGE.md](LANGUAGE.md) before writing any code so you know what you're working with. It takes 2 minutes and will save you from common mistakes.\n\n---\n\nAgent guidance for `{name}`. See [LANGUAGE.md](LANGUAGE.md) for the full language reference and syntax.\n\n## Commands\n\n```bash\nforai run main.fa         # run the app\nforai test                # run ALL tests (scans entire project recursively)\nforai build               # build WASM artifact (also runs all tests)\nforai fmt .               # format all source files\n```\n\n## Project Structure\n\n```\nmain.fa          # flow main — entry point (the top-level flowchart)\nlib/             # funcs — computation happens here\nsinks/           # sinks — output and side effects (print, respond, write)\nsources/         # sources — event producers (HTTP, polling, user input)\n```\n\n## Validation\n\nEach command validates a different surface area. Use them in order:\n\n| Command | What it validates |\n|---------|------------------|\n| `forai check [path]` | Syntax, semantic rules, type constraints, IR lowering, typecheck — follows imports. Fast per-file check. |\n| `forai test` | Everything in `check` + executes all test blocks across the entire project recursively |\n| `forai build` | Definitive end-to-end: fmt + compile + test + artifact. Run as final verification |\n\n**`forai check` with a file** follows `use` imports and checks all transitively-imported modules too.\n\n**`forai test`** always scans the whole project from its root — no need to pass a path.\n\n**`forai build`** is the final authority. Always run before considering a task complete.\n\n## Reference Tools\n\n```bash\nforai stdlib [query]          # search built-in op reference  (e.g. forai stdlib http)\nforai doc <path> [query]      # search project docs           (e.g. forai doc . Greet)\n```\n\nUse `forai stdlib` to look up available ops before writing code. Use `forai doc` to understand what functions exist in the project.\n\n## Key Gotchas\n\n1. No bare expressions — every line must be `var = ...`, `emit`, `fail`, or control flow\n2. `emit`/`fail`/`return` take variables, not literals — `ok = true` then `emit ok`\n3. Loop collection must be a variable — `loop list.range(0,5) as i` fails; assign the range first\n4. `exec.run` needs separate command and args — `exec.run(\"ls\", [\"-la\"])` not `exec.run(\"ls -la\")`\n5. `use ... from \"...\"` paths are relative to the importing file, not the project root\n6. One callable per file — name must match filename (`func Foo` lives in `Foo.fa`)\n7. `docs` are mandatory — compiler rejects missing `docs` blocks\n8. Flows don't compute — no `+`, no function calls except `step` invocations\n9. `_` discards a return value — use `_ = op(...)` when you don't need the result\n10. All data structures are immutable — `obj.set` and `list.append` return new copies\n11. Wire names, locals, and ports cannot be forai keywords — `done`, `step`, `body`, `emit`, `fail`, `return`, `loop`, `on`, `case`, `when`, `else`, `sync`, `branch`, `take`, `from`, `use`, `func`, `flow`, `sink`, `source`, `type`, `data`, `enum`, `test`, `docs`, `mock`, `trap`, `must` cannot be variable or wire names. Use `ok`, `result`, `finished`, `out` instead.\n"
     );
     write_scaffold(&root, "AGENTS.md", &agents_md)?;
 
@@ -828,7 +1209,7 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
     write_scaffold(&root, ".mcp.json", mcp_json)?;
 
     // main.fa
-    let main_fa = "uses lib\nuses sinks\n\ndocs main\n    Hello world.\n    Greets the world and prints the message.\ndone\n\nflow main\nbody\n    step lib.Greet(\"World\" to :name) then\n        next :result to msg\n    done\n    step sinks.Print(msg to :line) done\ndone\n";
+    let main_fa = "use lib from \"./lib\"\nuse sinks from \"./sinks\"\n\ndocs main\n    Hello world.\n    Greets the world and prints the message.\ndone\n\nflow main\nbody\n    step lib.Greet(\"World\" to :name) then\n        next :result to msg\n    done\n    step sinks.Print(msg to :line) done\ndone\n\ntest main\n    mock lib.Greet => \"Hello, World!\"\n    mock sinks.Print => true\n    _ = main()\ndone\n";
     write_scaffold(&root, "main.fa", main_fa)?;
 
     // lib/Greet.fa
@@ -839,10 +1220,14 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
     let print_fa = "docs Print\n    Prints a line of text to the terminal.\n\n    docs line\n        The text line to print.\n    done\ndone\n\nsink Print\n    take line as text\n    emit done as bool\n    fail error as text\nbody\n    _ = term.print(line)\n    ok = true\n    emit ok\ndone\n\ntest Print\n    r = Print(\"hello\")\n    must r == true\ndone\n";
     write_scaffold(&root, "sinks/Print.fa", print_fa)?;
 
+    // sources/Events.fa
+    let events_fa = "docs Events\n    Reads user input from the terminal and emits trimmed text events.\ndone\n\nsource Events\n    emit event as text\n    fail error as text\nbody\n    on :input from term.prompt(\"> \") to raw\n        trimmed = str.trim(raw)\n        emit trimmed\n    done\ndone\n\ntest Events\n    # Source: reads from terminal — stub test, integration tested separately\n    ok = true\n    must ok == true\ndone\n";
+    write_scaffold(&root, "sources/Events.fa", events_fa)?;
+
     println!("Created project `{name}`\n");
     println!("  cd {name}");
     println!("  forai run main.fa         run the app");
-    println!("  forai test lib            run tests");
+    println!("  forai test                run all tests");
     println!("  forai build               build WASM artifact\n");
     println!("MCP server configured in .mcp.json — open in Claude Code to use forai tools.");
     println!("See LANGUAGE.md for the full language reference.");
@@ -852,8 +1237,7 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
 
 fn write_scaffold(root: &Path, rel: &str, content: &str) -> Result<(), String> {
     let path = root.join(rel);
-    fs::write(&path, content)
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+    fs::write(&path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -896,39 +1280,39 @@ mod tests {
         let path = dir.join("Broken.fa");
 
         let src = r#"
-docs HttpRequest
-  An HTTP request.
+docs TestRequest
+  A test request.
 
   docs path
     The request path.
   done
 done
 
-type HttpRequest
+type TestRequest
   path text
 done
 
-docs HttpResponse
-  An HTTP response.
+docs TestResponse
+  A test response.
 
   docs status
     The status code.
   done
 done
 
-type HttpResponse
+type TestResponse
   status long
 done
 
-docs AuthError
-  An authentication error.
+docs TestError
+  A test error.
 
   docs status
     The error status code.
   done
 done
 
-type AuthError
+type TestError
   status long
 done
 
@@ -937,9 +1321,9 @@ docs Broken
 done
 
 func Broken
-  take request as HttpRequest
-  emit response as HttpResponse
-  fail error as AuthError
+  take request as TestRequest
+  emit response as TestResponse
+  fail error as TestError
 body
   not valid syntax
 done
@@ -964,22 +1348,36 @@ done
     #[tokio::test]
     async fn classify_func_runs() {
         let local = tokio::task::LocalSet::new();
-        local.run_until(async {
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../examples/read-docs/app/router/Classify.fa");
-            let (flow, ir, registry, flow_registry) = compile_source(&path)
-                .unwrap_or_else(|e| panic!("compile failed: {e}"));
+        local
+            .run_until(async {
+                let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../examples/read-docs/app/router/Classify.fa");
+                let (flow, ir, registry, flow_registry) =
+                    compile_source(&path).unwrap_or_else(|e| panic!("compile failed: {e}"));
 
-            let mut inputs = std::collections::HashMap::new();
-            inputs.insert("cmd".to_string(), serde_json::json!("help"));
+                let mut inputs = std::collections::HashMap::new();
+                inputs.insert("cmd".to_string(), serde_json::json!("help"));
 
-            let codecs = CodecRegistry::default_registry();
-            let report = runtime::execute_flow(&flow, ir, inputs, &registry, Some(&flow_registry), &codecs, None).await
+                let codecs = CodecRegistry::default_registry();
+                let report = runtime::execute_flow(
+                    &flow,
+                    ir,
+                    inputs,
+                    &registry,
+                    Some(&flow_registry),
+                    &codecs,
+                    None,
+                )
+                .await
                 .unwrap_or_else(|e| panic!("runtime failed: {e}"));
 
-            let outputs = report.outputs.as_object().expect("outputs should be object");
-            let result = outputs.get("result").expect("should have result output");
-            assert_eq!(result.as_str(), Some("help"));
-        }).await;
+                let outputs = report
+                    .outputs
+                    .as_object()
+                    .expect("outputs should be object");
+                let result = outputs.get("result").expect("should have result output");
+                assert_eq!(result.as_str(), Some("help"));
+            })
+            .await;
     }
 }

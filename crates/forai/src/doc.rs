@@ -212,74 +212,178 @@ pub fn extract_module_doc(module: &ModuleAst, file_path: &str) -> ModuleDoc {
     for decl in &module.decls {
         match decl {
             TopDecl::Uses(u) => {
-                uses.push(u.module.clone());
+                uses.push(u.name.clone());
             }
             TopDecl::Flow(f) => {
                 flows.push(FlowDoc {
                     name: f.name.clone(),
                     kind: "flow".to_string(),
-                    takes: f.takes.iter().map(|t| PortDoc { name: t.name.clone(), type_name: t.type_name.clone() }).collect(),
-                    emits: f.emits.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
-                    fails: f.fails.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
+                    takes: f
+                        .takes
+                        .iter()
+                        .map(|t| PortDoc {
+                            name: t.name.clone(),
+                            type_name: t.type_name.clone(),
+                        })
+                        .collect(),
+                    emits: f
+                        .emits
+                        .iter()
+                        .map(|p| PortDoc {
+                            name: p.name.clone(),
+                            type_name: p.type_name.clone(),
+                        })
+                        .collect(),
+                    fails: f
+                        .fails
+                        .iter()
+                        .map(|p| PortDoc {
+                            name: p.name.clone(),
+                            type_name: p.type_name.clone(),
+                        })
+                        .collect(),
                     docs: docs_map.get(&f.name).cloned(),
-                    span: SpanDoc { line: f.span.line, col: f.span.col },
+                    span: SpanDoc {
+                        line: f.span.line,
+                        col: f.span.col,
+                    },
                 });
             }
             TopDecl::Func(f) => {
                 let (emits, fails) = if let Some(ref ret_type) = f.return_type {
                     let fail_t = f.fail_type.as_deref().unwrap_or("unknown");
                     (
-                        vec![PortDoc { name: "_return".to_string(), type_name: ret_type.clone() }],
-                        vec![PortDoc { name: "_fail".to_string(), type_name: fail_t.to_string() }],
+                        vec![PortDoc {
+                            name: "_return".to_string(),
+                            type_name: ret_type.clone(),
+                        }],
+                        vec![PortDoc {
+                            name: "_fail".to_string(),
+                            type_name: fail_t.to_string(),
+                        }],
                     )
                 } else {
                     (
-                        f.emits.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
-                        f.fails.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
+                        f.emits
+                            .iter()
+                            .map(|p| PortDoc {
+                                name: p.name.clone(),
+                                type_name: p.type_name.clone(),
+                            })
+                            .collect(),
+                        f.fails
+                            .iter()
+                            .map(|p| PortDoc {
+                                name: p.name.clone(),
+                                type_name: p.type_name.clone(),
+                            })
+                            .collect(),
                     )
                 };
                 flows.push(FlowDoc {
                     name: f.name.clone(),
                     kind: "func".to_string(),
-                    takes: f.takes.iter().map(|t| PortDoc { name: t.name.clone(), type_name: t.type_name.clone() }).collect(),
+                    takes: f
+                        .takes
+                        .iter()
+                        .map(|t| PortDoc {
+                            name: t.name.clone(),
+                            type_name: t.type_name.clone(),
+                        })
+                        .collect(),
                     emits,
                     fails,
                     docs: docs_map.get(&f.name).cloned(),
-                    span: SpanDoc { line: f.span.line, col: f.span.col },
+                    span: SpanDoc {
+                        line: f.span.line,
+                        col: f.span.col,
+                    },
                 });
             }
             TopDecl::Sink(f) => {
                 flows.push(FlowDoc {
                     name: f.name.clone(),
                     kind: "sink".to_string(),
-                    takes: f.takes.iter().map(|t| PortDoc { name: t.name.clone(), type_name: t.type_name.clone() }).collect(),
-                    emits: f.emits.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
-                    fails: f.fails.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
+                    takes: f
+                        .takes
+                        .iter()
+                        .map(|t| PortDoc {
+                            name: t.name.clone(),
+                            type_name: t.type_name.clone(),
+                        })
+                        .collect(),
+                    emits: f
+                        .emits
+                        .iter()
+                        .map(|p| PortDoc {
+                            name: p.name.clone(),
+                            type_name: p.type_name.clone(),
+                        })
+                        .collect(),
+                    fails: f
+                        .fails
+                        .iter()
+                        .map(|p| PortDoc {
+                            name: p.name.clone(),
+                            type_name: p.type_name.clone(),
+                        })
+                        .collect(),
                     docs: docs_map.get(&f.name).cloned(),
-                    span: SpanDoc { line: f.span.line, col: f.span.col },
+                    span: SpanDoc {
+                        line: f.span.line,
+                        col: f.span.col,
+                    },
                 });
             }
             TopDecl::Source(f) => {
                 let (emits, fails) = if let Some(ref ret_type) = f.return_type {
                     let fail_t = f.fail_type.as_deref().unwrap_or("unknown");
                     (
-                        vec![PortDoc { name: "_return".to_string(), type_name: ret_type.clone() }],
-                        vec![PortDoc { name: "_fail".to_string(), type_name: fail_t.to_string() }],
+                        vec![PortDoc {
+                            name: "_return".to_string(),
+                            type_name: ret_type.clone(),
+                        }],
+                        vec![PortDoc {
+                            name: "_fail".to_string(),
+                            type_name: fail_t.to_string(),
+                        }],
                     )
                 } else {
                     (
-                        f.emits.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
-                        f.fails.iter().map(|p| PortDoc { name: p.name.clone(), type_name: p.type_name.clone() }).collect(),
+                        f.emits
+                            .iter()
+                            .map(|p| PortDoc {
+                                name: p.name.clone(),
+                                type_name: p.type_name.clone(),
+                            })
+                            .collect(),
+                        f.fails
+                            .iter()
+                            .map(|p| PortDoc {
+                                name: p.name.clone(),
+                                type_name: p.type_name.clone(),
+                            })
+                            .collect(),
                     )
                 };
                 flows.push(FlowDoc {
                     name: f.name.clone(),
                     kind: "source".to_string(),
-                    takes: f.takes.iter().map(|t| PortDoc { name: t.name.clone(), type_name: t.type_name.clone() }).collect(),
+                    takes: f
+                        .takes
+                        .iter()
+                        .map(|t| PortDoc {
+                            name: t.name.clone(),
+                            type_name: t.type_name.clone(),
+                        })
+                        .collect(),
                     emits,
                     fails,
                     docs: docs_map.get(&f.name).cloned(),
-                    span: SpanDoc { line: f.span.line, col: f.span.col },
+                    span: SpanDoc {
+                        line: f.span.line,
+                        col: f.span.col,
+                    },
                 });
             }
             TopDecl::Type(t) => match &t.kind {
@@ -407,8 +511,15 @@ pub fn generate_docs_at_path(path: &Path, base_dir: &Path) -> Result<DocsArtifac
         let src = fs::read_to_string(file)
             .map_err(|e| format!("Failed to read {}: {e}", file.display()))?;
 
-        let module = parser::parse_module_v1(&src)
-            .map_err(|e| format!("{}:{}:{} {}", file.display(), e.span.line, e.span.col, e.message))?;
+        let module = parser::parse_module_v1(&src).map_err(|e| {
+            format!(
+                "{}:{}:{} {}",
+                file.display(),
+                e.span.line,
+                e.span.col,
+                e.message
+            )
+        })?;
 
         let rel = file
             .strip_prefix(base_dir)
@@ -434,8 +545,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 
 fn ensure_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|e| format!("Failed to create {}: {e}", path.display()))
+    fs::create_dir_all(path).map_err(|e| format!("Failed to create {}: {e}", path.display()))
 }
 
 pub fn generate_docs_folder(
@@ -457,13 +567,14 @@ pub fn generate_docs_folder(
     // --- Project docs ---
     let mut fa_files = Vec::new();
     collect_fa_files_recursive(project_root, &mut fa_files);
-    // Exclude lib subdirs (uses targets) so we only get project-level files
+    // Exclude lib subdirs (use targets) so we only get project-level files
     let lib_dirs: Vec<PathBuf> = module
         .decls
         .iter()
         .filter_map(|d| {
             if let TopDecl::Uses(u) = d {
-                Some(project_root.join(&u.module))
+                let resolved = project_root.join(&u.path);
+                if resolved.is_dir() { Some(resolved) } else { None }
             } else {
                 None
             }
@@ -564,16 +675,14 @@ pub fn generate_docs_folder(
     }
 
     // --- Lib docs ---
-    let base_dir = entry_path
-        .parent()
-        .unwrap_or(Path::new("."));
+    let base_dir = entry_path.parent().unwrap_or(Path::new("."));
     for decl in &module.decls {
         if let TopDecl::Uses(u) = decl {
-            let module_dir = base_dir.join(&u.module);
+            let module_dir = base_dir.join(&u.path);
             if !module_dir.is_dir() {
                 continue;
             }
-            let lib_out = libs_dir.join(&u.module);
+            let lib_out = libs_dir.join(&u.name);
             ensure_dir(&lib_out)?;
 
             let mut lib_files = Vec::new();
@@ -600,16 +709,16 @@ pub fn generate_docs_folder(
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                let detail_file = format!("libs/{}/{stem}.json", u.module);
+                let detail_file = format!("libs/{}/{stem}.json", u.name);
                 write_json(&lib_out.join(format!("{stem}.json")), &mod_doc)?;
 
                 for flow in &mod_doc.symbols.flows {
                     let summary = flow.docs.clone().unwrap_or_default();
                     let first_line = summary.lines().next().unwrap_or("").to_string();
                     index.push(IndexEntry {
-                        name: format!("{}.{}", u.module, flow.name),
+                        name: format!("{}.{}", u.name, flow.name),
                         kind: flow.kind.clone(),
-                        module: format!("{}/{rel}", u.module),
+                        module: format!("{}/{rel}", u.name),
                         source: "lib".to_string(),
                         summary: first_line,
                         detail_file: detail_file.clone(),
@@ -628,7 +737,7 @@ pub fn generate_docs_folder(
                     index.push(IndexEntry {
                         name,
                         kind: "type".to_string(),
-                        module: format!("{}/{rel}", u.module),
+                        module: format!("{}/{rel}", u.name),
                         source: "lib".to_string(),
                         summary: first_line,
                         detail_file: detail_file.clone(),
@@ -799,16 +908,13 @@ done
             infer_tested_flow("err = trap LoginFlow(req)", &flows),
             Some("LoginFlow".to_string())
         );
-        assert_eq!(
-            infer_tested_flow("must x == 1", &flows),
-            None
-        );
+        assert_eq!(infer_tested_flow("must x == 1", &flows), None);
     }
 
     #[test]
     fn uses_declarations_captured() {
         let src = r#"
-uses travel
+use travel from "./travel"
 
 type Req
   x text
@@ -869,13 +975,16 @@ done
             }
         }
 
-        // read-docs/app/Start.fa should have uses
+        // read-docs/app/Start.fa should have use declarations
         let start = artifact
             .modules
             .iter()
             .find(|m| m.file.contains("read-docs") && m.file.contains("Start"))
             .expect("should have read-docs Start module");
-        assert!(!start.uses.is_empty(), "Start.fa should have uses declarations");
+        assert!(
+            !start.uses.is_empty(),
+            "Start.fa should have use declarations"
+        );
     }
 
     #[test]
@@ -938,13 +1047,28 @@ done
 
         assert_eq!(doc.symbols.flows.len(), 3);
 
-        let func = doc.symbols.flows.iter().find(|f| f.name == "MyFunc").unwrap();
+        let func = doc
+            .symbols
+            .flows
+            .iter()
+            .find(|f| f.name == "MyFunc")
+            .unwrap();
         assert_eq!(func.kind, "func");
 
-        let sink = doc.symbols.flows.iter().find(|f| f.name == "MySink").unwrap();
+        let sink = doc
+            .symbols
+            .flows
+            .iter()
+            .find(|f| f.name == "MySink")
+            .unwrap();
         assert_eq!(sink.kind, "sink");
 
-        let flow = doc.symbols.flows.iter().find(|f| f.name == "MyFlow").unwrap();
+        let flow = doc
+            .symbols
+            .flows
+            .iter()
+            .find(|f| f.name == "MyFlow")
+            .unwrap();
         assert_eq!(flow.kind, "flow");
     }
 
@@ -971,8 +1095,8 @@ done
     fn generate_docs_folder_end_to_end() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let read_docs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/read-docs");
+        let read_docs_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/read-docs");
 
         // Use a temp dir to avoid polluting the example
         let stamp = SystemTime::now()
@@ -990,7 +1114,9 @@ done
                 let d = dst.join(entry.file_name());
                 if s.is_dir() {
                     // Skip existing docs/ directories
-                    if entry.file_name() == "docs" { continue; }
+                    if entry.file_name() == "docs" {
+                        continue;
+                    }
                     copy_dir_recursive(&s, &d);
                 } else {
                     fs::copy(&s, &d).unwrap();
@@ -1007,9 +1133,18 @@ done
             .expect("docs folder generation should succeed");
 
         // Verify structure
-        assert!(tmp.join("docs/index.json").exists(), "index.json should exist");
-        assert!(tmp.join("docs/project/main.json").exists(), "project/main.json should exist");
-        assert!(tmp.join("docs/stdlib/str.json").exists(), "stdlib/str.json should exist");
+        assert!(
+            tmp.join("docs/index.json").exists(),
+            "index.json should exist"
+        );
+        assert!(
+            tmp.join("docs/project/main.json").exists(),
+            "project/main.json should exist"
+        );
+        assert!(
+            tmp.join("docs/stdlib/str.json").exists(),
+            "stdlib/str.json should exist"
+        );
 
         // Verify index has entries from project and stdlib sources
         let index_text = fs::read_to_string(tmp.join("docs/index.json")).unwrap();

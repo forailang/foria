@@ -6,7 +6,7 @@ const INDENT: &str = "    ";
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Block {
     Decl,     // func, flow, sink, source header
-    Body,     // body, init, from content
+    Body,     // body content
     Docs,     // docs block
     Test,     // test block
     TypeDecl, // type, data, enum
@@ -72,17 +72,10 @@ pub fn format_source(source: &str) -> String {
                 }
                 stack.pop(); // structural block (Case, If, Loop, Body, Docs, etc.)
             }
-            "body" | "init" if second_token(trimmed) != "=" => {
+            "body" if second_token(trimmed) != "=" => {
                 // Close the Decl header
                 if stack.last() == Some(&Block::Decl) {
                     stack.pop();
-                }
-            }
-            "from" => {
-                // Close Body (from init) or Decl (source without init)
-                match stack.last() {
-                    Some(&Block::Body) | Some(&Block::Decl) => { stack.pop(); }
-                    _ => {}
                 }
             }
             "when" => {
@@ -100,8 +93,12 @@ pub fn format_source(source: &str) -> String {
             "else" => {
                 // Could be case-else (pop Arm) or if-else (pop If)
                 match stack.last() {
-                    Some(&Block::Arm) => { stack.pop(); }
-                    Some(&Block::If) => { stack.pop(); }
+                    Some(&Block::Arm) => {
+                        stack.pop();
+                    }
+                    Some(&Block::If) => {
+                        stack.pop();
+                    }
                     _ => {}
                 }
             }
@@ -112,7 +109,7 @@ pub fn format_source(source: &str) -> String {
 
         // --- Blank line insertion between top-level declarations ---
         if indent == 0 {
-            let is_uses = first_word == "uses";
+            let is_uses = first_word == "use";
             if !out.is_empty() {
                 let need_blank = if is_uses && prev_was_uses {
                     false
@@ -140,63 +137,69 @@ pub fn format_source(source: &str) -> String {
 
         // --- Pushes (indent after printing) ---
         let single_line_done = trimmed.ends_with("done");
-        match first_word {
-            "func" | "flow" | "sink" | "source" => {
-                stack.push(Block::Decl);
-            }
-            "body" | "init" if second_token(trimmed) != "=" => {
-                stack.push(Block::Body);
-            }
-            "from" if !single_line_done => {
-                stack.push(Block::Body);
-            }
-            "docs" => {
-                stack.push(Block::Docs);
-            }
-            "test" => {
-                stack.push(Block::Test);
-            }
-            "type" | "data" | "enum" if !single_line_done => {
-                // Only treat as a declaration if not an assignment (e.g. `data = {…}`).
-                if second_token(trimmed) != "=" {
-                    stack.push(Block::TypeDecl);
+        let in_docs = matches!(stack.last(), Some(Block::Docs));
+
+        // `docs` always pushes (supports nested field docs); all other keywords are
+        // suppressed inside a docs block so that prose containing forai keywords
+        // (e.g. "ask if they want to play again.") does not corrupt the indent stack.
+        if first_word == "docs" {
+            stack.push(Block::Docs);
+        } else if !in_docs {
+            match first_word {
+                "func" | "flow" | "sink" | "source" => {
+                    stack.push(Block::Decl);
                 }
-            }
-            "case" => {
-                stack.push(Block::Case);
-            }
-            "when" => {
-                stack.push(Block::Arm);
-            }
-            "else" if is_else_if => {
-                if !single_line_done {
+                "body" if second_token(trimmed) != "=" => {
+                    stack.push(Block::Body);
+                }
+                "test" => {
+                    stack.push(Block::Test);
+                }
+                "type" | "data" | "enum" if !single_line_done => {
+                    // Only treat as a declaration if not an assignment (e.g. `data = {…}`).
+                    if second_token(trimmed) != "=" {
+                        stack.push(Block::TypeDecl);
+                    }
+                }
+                "case" => {
+                    stack.push(Block::Case);
+                }
+                "when" => {
+                    stack.push(Block::Arm);
+                }
+                "else" if is_else_if => {
+                    if !single_line_done {
+                        stack.push(Block::If);
+                    }
+                }
+                "else" => {
+                    // Push same type as what was popped
+                    if stack.last() == Some(&Block::Case) {
+                        stack.push(Block::Arm); // case else
+                    } else {
+                        stack.push(Block::If); // if else
+                    }
+                }
+                "if" if !single_line_done => {
                     stack.push(Block::If);
                 }
-            }
-            "else" => {
-                // Push same type as what was popped
-                if stack.last() == Some(&Block::Case) {
-                    stack.push(Block::Arm); // case else
-                } else {
-                    stack.push(Block::If); // if else
+                "loop" if !single_line_done => {
+                    stack.push(Block::Loop);
                 }
-            }
-            "if" if !single_line_done => {
-                stack.push(Block::If);
-            }
-            "loop" if !single_line_done => {
-                stack.push(Block::Loop);
-            }
-            "sync" if !single_line_done => {
-                stack.push(Block::Sync);
-            }
-            "step" if trimmed.contains(" then") && !single_line_done => {
-                stack.push(Block::Step);
-            }
-            _ => {
-                // Check for sync assignment: `[vars] = sync` or `x = sync`
-                if !single_line_done && line_is_sync_assignment(trimmed) {
+                "on" if !single_line_done => {
+                    stack.push(Block::Loop);
+                }
+                "sync" if !single_line_done => {
                     stack.push(Block::Sync);
+                }
+                "step" if trimmed.contains(" then") && !single_line_done => {
+                    stack.push(Block::Step);
+                }
+                _ => {
+                    // Check for sync assignment: `[vars] = sync` or `x = sync`
+                    if !single_line_done && line_is_sync_assignment(trimmed) {
+                        stack.push(Block::Sync);
+                    }
                 }
             }
         }
@@ -222,6 +225,7 @@ pub fn format_source(source: &str) -> String {
 }
 
 /// Returns true if the source is already formatted.
+#[cfg(test)]
 pub fn check_formatted(source: &str) -> bool {
     format_source(source) == source
 }
@@ -313,8 +317,7 @@ fn count_triple_quotes(s: &str) -> usize {
 fn is_top_level_keyword(word: &str) -> bool {
     matches!(
         word,
-        "func" | "flow" | "sink" | "source" | "docs" | "test"
-            | "type" | "data" | "enum" | "uses"
+        "func" | "flow" | "sink" | "source" | "docs" | "test" | "type" | "data" | "enum" | "use"
     )
 }
 
@@ -400,7 +403,10 @@ body
 done
 ";
         let formatted = format_source(input);
-        assert_eq!(formatted, input, "already-formatted input should be unchanged");
+        assert_eq!(
+            formatted, input,
+            "already-formatted input should be unchanged"
+        );
     }
 
     #[test]
@@ -437,17 +443,23 @@ done
 
     #[test]
     fn uses_grouping() {
-        let input = "uses alpha\nuses beta\n\ndocs Foo\n  A thing.\ndone\n\nfunc Foo\n  take x as text\n  emit result as text\n  fail error as text\nbody\n  emit x\ndone\n";
+        let input = "use alpha from \"./alpha\"\nuse beta from \"./beta\"\n\ndocs Foo\n  A thing.\ndone\n\nfunc Foo\n  take x as text\n  emit result as text\n  fail error as text\nbody\n  emit x\ndone\n";
         let formatted = format_source(input);
-        assert!(formatted.contains("uses alpha\nuses beta\n"), "uses should be grouped");
-        assert!(formatted.contains("uses beta\n\ndocs Foo"), "blank line before docs");
+        assert!(
+            formatted.contains("use alpha from \"./alpha\"\nuse beta from \"./beta\"\n"),
+            "use declarations should be grouped"
+        );
+        assert!(
+            formatted.contains("use beta from \"./beta\"\n\ndocs Foo"),
+            "blank line before docs"
+        );
     }
 
     #[test]
     fn collapses_multiple_blanks() {
-        let input = "uses a\n\n\n\ndocs Foo\n    Hi.\ndone\n";
+        let input = "use a from \"./a\"\n\n\n\ndocs Foo\n    Hi.\ndone\n";
         let formatted = format_source(input);
-        assert!(formatted.contains("uses a\n\ndocs Foo"));
+        assert!(formatted.contains("use a from \"./a\"\n\ndocs Foo"));
         assert!(!formatted.contains("\n\n\n"));
     }
 
@@ -470,7 +482,7 @@ done
 
     #[test]
     fn final_newline() {
-        let input = "uses foo";
+        let input = "use foo from \"./foo\"";
         let formatted = format_source(input);
         assert!(formatted.ends_with('\n'));
     }
@@ -570,19 +582,21 @@ done
     }
 
     #[test]
-    fn source_decl() {
+    fn source_with_on() {
         let input = "\
 source Commands
     emit cmd as text
     fail error as text
-from term.prompt(\"docs> \") as raw
-    trimmed = str.trim(raw)
-    emit trimmed
-    case trimmed
-        when \"quit\"
-            break
-        when \"exit\"
-            break
+body
+    on :input from term.prompt(\"docs> \") to raw
+        trimmed = str.trim(raw)
+        emit trimmed
+        case trimmed
+            when \"quit\"
+                break
+            when \"exit\"
+                break
+        done
     done
 done
 ";
@@ -591,15 +605,17 @@ done
     }
 
     #[test]
-    fn source_with_init() {
+    fn source_with_on_and_init() {
         let input = "\
 source HTTPRequests
     take port as long
     emit req as dict
     fail error as text
-init
+body
     srv = http.server.listen(port)
-from http.server.accept(srv)
+    on :request from http.server.accept(srv) to req
+        emit req
+    done
 done
 ";
         let formatted = format_source(input);
@@ -608,7 +624,7 @@ done
 
     #[test]
     fn check_formatted_returns_true() {
-        let input = "uses foo\n\ndocs Bar\n    Hi.\ndone\n";
+        let input = "use foo from \"./foo\"\n\ndocs Bar\n    Hi.\ndone\n";
         let formatted = format_source(input);
         assert!(check_formatted(&formatted));
     }
@@ -616,7 +632,7 @@ done
     #[test]
     fn idempotent() {
         let input = "\
-uses app
+use app from \"./app\"
 
 docs main
     Interactive docs browser.
@@ -643,6 +659,29 @@ docs StartResult
     docs status
         Exit status message.
     done
+done
+";
+        let formatted = format_source(input);
+        assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn docs_content_with_keywords_not_interpreted() {
+        // Prose inside a docs block may contain forai keywords (e.g. "if", "loop",
+        // "case"). They must be treated as plain text, not as block openers.
+        let input = "\
+docs Game
+    Runs the game. Each round picks a target,
+    plays through until the player guesses, then asks
+    if they want to play again.
+done
+
+func Game
+    return bool
+    fail text
+body
+    ok = true
+    return ok
 done
 ";
         let formatted = format_source(input);

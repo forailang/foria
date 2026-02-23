@@ -58,8 +58,8 @@ The compiler pipeline is a linear chain through these modules:
 | **lexer** | `src/lexer.rs` | Tokenizes `.fa` source into `Token` stream (`Ident`, `Number`, `StringLit`, `StringInterp`, `Symbol`, `FatArrow`, `Newline`) |
 | **parser** | `src/parser.rs` | Token-stream parser producing `ModuleAst` (top-level decls). Second pass converts `FuncDecl` body text into executable `Flow` via `parse_runtime_func_decl_v1`. Flow (step-based) bodies are parsed by `parse_flow_graph_decl_v1` |
 | **ast** | `src/ast.rs` | All AST types: `ModuleAst`, `TopDecl` (Uses/Docs/Func/Sink/Flow/Type/Data/Enum/Test), `Statement` (Node/ExprAssign/Emit/Case/Loop/Sync), `Flow` (runtime form), `FlowGraph` (step-based form) |
-| **types** | `src/types.rs` | `TypeRegistry` built from module AST. Defines `TypeDef` (Primitive/Scalar/Struct/Enum), `PrimitiveType` (Text/Bool/Long/Real/Uuid/Time/List/Dict/Void/DbConn/HttpServer/HttpConn/WsConn), constraint resolution and validation |
-| **op_types** | `src/op_types.rs` | Static op signature registry for handle-producing/consuming ops. Maps ops like `db.open`, `http.server.listen` to their argument and return types |
+| **types** | `src/types.rs` | `TypeRegistry` built from module AST. Defines `TypeDef` (Primitive/Scalar/Struct/Enum), `PrimitiveType` (Text/Bool/Long/Real/Uuid/Time/List/Dict/Void/DbConn/HttpServer/HttpConn/WsConn), constraint resolution and validation. Built-in struct types: `HttpRequest`, `HttpResponse`, `Date`, `Stamp`, `TimeRange`, `ProcessOutput`, `WebSocketMessage`, `ErrorObject`, `URLParts` |
+| **op_types** | `src/op_types.rs` | Static op signature registry for handle-producing/consuming ops and struct-returning ops. Maps ops to their argument and return types including named struct types (`ProcessOutput`, `Date`, `HttpResponse`, etc.) |
 | **typecheck** | `src/typecheck.rs` | Forward type-inference pass over func bodies. Validates that handle-consuming ops receive the correct handle type at compile time |
 | **sema** | `src/sema.rs` | Semantic validation: enforces `emit`/`fail` presence on funcs/sinks (flows may omit them), docs coverage for funcs and tests, duplicate docs detection |
 | **ir** | `src/ir.rs` | Lowers `Flow` → `Ir` (normalized nodes, edges, emits with guard conditions) |
@@ -78,15 +78,16 @@ Key design note: the parser has two layers. First it parses the full module stru
 | Namespace | Ops | Description |
 |-----------|-----|-------------|
 | `obj.*` | `new`, `set`, `get`, `has`, `delete`, `keys`, `merge` | Immutable dict operations |
-| `list.*` | `new`, `range`, `append`, `get`, `len`, `contains`, `slice`, `indices` | Immutable list operations |
+| `list.*` | `new`, `range`, `append`, `len`, `contains`, `slice`, `indices` | Immutable list operations; access via `items[0]` bracket indexing |
 | `str.*` | `len`, `upper`, `lower`, `trim`, `trim_start`, `trim_end`, `split`, `join`, `replace`, `contains`, `starts_with`, `ends_with`, `slice`, `index_of`, `repeat` | String operations |
-| `math.*` | `add`, `subtract`, `multiply`, `divide`, `floor`, `mod`, `power`, `round` | Arithmetic |
+| `math.*` | `floor`, `round` | Rounding (arithmetic uses infix operators: `+` `-` `*` `/` `%` `**`) |
 | `type.*` | `of` | Type introspection — returns `"text"`, `"bool"`, `"long"`, `"real"`, `"list"`, `"dict"`, `"void"` |
 | `to.*` | `text`, `long`, `real`, `bool` | Type conversion between scalars |
 | `json.*` | `decode`, `encode`, `encode_pretty` | JSON codec (via codec registry) |
 | `codec.*` | `decode`, `encode`, `encode_pretty` | Generic codec dispatch by format name |
 | `http.*` | `extract_path`, `extract_params`, `response`, `error_response`, `get`, `post`, `put`, `delete` | HTTP client and response helpers |
 | `http.server.*` | `listen`, `accept`, `respond`, `close` | HTTP server (uses `http_server`/`http_conn` handle types) |
+| `http.respond.*` | `html`, `json`, `text` | HTTP response convenience ops (auto content-type, uses `http_conn`) |
 | `ws.*` | `connect`, `send`, `recv`, `close` | WebSocket client (uses `ws_conn` handle type) |
 | `headers.*` | `new`, `set`, `get`, `delete` | HTTP header utilities |
 | `auth.*` | `extract_email`, `extract_password`, `validate_email`, `validate_password`, `verify_password`, `sample_checks`, `pass_through` | Auth simulation |
@@ -113,13 +114,15 @@ Key design note: the parser has two layers. First it parses the full module stru
 | `html.*` | `escape`, `unescape` | HTML entity escaping and unescaping |
 | `tmpl.*` | `render` | Mustache-style template rendering |
 
-Expressions in func bodies also support infix operators: `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` and unary `!` `-`. String concatenation uses `+`.
+Expressions in func bodies also support infix operators: `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` and unary `!` `-`. String concatenation uses `+`. Bracket indexing: `items[0]`, `items[-1]`, `row["key"]`.
 
 ## The `.fa` Language (v1 Syntax)
 
 Source files use `.fa` extension. Comments start with `#`. Key constructs:
 
 - **func**: `func Name` with `take`/`emit`/`fail` header, `body`...`done` — leaf computation with imperative body
+- **source**: `source Name` with `emit`/`fail` header, `body`...`done` — event producer. Body uses `on :tag from op(args) to var`...`done` blocks for event-driven patterns, or `loop` for polling patterns
+- **on**: `on :eventType from sourceExpr(args) to varName`...`done` — event handler block inside source bodies. Runs body once per event from the source expression. Event tag (`:request`, `:input`) is stored but cosmetic in v1
 - **sink**: `sink Name` — same syntax as `func`, declared as a side-effect-only endpoint
 - **flow**: `flow Name` with optional `take`/`emit`/`fail` header, `body`...`done` — step-based wiring of funcs/flows; body contains `step`, `branch`, `emit`/`fail` blocks. `branch when <expr>` is a conditional sub-pipeline; `branch` (unguarded) always runs. Flows may have zero ports (no take/emit/fail) — they are pure wiring
 - **uses**: `uses module` — imports a module directory; call as `module.FuncName(...)`
@@ -150,7 +153,7 @@ All examples live under `examples/` as project directories:
 | Example | Description |
 |---------|-------------|
 | `read-docs/` | Interactive stdlib documentation browser — source/func/flow/sink with `uses`, `branch when`, `case`, `loop`, nested modules, `term.prompt` |
-| `factory/` | Factory manager web app — HTTP server, SQLite DB, routing, CRUD, background job runner, multi-module architecture |
+| `web-simple/` | Web server with route.match-based routing, parameterized URLs (`/blog/:slug`), blog pages, HTML templating |
 
 ## Migration Status
 

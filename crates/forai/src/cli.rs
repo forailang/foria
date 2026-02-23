@@ -10,6 +10,7 @@ pub enum CliCommand {
     },
     Build {
         dir: PathBuf,
+        #[allow(dead_code)]
         debug: bool,
     },
     Run {
@@ -26,9 +27,16 @@ pub enum CliCommand {
     Test {
         path: PathBuf,
     },
+    Check {
+        path: PathBuf,
+    },
+    Stdlib {
+        query: Option<String>,
+    },
     Doc {
         path: PathBuf,
         out: Option<PathBuf>,
+        query: Option<String>,
     },
     Fmt {
         path: PathBuf,
@@ -36,7 +44,9 @@ pub enum CliCommand {
     },
     Lsp,
     Mcp,
-    New { name: String },
+    New {
+        name: String,
+    },
     Help,
 }
 
@@ -44,11 +54,13 @@ pub fn usage() -> &'static str {
     "Usage:
   forai new <name>                        create a new project
   forai build [dir] [--debug]             build project (requires forai.json)
+  forai check [path]                      validate .fa files, follow imports, exit 1 on errors
   forai run [source.fa] [args...]         interpreted run
   forai run --debug [--port N]            run with interactive debugger (default port 4810)
   forai run --wasm <file.wasm>            run WASM artifact via wasmtime
-  forai test <path>                       run test blocks
-  forai doc <path> [-o <out.json>]        generate docs
+  forai test [path]                       run test blocks (default: whole project)
+  forai stdlib [query]                    search built-in op reference (e.g. forai stdlib http)
+  forai doc <path> [query] [-o out.json]  generate or search project docs
   forai fmt [path] [--check]              format .fa files (or check formatting)
   forai compile <source.fa> [-o <out.json>] [--compact]
   forai lsp                               start language server (stdio)
@@ -210,9 +222,49 @@ fn parse_test_args(args: &[String]) -> Result<CliCommand, String> {
     Err("`test` accepts at most one path argument".to_string())
 }
 
+fn parse_check_args(args: &[String]) -> Result<CliCommand, String> {
+    let mut path: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            flag if flag.starts_with('-') => return Err(format!("Unknown flag: {flag}")),
+            raw => {
+                if path.is_some() {
+                    return Err("Only one path argument is supported".to_string());
+                }
+                path = Some(PathBuf::from(raw));
+                i += 1;
+            }
+        }
+    }
+    let path = path.unwrap_or_else(|| PathBuf::from("."));
+    Ok(CliCommand::Check { path })
+}
+
+fn parse_stdlib_args(args: &[String]) -> Result<CliCommand, String> {
+    let mut query: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            flag if flag.starts_with('-') => return Err(format!("Unknown flag: {flag}")),
+            raw => {
+                if query.is_some() {
+                    return Err("Only one query argument is supported".to_string());
+                }
+                query = Some(raw.to_string());
+                i += 1;
+            }
+        }
+    }
+    Ok(CliCommand::Stdlib { query })
+}
+
 fn parse_doc_args(args: &[String]) -> Result<CliCommand, String> {
     let mut path: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
+    let mut query: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -227,10 +279,13 @@ fn parse_doc_args(args: &[String]) -> Result<CliCommand, String> {
             "-h" | "--help" => return Ok(CliCommand::Help),
             flag if flag.starts_with('-') => return Err(format!("Unknown flag: {flag}")),
             raw => {
-                if path.is_some() {
-                    return Err("Only one path argument is supported".to_string());
+                if path.is_none() {
+                    path = Some(PathBuf::from(raw));
+                } else if query.is_none() {
+                    query = Some(raw.to_string());
+                } else {
+                    return Err("Too many arguments".to_string());
                 }
-                path = Some(PathBuf::from(raw));
                 i += 1;
             }
         }
@@ -239,7 +294,7 @@ fn parse_doc_args(args: &[String]) -> Result<CliCommand, String> {
     let Some(path) = path else {
         return Err(usage().to_string());
     };
-    Ok(CliCommand::Doc { path, out })
+    Ok(CliCommand::Doc { path, out, query })
 }
 
 fn parse_fmt_args(args: &[String]) -> Result<CliCommand, String> {
@@ -273,7 +328,9 @@ fn parse_new_args(args: &[String]) -> Result<CliCommand, String> {
     if args.len() != 1 || args[0].starts_with('-') {
         return Err("Usage: forai new <project-name>".to_string());
     }
-    Ok(CliCommand::New { name: args[0].clone() })
+    Ok(CliCommand::New {
+        name: args[0].clone(),
+    })
 }
 
 pub fn parse_cli() -> Result<CliCommand, String> {
@@ -285,9 +342,11 @@ pub fn parse_cli() -> Result<CliCommand, String> {
     match args[0].as_str() {
         "help" | "-h" | "--help" => Ok(CliCommand::Help),
         "build" => parse_build_args(&args[1..]),
+        "check" => parse_check_args(&args[1..]),
         "compile" => parse_compile_args(&args[1..]),
         "run" => parse_run_args(&args[1..]),
         "test" => parse_test_args(&args[1..]),
+        "stdlib" => parse_stdlib_args(&args[1..]),
         "doc" => parse_doc_args(&args[1..]),
         "fmt" => parse_fmt_args(&args[1..]),
         "lsp" => Ok(CliCommand::Lsp),

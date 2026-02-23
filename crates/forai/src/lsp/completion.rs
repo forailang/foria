@@ -1,6 +1,5 @@
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionParams, Documentation, MarkupContent,
-    MarkupKind,
+    CompletionItem, CompletionItemKind, CompletionParams, Documentation, MarkupContent, MarkupKind,
 };
 
 use crate::ast::TopDecl;
@@ -52,9 +51,9 @@ pub fn completions(doc: &Document, params: &CompletionParams) -> Vec<CompletionI
 
 fn is_keyword_prefix(s: &str) -> bool {
     let keywords = [
-        "func", "flow", "sink", "source", "docs", "test", "type", "data", "enum", "uses",
-        "branch", "case", "when", "else", "loop", "sync", "if", "emit", "fail", "break",
-        "step", "body", "done", "take", "return", "must", "trap", "mock", "send", "nowait",
+        "func", "flow", "sink", "source", "docs", "test", "type", "data", "enum", "use", "branch",
+        "case", "when", "else", "loop", "sync", "if", "on", "emit", "fail", "break", "step",
+        "body", "done", "take", "return", "must", "trap", "mock", "send", "nowait",
     ];
     keywords.iter().any(|k| k.starts_with(s) && *k != s)
 }
@@ -82,7 +81,7 @@ fn top_level_keyword_completions(prefix: &str) -> Vec<CompletionItem> {
         ("type", "type declaration", "Struct or scalar type"),
         ("data", "data declaration", "Data type"),
         ("enum", "enum declaration", "Enum type"),
-        ("uses", "module import", "Import a module directory"),
+        ("use", "module import", "Import a module: `use Name from \"./path\"`"),
     ];
 
     keywords
@@ -112,6 +111,7 @@ fn body_keyword_completions(prefix: &str) -> Vec<CompletionItem> {
         ("if", "conditional"),
         ("emit", "emit output"),
         ("fail", "emit failure"),
+        ("on", "event handler"),
         ("break", "break loop"),
         ("done", "end block"),
     ];
@@ -130,8 +130,19 @@ fn body_keyword_completions(prefix: &str) -> Vec<CompletionItem> {
 
 fn type_completions(prefix: &str, source: &str) -> Vec<CompletionItem> {
     let primitives = [
-        "text", "bool", "long", "real", "uuid", "time", "list", "dict", "void",
-        "db_conn", "http_server", "http_conn", "ws_conn",
+        "text",
+        "bool",
+        "long",
+        "real",
+        "uuid",
+        "time",
+        "list",
+        "dict",
+        "void",
+        "db_conn",
+        "http_server",
+        "http_conn",
+        "ws_conn",
     ];
 
     let mut items: Vec<CompletionItem> = primitives
@@ -207,7 +218,7 @@ fn namespace_completions(namespace: &str, prefix: &str, source: &str) -> Vec<Com
     if let Ok(module) = parser::parse_module_v1(source) {
         for decl in &module.decls {
             if let TopDecl::Uses(u) = decl {
-                if u.module == namespace {
+                if u.name == namespace {
                     items.extend(module_func_completions(namespace, prefix, source));
                     break;
                 }
@@ -218,11 +229,7 @@ fn namespace_completions(namespace: &str, prefix: &str, source: &str) -> Vec<Com
     items
 }
 
-fn module_func_completions(
-    _module_name: &str,
-    prefix: &str,
-    _source: &str,
-) -> Vec<CompletionItem> {
+fn module_func_completions(_module_name: &str, prefix: &str, _source: &str) -> Vec<CompletionItem> {
     // Try to resolve the module directory and scan for .fa files
     // For now, return empty — would need file path context to resolve
     let _ = prefix;

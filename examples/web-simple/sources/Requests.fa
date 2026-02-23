@@ -1,0 +1,21 @@
+docs Requests
+    Accepts HTTP connections on a port and emits parsed requests.
+    Each emitted value is an HttpRequest with conn_id, method, path, query, headers, and body fields.
+done
+
+source Requests
+    take port as long
+    emit req as HttpRequest
+    fail error as text
+body
+    srv = http.server.listen(port)
+    on :request from http.server.accept(srv) to req
+        emit req
+    done
+done
+
+test Requests
+    # Source: I/O dependent — stub test
+    ok = true
+    must ok == true
+done

@@ -2,6 +2,7 @@ use lsp_types::Position;
 
 pub struct LineIndex {
     line_starts: Vec<usize>,
+    #[allow(dead_code)]
     len: usize,
 }
 
@@ -19,6 +20,7 @@ impl LineIndex {
         }
     }
 
+    #[allow(dead_code)]
     pub fn offset_to_position(&self, offset: usize) -> Position {
         let offset = offset.min(self.len);
         let line = match self.line_starts.binary_search(&offset) {
@@ -32,6 +34,7 @@ impl LineIndex {
         }
     }
 
+    #[allow(dead_code)]
     pub fn position_to_offset(&self, pos: Position) -> usize {
         let line = pos.line as usize;
         if line >= self.line_starts.len() {

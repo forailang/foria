@@ -114,7 +114,12 @@ fn run_wasm_sync(wasm_bytes: &[u8], stdin_data: Vec<u8>, args: Vec<String>) -> R
                 let memory = match caller.get_export("memory") {
                     Some(Extern::Memory(m)) => m,
                     _ => {
-                        return write_error(&mut caller, result_ptr, result_cap, "no memory export")
+                        return write_error(
+                            &mut caller,
+                            result_ptr,
+                            result_cap,
+                            "no memory export",
+                        );
                     }
                 };
 
@@ -138,7 +143,7 @@ fn run_wasm_sync(wasm_bytes: &[u8], stdin_data: Vec<u8>, args: Vec<String>) -> R
                             result_ptr,
                             result_cap,
                             &format!("invalid args JSON: {e}"),
-                        )
+                        );
                     }
                 };
 
@@ -368,9 +373,8 @@ fn wasmtime_wasi_stubs(linker: &mut Linker<WasmState>) -> Result<(), String> {
                     if iov_offset + 8 > data.len() {
                         return 21;
                     }
-                    let buf_ptr = u32::from_le_bytes(
-                        data[iov_offset..iov_offset + 4].try_into().unwrap(),
-                    );
+                    let buf_ptr =
+                        u32::from_le_bytes(data[iov_offset..iov_offset + 4].try_into().unwrap());
                     let buf_len = u32::from_le_bytes(
                         data[iov_offset + 4..iov_offset + 8].try_into().unwrap(),
                     );
@@ -387,8 +391,7 @@ fn wasmtime_wasi_stubs(linker: &mut Linker<WasmState>) -> Result<(), String> {
                     .map(|&(buf_ptr, buf_len)| {
                         let available = remaining.len() - src_offset;
                         let to_copy = buf_len.min(available);
-                        let chunk =
-                            remaining[src_offset..src_offset + to_copy].to_vec();
+                        let chunk = remaining[src_offset..src_offset + to_copy].to_vec();
                         src_offset += to_copy;
                         total_read += to_copy;
                         (buf_ptr, chunk)
@@ -401,13 +404,11 @@ fn wasmtime_wasi_stubs(linker: &mut Linker<WasmState>) -> Result<(), String> {
                 if let Extern::Memory(m) = memory {
                     let data = m.data_mut(&mut caller);
                     for (buf_ptr, chunk) in &write_ops {
-                        data[*buf_ptr..*buf_ptr + chunk.len()]
-                            .copy_from_slice(chunk);
+                        data[*buf_ptr..*buf_ptr + chunk.len()].copy_from_slice(chunk);
                     }
                     let np = nread_ptr as usize;
                     if np + 4 <= data.len() {
-                        data[np..np + 4]
-                            .copy_from_slice(&(total_read as u32).to_le_bytes());
+                        data[np..np + 4].copy_from_slice(&(total_read as u32).to_le_bytes());
                     }
                 }
 
@@ -459,12 +460,12 @@ fn wasmtime_wasi_stubs(linker: &mut Linker<WasmState>) -> Result<(), String> {
         .func_wrap(
             "wasi_snapshot_preview1",
             "args_sizes_get",
-            |mut caller: Caller<'_, WasmState>,
-             argc_ptr: i32,
-             argv_buf_size_ptr: i32|
-             -> i32 {
+            |mut caller: Caller<'_, WasmState>, argc_ptr: i32, argv_buf_size_ptr: i32| -> i32 {
                 let argc = caller.data().args.len() as u32;
-                let buf_size: u32 = caller.data().args.iter()
+                let buf_size: u32 = caller
+                    .data()
+                    .args
+                    .iter()
                     .map(|a| a.len() as u32 + 1) // +1 for null terminator
                     .sum();
                 if let Some(Extern::Memory(m)) = caller.get_export("memory") {

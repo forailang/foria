@@ -1,22 +1,33 @@
 pub use forai_core::loader::{FlowProgram, FlowRegistry};
 
-use forai_core::ast::{DeclKind, FlowDecl, SourceLoopBlock, Statement, TopDecl};
-use forai_core::codec::CodecRegistry;
-use forai_core::ir::{self, Ir};
-use forai_core::types::TypeRegistry;
 use crate::parser;
 use crate::runtime;
 use crate::sema;
 use crate::typecheck;
-use std::collections::{HashMap, HashSet};
+use forai_core::ast::{DeclKind, FlowDecl, SourceLoopBlock, Statement, TopDecl};
+use forai_core::codec::CodecRegistry;
+use forai_core::ir;
+use forai_core::types::TypeRegistry;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+fn format_unknown_op(prefix: &str, op: &str) -> String {
+    let base = format!("{prefix} uses unknown op `{op}`");
+    if let Some(hint) = sema::unknown_op_fix_hint(op) {
+        format!("{base} — {hint}")
+    } else {
+        base
+    }
+}
 
 fn collect_expr_ops(expr: &forai_core::ast::Expr, out: &mut Vec<String>) {
     match expr {
         forai_core::ast::Expr::Call { func, args } => {
             out.push(func.clone());
-            for a in args { collect_expr_ops(a, out); }
+            for a in args {
+                collect_expr_ops(a, out);
+            }
         }
         forai_core::ast::Expr::BinOp { lhs, rhs, .. } => {
             collect_expr_ops(lhs, out);
@@ -31,16 +42,28 @@ fn collect_expr_ops(expr: &forai_core::ast::Expr, out: &mut Vec<String>) {
                 }
             }
         }
-        forai_core::ast::Expr::Ternary { cond, then_expr, else_expr } => {
+        forai_core::ast::Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             collect_expr_ops(cond, out);
             collect_expr_ops(then_expr, out);
             collect_expr_ops(else_expr, out);
         }
         forai_core::ast::Expr::ListLit(items) => {
-            for item in items { collect_expr_ops(item, out); }
+            for item in items {
+                collect_expr_ops(item, out);
+            }
         }
         forai_core::ast::Expr::DictLit(pairs) => {
-            for (_, v) in pairs { collect_expr_ops(v, out); }
+            for (_, v) in pairs {
+                collect_expr_ops(v, out);
+            }
+        }
+        forai_core::ast::Expr::Index { expr, index } => {
+            collect_expr_ops(expr, out);
+            collect_expr_ops(index, out);
         }
     }
 }
@@ -66,6 +89,10 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
                 out.push(sl.source_op.clone());
                 collect_ops(&sl.body, out);
             }
+            Statement::On(on_block) => {
+                out.push(on_block.source_op.clone());
+                collect_ops(&on_block.body, out);
+            }
         }
     }
 }
@@ -79,48 +106,72 @@ fn compile_func_decl(
     kind: DeclKind,
 ) -> Result<FlowProgram, String> {
     let flow = parser::parse_runtime_func_decl_v1(func_decl).map_err(|e| {
-        format!("{}: func `{}` parse error: {e}", file_path.display(), func_decl.name)
+        format!(
+            "{}: func `{}` parse error: {e}",
+            file_path.display(),
+            func_decl.name
+        )
     })?;
 
-    typecheck::typecheck_func(&func_decl.name, &func_decl.takes, &flow.body).map_err(|e| {
-        format!("{}: {e}", file_path.display())
-    })?;
+    typecheck::typecheck_func(&func_decl.name, &func_decl.takes, &flow.body)
+        .map_err(|e| format!("{}: {e}", file_path.display()))?;
 
     let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
     let mut ops = Vec::new();
     collect_ops(&flow.body, &mut ops);
     let unknown: Vec<_> = ops
         .iter()
-        .filter(|op| !known.contains(op.as_str()) && !extra_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+        .filter(|op| {
+            !known.contains(op.as_str())
+                && !extra_ops.contains(op.as_str())
+                && !flow_registry.is_flow(op)
+        })
         .collect();
     if !unknown.is_empty() {
         return Err(unknown
             .iter()
-            .map(|op| format!("{}: func `{}` uses unknown op `{op}`", file_path.display(), func_decl.name))
+            .map(|op| {
+                format_unknown_op(
+                    &format!("{}: func `{}`", file_path.display(), func_decl.name),
+                    op,
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"));
     }
 
     let ir = ir::lower_to_ir(&flow).map_err(|e| {
-        format!("{}: func `{}` lower error: {e}", file_path.display(), func_decl.name)
+        format!(
+            "{}: func `{}` lower error: {e}",
+            file_path.display(),
+            func_decl.name
+        )
     })?;
 
     let emit_name = flow
         .outputs
         .first()
         .map(|p| p.name.clone())
-        .ok_or_else(|| format!("{}: func `{}` has no emit output", file_path.display(), func_decl.name))?;
-    let fail_name = flow
-        .outputs
-        .get(1)
-        .map(|p| p.name.clone())
-        .ok_or_else(|| format!("{}: func `{}` has no fail output", file_path.display(), func_decl.name))?;
+        .ok_or_else(|| {
+            format!(
+                "{}: func `{}` has no emit output",
+                file_path.display(),
+                func_decl.name
+            )
+        })?;
+    let fail_name = flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
+        format!(
+            "{}: func `{}` has no fail output",
+            file_path.display(),
+            func_decl.name
+        )
+    })?;
 
     Ok(FlowProgram {
         flow,
         ir,
-        emit_name,
-        fail_name,
+        emit_name: Some(emit_name),
+        fail_name: Some(fail_name),
         registry: registry.clone(),
         kind,
     })
@@ -134,10 +185,18 @@ fn compile_flow_decl(
     extra_ops: &HashSet<String>,
 ) -> Result<FlowProgram, String> {
     let flow_graph = parser::parse_flow_graph_decl_v1(flow_decl).map_err(|e| {
-        format!("{}: flow `{}` parse error: {e}", file_path.display(), flow_decl.name)
+        format!(
+            "{}: flow `{}` parse error: {e}",
+            file_path.display(),
+            flow_decl.name
+        )
     })?;
     let flow = parser::lower_flow_graph_to_flow(&flow_graph).map_err(|e| {
-        format!("{}: flow `{}` lower error: {e}", file_path.display(), flow_decl.name)
+        format!(
+            "{}: flow `{}` lower error: {e}",
+            file_path.display(),
+            flow_decl.name
+        )
     })?;
 
     let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
@@ -145,30 +204,35 @@ fn compile_flow_decl(
     collect_ops(&flow.body, &mut ops);
     let unknown: Vec<_> = ops
         .iter()
-        .filter(|op| !known.contains(op.as_str()) && !extra_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+        .filter(|op| {
+            !known.contains(op.as_str())
+                && !extra_ops.contains(op.as_str())
+                && !flow_registry.is_flow(op)
+        })
         .collect();
     if !unknown.is_empty() {
         return Err(unknown
             .iter()
-            .map(|op| format!("{}: flow `{}` uses unknown op `{op}`", file_path.display(), flow_decl.name))
+            .map(|op| {
+                format_unknown_op(
+                    &format!("{}: flow `{}`", file_path.display(), flow_decl.name),
+                    op,
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"));
     }
 
     let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
-        format!("{}: flow `{}` IR lower error: {e}", file_path.display(), flow_decl.name)
+        format!(
+            "{}: flow `{}` IR lower error: {e}",
+            file_path.display(),
+            flow_decl.name
+        )
     })?;
 
-    let emit_name = flow
-        .outputs
-        .first()
-        .map(|p| p.name.clone())
-        .ok_or_else(|| format!("{}: flow `{}` has no emit output", file_path.display(), flow_decl.name))?;
-    let fail_name = flow
-        .outputs
-        .get(1)
-        .map(|p| p.name.clone())
-        .ok_or_else(|| format!("{}: flow `{}` has no fail output", file_path.display(), flow_decl.name))?;
+    let emit_name = flow.outputs.first().map(|p| p.name.clone());
+    let fail_name = flow.outputs.get(1).map(|p| p.name.clone());
 
     Ok(FlowProgram {
         flow,
@@ -225,7 +289,10 @@ pub fn validate_call_hierarchy(registry: &FlowRegistry) -> Result<(), Vec<String
 /// Scan a statement list for Node calls to sources. When found, wrap the source
 /// call + all subsequent statements into a `SourceLoop` block. The source's
 /// bind variable becomes the loop variable that each downstream statement receives.
-pub fn transform_source_steps(stmts: &[Statement], source_names: &HashSet<String>) -> Vec<Statement> {
+pub fn transform_source_steps(
+    stmts: &[Statement],
+    source_names: &HashSet<String>,
+) -> Vec<Statement> {
     // Find the first Node that calls a source
     let source_idx = stmts.iter().position(|s| {
         if let Statement::Node(n) = s {
@@ -289,6 +356,116 @@ pub fn wrap_source_loops(registry: &mut FlowRegistry) {
     }
 }
 
+/// Load a single `.fa` file and register its callable under `name`.
+/// Used for file imports: `use Round from "./round.fa"` → callable as `Round(...)`.
+pub fn load_single_file(
+    name: &str,
+    file_path: &Path,
+    loading_set: &mut HashSet<String>,
+    extra_ops: &HashSet<String>,
+) -> Result<FlowProgram, String> {
+    if loading_set.contains(name) {
+        return Err(format!(
+            "circular import dependency detected: '{}' is already being loaded",
+            name
+        ));
+    }
+    loading_set.insert(name.to_string());
+
+    let src = fs::read_to_string(file_path)
+        .map_err(|e| format!("failed to read {}: {e}", file_path.display()))?;
+
+    let module = parser::parse_module_v1(&src)
+        .map_err(|e| format!("{}: parse error: {e}", file_path.display()))?;
+
+    let filename = file_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    if let Err(errors) = sema::validate_module(&module, filename.as_deref()) {
+        return Err(format!(
+            "{}: semantic errors:\n{}",
+            file_path.display(),
+            errors.join("\n")
+        ));
+    }
+
+    let type_registry = TypeRegistry::from_module(&module)
+        .map_err(|errors| format!("{}: type errors:\n{}", file_path.display(), errors.join("\n")))?;
+
+    // Process nested use declarations within this file
+    let mut sub_registry = FlowRegistry::new();
+    let file_dir = file_path
+        .parent()
+        .ok_or_else(|| format!("cannot determine parent dir of {}", file_path.display()))?;
+    for decl in &module.decls {
+        if let TopDecl::Uses(uses) = decl {
+            let resolved = file_dir.join(&uses.path);
+            if resolved.is_file() {
+                let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops)?;
+                sub_registry.insert(uses.name.clone(), sub);
+            } else if resolved.is_dir() {
+                let sub = load_module(&uses.name, &resolved, loading_set, extra_ops)?;
+                for (sub_name, program) in sub.flows {
+                    sub_registry.insert(sub_name, program);
+                }
+            } else {
+                return Err(format!(
+                    "{}: import '{}' not found at '{}'",
+                    file_path.display(),
+                    uses.name,
+                    resolved.display()
+                ));
+            }
+        }
+    }
+
+    // Find the single callable in the file
+    let result = module.decls.iter().find_map(|decl| match decl {
+        TopDecl::Func(f) => Some(compile_func_decl(
+            f,
+            &type_registry,
+            file_path,
+            &sub_registry,
+            extra_ops,
+            DeclKind::Func,
+        )),
+        TopDecl::Sink(f) => Some(compile_func_decl(
+            f,
+            &type_registry,
+            file_path,
+            &sub_registry,
+            extra_ops,
+            DeclKind::Sink,
+        )),
+        TopDecl::Source(f) => Some(compile_func_decl(
+            f,
+            &type_registry,
+            file_path,
+            &sub_registry,
+            extra_ops,
+            DeclKind::Source,
+        )),
+        TopDecl::Flow(f) => Some(compile_flow_decl(
+            f,
+            &type_registry,
+            file_path,
+            &sub_registry,
+            extra_ops,
+        )),
+        _ => None,
+    });
+
+    loading_set.remove(name);
+
+    result.ok_or_else(|| {
+        format!(
+            "{}: no callable (func/flow/sink/source) found in file",
+            file_path.display()
+        )
+    })?
+}
+
 pub fn load_module(
     module_name: &str,
     module_dir: &Path,
@@ -303,8 +480,12 @@ pub fn load_module(
     }
     loading_set.insert(module_name.to_string());
 
-    let entries = fs::read_dir(module_dir)
-        .map_err(|e| format!("failed to read module directory {}: {e}", module_dir.display()))?;
+    let entries = fs::read_dir(module_dir).map_err(|e| {
+        format!(
+            "failed to read module directory {}: {e}",
+            module_dir.display()
+        )
+    })?;
 
     let mut fa_files: Vec<PathBuf> = Vec::new();
     for entry in entries {
@@ -337,30 +518,29 @@ pub fn load_module(
             ));
         }
 
-        let type_registry = TypeRegistry::from_module(&module).map_err(|errors| {
-            format!(
-                "{}: type errors:\n{}",
-                file.display(),
-                errors.join("\n")
-            )
-        })?;
+        let type_registry = TypeRegistry::from_module(&module)
+            .map_err(|errors| format!("{}: type errors:\n{}", file.display(), errors.join("\n")))?;
 
-        // Process uses within the module file (nested modules)
+        // Process use declarations within the module file (nested modules)
         let mut sub_registry = FlowRegistry::new();
         for decl in &module.decls {
             if let TopDecl::Uses(uses) = decl {
-                let sub_dir = module_dir.join(&uses.module);
-                if !sub_dir.is_dir() {
+                let resolved = module_dir.join(&uses.path);
+                if resolved.is_file() {
+                    let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops)?;
+                    sub_registry.insert(uses.name.clone(), sub);
+                } else if resolved.is_dir() {
+                    let sub = load_module(&uses.name, &resolved, loading_set, extra_ops)?;
+                    for (name, program) in sub.flows {
+                        sub_registry.insert(name, program);
+                    }
+                } else {
                     return Err(format!(
-                        "{}: module '{}' not found; expected directory '{}'",
+                        "{}: import '{}' not found at '{}'",
                         file.display(),
-                        uses.module,
-                        sub_dir.display()
+                        uses.name,
+                        resolved.display()
                     ));
-                }
-                let sub = load_module(&uses.module, &sub_dir, loading_set, extra_ops)?;
-                for (name, program) in sub.flows {
-                    sub_registry.insert(name, program);
                 }
             }
         }
@@ -374,22 +554,44 @@ pub fn load_module(
         for decl in &module.decls {
             match decl {
                 TopDecl::Func(f) => {
-                    let program = compile_func_decl(f, &type_registry, file, &sub_registry, extra_ops, DeclKind::Func)?;
+                    let program = compile_func_decl(
+                        f,
+                        &type_registry,
+                        file,
+                        &sub_registry,
+                        extra_ops,
+                        DeclKind::Func,
+                    )?;
                     let qualified = format!("{}.{}", module_name, f.name);
                     registry.insert(qualified, program);
                 }
                 TopDecl::Sink(f) => {
-                    let program = compile_func_decl(f, &type_registry, file, &sub_registry, extra_ops, DeclKind::Sink)?;
+                    let program = compile_func_decl(
+                        f,
+                        &type_registry,
+                        file,
+                        &sub_registry,
+                        extra_ops,
+                        DeclKind::Sink,
+                    )?;
                     let qualified = format!("{}.{}", module_name, f.name);
                     registry.insert(qualified, program);
                 }
                 TopDecl::Source(f) => {
-                    let program = compile_func_decl(f, &type_registry, file, &sub_registry, extra_ops, DeclKind::Source)?;
+                    let program = compile_func_decl(
+                        f,
+                        &type_registry,
+                        file,
+                        &sub_registry,
+                        extra_ops,
+                        DeclKind::Source,
+                    )?;
                     let qualified = format!("{}.{}", module_name, f.name);
                     registry.insert(qualified, program);
                 }
                 TopDecl::Flow(f) => {
-                    let program = compile_flow_decl(f, &type_registry, file, &sub_registry, extra_ops)?;
+                    let program =
+                        compile_flow_decl(f, &type_registry, file, &sub_registry, extra_ops)?;
                     let qualified = format!("{}.{}", module_name, f.name);
                     registry.insert(qualified, program);
                 }
@@ -427,17 +629,22 @@ pub fn build_flow_registry(
 
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
-            let module_dir = base_dir.join(&uses.module);
-            if !module_dir.is_dir() {
+            let resolved = base_dir.join(&uses.path);
+            if resolved.is_file() {
+                let program =
+                    load_single_file(&uses.name, &resolved, &mut loading_set, &extra_ops)?;
+                registry.insert(uses.name.clone(), program);
+            } else if resolved.is_dir() {
+                let loaded = load_module(&uses.name, &resolved, &mut loading_set, &extra_ops)?;
+                for (name, program) in loaded.flows {
+                    registry.insert(name, program);
+                }
+            } else {
                 return Err(format!(
-                    "module '{}' not found; expected directory '{}'",
-                    uses.module,
-                    module_dir.display()
+                    "import '{}' not found at '{}'",
+                    uses.name,
+                    resolved.display()
                 ));
-            }
-            let loaded = load_module(&uses.module, &module_dir, &mut loading_set, &extra_ops)?;
-            for (name, program) in loaded.flows {
-                registry.insert(name, program);
             }
         }
     }

@@ -1,0 +1,50 @@
+docs GetPost
+    Returns a single blog post by slug.
+done
+
+type BlogPost
+    slug text :required => true
+    title text :required => true
+    content text :required => true
+done
+
+docs BlogPost
+    A blog post entry.
+
+    docs slug
+        URL-friendly identifier.
+    done
+    docs title
+        Display title.
+    done
+    docs content
+        Post body text.
+    done
+done
+
+func GetPost
+    take slug as text
+    emit result as BlogPost
+    fail error as text
+body
+    p1 = {slug: "hello-world", title: "Hello World", content: "Welcome to our first blog post! This is a simple example of a forai-powered blog."}
+    p2 = {slug: "forai-intro", title: "Introduction to forai", content: "forai is a pipeline-based language where sources produce events, funcs compute, and flows wire everything together."}
+    posts = [p1, p2]
+    loop posts as post
+        s = obj.get(post, "slug")
+        if s == slug
+            emit post
+        done
+    done
+    msg = "post not found"
+    fail msg
+done
+
+test GetPost
+    p = GetPost("hello-world")
+    must p.slug == "hello-world"
+    must p.title == "Hello World"
+
+    err = trap GetPost("nonexistent")
+    must err == "post not found"
+done

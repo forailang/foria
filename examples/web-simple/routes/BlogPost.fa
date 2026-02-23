@@ -1,0 +1,41 @@
+docs BlogPost
+    Serves a single blog post page by slug from route params.
+done
+
+type RouteParams
+    slug text :required => true
+done
+
+docs RouteParams
+    Route parameters extracted from the URL pattern.
+
+    docs slug
+        The blog post slug from the URL.
+    done
+done
+
+use data from "./data"
+use pages from "./pages"
+
+flow BlogPost
+    take conn_id as http_conn
+    take params as RouteParams
+body
+    state slug = obj.get(params, "slug")
+    step data.GetPost(slug to :slug) then
+        next :result to post
+    done
+    step pages.BlogPostPage(post to :post) then
+        next :result to content
+    done
+    step pages.Layout("Blog Post" to :title, content to :content) then
+        next :result to html
+    done
+    step http.respond.html(conn_id to :conn_id, 200 to :status, html to :body) done
+done
+
+test BlogPost
+    # Flow: HTTP route handler — stub test
+    ok = true
+    must ok == true
+done

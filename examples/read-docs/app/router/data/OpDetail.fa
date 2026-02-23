@@ -100,16 +100,16 @@ body
             t = t + "  Example:" + n
             t = t + "    items = list.append(items, \"new\")"
             emit t
-        when "list.get"
-            t = "=== list.get ===" + n
-            t = t + "Get an item by index. Negative indices count from the end." + n
+        when "list.index"
+            t = "=== Bracket Indexing ===" + n
+            t = t + "Access items by index with []. Negative indices count from the end." + n
             t = t + n
-            t = t + "  Args:    list, index (long)" + n
-            t = t + "  Returns: value, or null if out of bounds" + n
+            t = t + "  Syntax:  list[index] or dict[key]" + n
+            t = t + "  Returns: value at index/key" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    first = list.get(items, 0)" + n
-            t = t + "    last = list.get(items, -1)"
+            t = t + "    first = items[0]" + n
+            t = t + "    last = items[-1]"
             emit t
         when "list.len"
             t = "=== list.len ===" + n
@@ -223,71 +223,15 @@ body
             t = t + "  Example:" + n
             t = t + "    has_at = str.contains(email, \"@\")"
             emit t
-        when "math.add"
-            t = "=== math.add ===" + n
-            t = t + "Add two numbers." + n
+        when "math.floor"
+            t = "=== math.floor ===" + n
+            t = t + "Round down to nearest integer." + n
             t = t + n
-            t = t + "  Args:    a (number), b (number)" + n
-            t = t + "  Returns: number" + n
-            t = t + n
-            t = t + "  Example:" + n
-            t = t + "    sum = math.add(10, 20)  # 30" + n
-            t = t + "    # or use infix: sum = 10 + 20"
-            emit t
-        when "math.subtract"
-            t = "=== math.subtract ===" + n
-            t = t + "Subtract b from a." + n
-            t = t + n
-            t = t + "  Args:    a (number), b (number)" + n
-            t = t + "  Returns: number" + n
+            t = t + "  Args:    n (real)" + n
+            t = t + "  Returns: long" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    diff = math.subtract(100, 30)  # 70" + n
-            t = t + "    # or use infix: diff = 100 - 30"
-            emit t
-        when "math.multiply"
-            t = "=== math.multiply ===" + n
-            t = t + "Multiply two numbers." + n
-            t = t + n
-            t = t + "  Args:    a (number), b (number)" + n
-            t = t + "  Returns: number" + n
-            t = t + n
-            t = t + "  Example:" + n
-            t = t + "    product = math.multiply(6, 7)  # 42" + n
-            t = t + "    # or use infix: product = 6 * 7"
-            emit t
-        when "math.divide"
-            t = "=== math.divide ===" + n
-            t = t + "Divide a by b. Errors on division by zero." + n
-            t = t + n
-            t = t + "  Args:    a (number), b (number)" + n
-            t = t + "  Returns: real" + n
-            t = t + n
-            t = t + "  Example:" + n
-            t = t + "    ratio = math.divide(22, 7)" + n
-            t = t + "    # or use infix: ratio = 22 / 7"
-            emit t
-        when "math.mod"
-            t = "=== math.mod ===" + n
-            t = t + "Remainder after integer division." + n
-            t = t + n
-            t = t + "  Args:    a (number), b (number)" + n
-            t = t + "  Returns: number" + n
-            t = t + n
-            t = t + "  Example:" + n
-            t = t + "    rem = math.mod(17, 5)  # 2" + n
-            t = t + "    # or use infix: rem = 17 % 5"
-            emit t
-        when "math.power"
-            t = "=== math.power ===" + n
-            t = t + "Raise a to the power of b." + n
-            t = t + n
-            t = t + "  Args:    base (number), exp (number)" + n
-            t = t + "  Returns: number" + n
-            t = t + n
-            t = t + "  Example:" + n
-            t = t + "    sq = math.power(2, 10)  # 1024" + n
-            t = t + "    # or use infix: sq = 2 ** 10"
+            t = t + "    n = math.floor(3.7)  # 3"
             emit t
         when "math.round"
             t = "=== math.round ===" + n
@@ -361,7 +305,7 @@ body
             t = t + n
             t = t + "  Example:" + n
             t = t + "    rows = db.query(conn, \"SELECT id, name FROM users\")" + n
-            t = t + "    row = list.get(rows, 0)" + n
+            t = t + "    row = rows[0]" + n
             t = t + "    name = obj.get(row, \"name\")"
             emit t
         when "db.close"

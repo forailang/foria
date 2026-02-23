@@ -17,15 +17,15 @@ Scope: Compiler/runtime contract for `.fa` files in `/Users/bal/labs/forai/dataf
 - Symbol visibility:
   - Funcs, flows, and sinks are always public.
   - Types and enums are private by default; `open` makes them public.
-- Imports use folder namespace only:
-  - `uses auth`
-  - call as `auth.Login(...)`
-- `uses` resolves relative to the `.fa` file's own directory, not the project root.
+- Imports use `use Name from "path"` syntax:
+  - `use auth from "./auth"` (directory) → call as `auth.Login(...)`
+  - `use Round from "./round.fa"` (file) → call as `Round(...)`
+- Paths are relative to the importing `.fa` file's own directory, not the project root.
 
 ## 3. Keywords
 
 ### 3.1 Declarations
-- `func`, `flow`, `sink`, `type`, `data`, `enum`, `uses`, `docs`, `test`
+- `func`, `flow`, `sink`, `type`, `data`, `enum`, `use`, `docs`, `test`
 
 ### 3.2 Interface ports
 - `take`, `emit`, `fail`, `return`, `as`
@@ -102,7 +102,7 @@ top_decl         = uses_decl
                  | test_decl ;
 
 (* --- Imports --- *)
-uses_decl        = "uses" IDENT ;
+uses_decl        = "use" IDENT "from" STRING_LIT ;
 
 (* --- Documentation --- *)
 docs_decl        = "docs" IDENT NEWLINE docs_body "done" ;
@@ -189,7 +189,7 @@ add_expr         = mul_expr { ( "+" | "-" ) mul_expr } ;
 mul_expr         = pow_expr { ( "*" | "/" | "%" ) pow_expr } ;
 pow_expr         = unary_expr { "**" unary_expr } ;  (* right-associative *)
 unary_expr       = ( "-" | "!" ) unary_expr | postfix_expr ;
-postfix_expr     = atom [ "(" expr_list ")" ] ;
+postfix_expr     = atom { "[" expr "]" } [ "(" expr_list ")" ] ;
 atom             = NUMBER | STRING | STRING_INTERP | BOOL
                  | list_lit | dict_lit
                  | "(" expr ")"
@@ -386,10 +386,11 @@ branch_stmt      = "branch" [ "when" expr ] NEWLINE
 - `trap FlowCall(...)` captures failure payload as a value and prevents propagation.
 
 ### 7.7 Module system
-- `uses <module>` imports a module by folder name.
-- Calls use qualified names: `module.FuncName(...)`.
+- `use Name from "path"` imports a module by file or directory path.
+- Directory imports: calls use qualified names `Name.FuncName(...)`.
+- File imports: calls use the bound name directly `Name(...)`.
 - Module directories contain `.fa` files; each file defines one `func`, `flow`, or `sink`.
-- `uses` resolves relative to the importing file's directory, not the project root.
+- Paths resolve relative to the importing file's directory, not the project root.
 - Circular dependencies are detected and rejected.
 
 ### 7.8 Handle sharing across calls
@@ -493,7 +494,7 @@ result = condition ? "yes" : "no"
 
 ### 8.7 Function calls
 ```fa
-result = math.add(x, y)
+result = math.floor(x)
 result = str.split(text, ",")
 result = MyFunc(arg1, arg2)
 ```
@@ -504,7 +505,20 @@ result = MyFunc(arg1, arg2)
 - `name` — simple variable lookup.
 - `input.field.subfield` — dot-path traversal into nested objects.
 
-### 8.9 Parenthesized expressions
+### 8.9 Bracket indexing
+```fa
+first = items[0]
+last = items[-1]
+name = row["name"]
+cell = matrix[0][1]
+```
+- Postfix `[expr]` indexes into lists or dicts.
+- List indexing: index must be an integer. Supports negative indices (`-1` = last element, `-2` = second-to-last).
+- Dict indexing: index must be a string key.
+- Chained indexing (`a[0][1]`) is supported.
+- Out-of-bounds or missing key is a runtime error.
+
+### 8.10 Parenthesized expressions
 - `(expr)` overrides precedence.
 
 ## 9. Control Flow
@@ -609,7 +623,24 @@ state srv = http.server.listen(8080)
 - Creates a shared resource handle available to subsequent steps.
 - Arguments can be identifiers, string literals, numeric literals, or booleans.
 
-### 10.3 `on` — Event loop
+### 10.3 `on` — Event handler
+
+In a source body, `on` declares an event handler that loops over a blocking async call:
+
+```fa
+on :request from http.server.accept(srv) to req
+  emit req
+done
+```
+
+- `:tag` — event type name (cosmetic in v1, stored but not routed by runtime)
+- `from op(args)` — blocking async call that returns one event per invocation
+- `to var` — binds the result of each call
+- Body runs per event; `emit` sends downstream, `break` stops the source
+- Single `on` per source for v1
+
+In a flow body, `on` can also wire a source handle to downstream steps:
+
 ```fa
 on req from srv
   step router.Dispatch(req to :request) then
@@ -674,6 +705,26 @@ done
 | `ws_conn` | String (opaque WebSocket connection handle) |
 
 Handle types are opaque — they cannot be constructed from string literals. They are produced only by specific ops (`db.open`, `http.server.listen`, etc.) and the compiler validates that handle-consuming ops receive the correct handle type. At runtime, handles are string values (e.g. `"db_0"`, `"srv_1"`).
+
+### 11.1b Built-in struct types
+
+The following struct types are returned by stdlib ops and available without declaration:
+
+| Type | Returned by | Fields |
+|------|-------------|--------|
+| `HttpRequest` | `http.server.accept` | `method` text, `path` text, `query` text, `headers` dict, `body` text, `conn_id` text |
+| `HttpResponse` | `http.get/post/put/delete` | `status` long, `headers` dict, `body` text |
+| `Date` | `date.now`, `date.from_iso`, etc. | `unix_ms` long, `tz_offset_min` long |
+| `Stamp` | `stamp.now`, `stamp.from_ns` | `ns` long |
+| `TimeRange` | `trange.new` | `start` Date, `end` Date |
+| `ProcessOutput` | `exec.run` | `code` long, `stdout` text, `stderr` text, `ok` bool |
+| `WebSocketMessage` | `ws.recv` | `type` text, `data` text |
+| `ErrorObject` | `error.new` | `code` text, `message` text, `details` dict (optional) |
+| `URLParts` | `url.parse` | `path` text, `query` text, `fragment` text |
+
+The type checker tracks built-in struct return types at compile time — passing a `Date` where a `TimeRange` is expected, or a `ProcessOutput` where a `db_conn` is expected, is a compile error.
+
+User-defined types with the same name as a built-in type produce a "duplicate type name" compile error.
 
 ### 11.2 Scalar wrappers
 ```fa
@@ -815,7 +866,7 @@ done
 ## 14. Semantic Rules
 
 ### 14.1 Single callable per file
-A `.fa` file may contain at most one `func`, `flow`, or `sink`. It may also contain types, enums, docs, tests, and uses declarations alongside the single callable.
+A `.fa` file may contain at most one `func`, `flow`, or `sink`. It may also contain types, enums, docs, tests, and `use` declarations alongside the single callable.
 
 ### 14.2 Name-filename match
 When a file contains a callable, its name must match the filename stem (e.g., `func Foo` in `Foo.fa`). Exception: entry-point files like `main.fa`.
@@ -852,7 +903,7 @@ Unknown ops produce a compile error.
 | `list.new` | | `[]` | Empty list |
 | `list.range` | start, end | list | Inclusive range `[start..=end]` |
 | `list.append` | list, item | list | Clone + push item |
-| `list.get` | list, index | value | Get by index (supports negative) |
+
 | `list.len` | list | long | Array length |
 | `list.contains` | list, value | bool | Check if value is in list |
 | `list.slice` | list, start, end | list | Subarray `[start..end)`, clamped |
@@ -877,17 +928,13 @@ Unknown ops produce a compile error.
 | `str.index_of` | text, substr | long | First index (-1 if not found) |
 | `str.repeat` | text, count | text | Repeat string N times |
 
-### 15.4 `math.*` — Arithmetic
+### 15.4 `math.*` — Rounding
 | Op | Args | Returns | Description |
 |----|------|---------|-------------|
-| `math.add` | a, b | real | `a + b` |
-| `math.subtract` | a, b | real | `a - b` |
-| `math.multiply` | a, b | real | `a * b` |
-| `math.divide` | a, b | real | `a / b` (errors on zero) |
 | `math.floor` | a | long | `floor(a)` |
-| `math.mod` | a, b | real | `a % b` (errors on zero) |
-| `math.power` | base, exp | real | `base^exp` |
 | `math.round` | value, places | real | Round to N decimal places |
+
+Arithmetic uses infix operators: `+` `-` `*` `/` `%` `**`.
 
 ### 15.5 `type.*` — Type introspection
 | Op | Args | Returns | Description |
@@ -937,6 +984,13 @@ Unknown ops produce a compile error.
 | `http.server.accept` | http_server | dict | Accept connection: `{method, path, query, headers, body, conn_id}` |
 | `http.server.respond` | http_conn, status, headers, body | bool | Write HTTP response |
 | `http.server.close` | http_server | bool | Close server handle |
+
+### 15.10b `http.respond.*` — Response Convenience Ops
+| Op | Args | Returns | Description |
+|----|------|---------|-------------|
+| `http.respond.html` | http_conn, status, body | bool | Respond with `text/html; charset=utf-8` |
+| `http.respond.json` | http_conn, status, body | bool | Respond with `application/json` |
+| `http.respond.text` | http_conn, status, body | bool | Respond with `text/plain; charset=utf-8` |
 
 ### 15.11 `ws.*` — WebSocket client
 | Op | Args | Returns | Description |

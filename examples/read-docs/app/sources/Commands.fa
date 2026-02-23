@@ -6,14 +6,16 @@ done
 source Commands
     emit cmd as text
     fail error as text
-from term.prompt("docs> ") as raw
-    trimmed = str.trim(raw)
-    emit trimmed
-    case trimmed
-        when "quit"
-            break
-        when "exit"
-            break
+body
+    on :input from term.prompt("docs> ") to raw
+        trimmed = str.trim(raw)
+        emit trimmed
+        case trimmed
+            when "quit"
+                break
+            when "exit"
+                break
+        done
     done
 done
 

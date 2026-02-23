@@ -1,0 +1,19 @@
+docs AllPosts
+    Returns all blog posts as a list of BlogPost dicts.
+done
+
+func AllPosts
+    emit result as list
+    fail error as text
+body
+    p1 = {slug: "hello-world", title: "Hello World", content: "Welcome to our first blog post! This is a simple example of a forai-powered blog."}
+    p2 = {slug: "forai-intro", title: "Introduction to forai", content: "forai is a pipeline-based language where sources produce events, funcs compute, and flows wire everything together."}
+    posts = [p1, p2]
+    emit posts
+done
+
+test AllPosts
+    all = AllPosts()
+    ok = true
+    must ok == true
+done

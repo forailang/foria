@@ -1,5 +1,6 @@
 use crate::ast::{DeclKind, Statement, TopDecl};
 use crate::codec::CodecRegistry;
+use crate::host_native::NativeHost;
 use crate::ir;
 use crate::loader::{self, FlowProgram, FlowRegistry};
 use crate::parser;
@@ -11,7 +12,17 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Instant;
+
+fn format_unknown_op(prefix: &str, op: &str) -> String {
+    let base = format!("{prefix} uses unknown op `{op}`");
+    if let Some(hint) = sema::unknown_op_fix_hint(op) {
+        format!("{base} — {hint}")
+    } else {
+        base
+    }
+}
 
 fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
     for stmt in statements {
@@ -34,6 +45,10 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
                 out.push(sl.source_op.clone());
                 collect_ops(&sl.body, out);
             }
+            Statement::On(on_block) => {
+                out.push(on_block.source_op.clone());
+                collect_ops(&on_block.body, out);
+            }
         }
     }
 }
@@ -50,6 +65,7 @@ pub struct TestSummary {
     pub passed: usize,
     pub failed: usize,
     pub failures: Vec<TestFailure>,
+    pub warnings: Vec<String>,
 }
 
 enum FlowCallResult {
@@ -238,6 +254,7 @@ async fn invoke_flow(
     env: &HashMap<String, Value>,
     flows: &HashMap<String, FlowProgram>,
     flow_registry: Option<&FlowRegistry>,
+    quiet: bool,
 ) -> Result<FlowCallResult, String> {
     let Some(program) = flows.get(flow_name) else {
         return Err(format!("Unknown flow `{flow_name}`"));
@@ -259,6 +276,11 @@ async fn invoke_flow(
     }
 
     let codecs = CodecRegistry::default_registry();
+    let host = if quiet {
+        Some(Rc::new(NativeHost::new_quiet()) as Rc<dyn crate::host::Host>)
+    } else {
+        None
+    };
     let report = runtime::execute_flow(
         &program.flow,
         program.ir.clone(),
@@ -266,14 +288,19 @@ async fn invoke_flow(
         &program.registry,
         flow_registry,
         &codecs,
-        None,
-    ).await?;
+        host,
+    )
+    .await?;
     let Some(outputs) = report.outputs.as_object() else {
         return Err(format!("Flow `{flow_name}` produced invalid outputs shape"));
     };
 
-    let success = outputs.get(&program.emit_name).cloned();
-    let failure = outputs.get(&program.fail_name).cloned();
+    let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+    let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+
+    if program.emit_name.is_none() {
+        return Ok(FlowCallResult::Success(serde_json::Value::Null));
+    }
 
     match (success, failure) {
         (Some(v), None) => Ok(FlowCallResult::Success(v)),
@@ -289,15 +316,14 @@ async fn run_test_body(
     body: &str,
     flows: &HashMap<String, FlowProgram>,
     flow_registry: Option<&FlowRegistry>,
+    quiet: bool,
 ) -> Result<(), String> {
-    let mock_re =
-        Regex::new(r"^mock\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=>\s*(.+)$").unwrap();
+    let mock_re = Regex::new(r"^mock\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=>\s*(.+)$").unwrap();
     let trap_re =
         Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*trap\s+([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$")
             .unwrap();
     let call_re =
-        Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$")
-            .unwrap();
+        Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$").unwrap();
     let assign_re = Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$").unwrap();
 
     // First pass: collect mock declarations
@@ -358,7 +384,8 @@ async fn run_test_body(
             let flow_name = caps.get(2).unwrap().as_str();
             let args_raw = caps.get(3).unwrap().as_str();
             let arg_exprs = split_csv(args_raw);
-            match invoke_flow(flow_name, &arg_exprs, &env, flows, effective_registry).await
+            match invoke_flow(flow_name, &arg_exprs, &env, flows, effective_registry, quiet)
+                .await
                 .map_err(|e| format!("line {line_no}: {e}"))?
             {
                 FlowCallResult::Failure(err) => {
@@ -380,7 +407,8 @@ async fn run_test_body(
             let arg_exprs = split_csv(args_raw);
 
             if flows.contains_key(callee) {
-                match invoke_flow(callee, &arg_exprs, &env, flows, effective_registry).await
+                match invoke_flow(callee, &arg_exprs, &env, flows, effective_registry, quiet)
+                    .await
                     .map_err(|e| format!("line {line_no}: {e}"))?
                 {
                     FlowCallResult::Success(v) => {
@@ -419,13 +447,17 @@ fn collect_fa_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         return Ok(());
     }
 
+    collect_fa_files_recursive(path, out)
+}
+
+fn collect_fa_files_recursive(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(path)
         .map_err(|e| format!("Failed to read test path {}: {e}", path.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read_dir entry error: {e}"))?;
         let child = entry.path();
         if child.is_dir() {
-            continue;
+            collect_fa_files_recursive(&child, out)?;
         } else if child.extension().and_then(|s| s.to_str()) == Some("fa") {
             out.push(child);
         }
@@ -433,7 +465,7 @@ fn collect_fa_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String> {
+async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String> {
     let mut files = Vec::new();
     collect_fa_files(path, &mut files)?;
     files.sort();
@@ -461,14 +493,16 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                 errors.join("\n")
             ));
         }
+        for warning in sema::test_call_warnings(&module) {
+            let rendered = format!("{}:{warning}", file.display());
+            if !quiet {
+                println!("WARN  {rendered}");
+            }
+            summary.warnings.push(rendered);
+        }
 
-        let registry = TypeRegistry::from_module(&module).map_err(|errors| {
-            format!(
-                "{}: type errors:\n{}",
-                file.display(),
-                errors.join("\n")
-            )
-        })?;
+        let registry = TypeRegistry::from_module(&module)
+            .map_err(|errors| format!("{}: type errors:\n{}", file.display(), errors.join("\n")))?;
 
         let flow_registry = loader::build_flow_registry(&file, &module)?;
 
@@ -482,23 +516,41 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                     docs_map.insert(d.name.clone(), d.markdown.clone());
                 }
                 TopDecl::Func(f) | TopDecl::Sink(f) | TopDecl::Source(f) => {
-                    let kind = if matches!(decl, TopDecl::Sink(_)) { DeclKind::Sink } else if matches!(decl, TopDecl::Source(_)) { DeclKind::Source } else { DeclKind::Func };
+                    let kind = if matches!(decl, TopDecl::Sink(_)) {
+                        DeclKind::Sink
+                    } else if matches!(decl, TopDecl::Source(_)) {
+                        DeclKind::Source
+                    } else {
+                        DeclKind::Func
+                    };
                     let flow = parser::parse_runtime_func_decl_v1(f).map_err(|e| {
                         format!("{}: func `{}` parse error: {e}", file.display(), f.name)
                     })?;
 
                     let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
-                    let codec_ops: HashSet<String> = CodecRegistry::default_registry().known_ops().into_iter().collect();
+                    let codec_ops: HashSet<String> = CodecRegistry::default_registry()
+                        .known_ops()
+                        .into_iter()
+                        .collect();
                     let mut ops = Vec::new();
                     collect_ops(&flow.body, &mut ops);
                     let unknown: Vec<_> = ops
                         .iter()
-                        .filter(|op| !known.contains(op.as_str()) && !codec_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+                        .filter(|op| {
+                            !known.contains(op.as_str())
+                                && !codec_ops.contains(op.as_str())
+                                && !flow_registry.is_flow(op)
+                        })
                         .collect();
                     if !unknown.is_empty() {
                         return Err(unknown
                             .iter()
-                            .map(|op| format!("{}: func `{}` uses unknown op `{op}`", file.display(), f.name))
+                            .map(|op| {
+                                format_unknown_op(
+                                    &format!("{}: func `{}`", file.display(), f.name),
+                                    op,
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("\n"));
                     }
@@ -522,8 +574,8 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                         FlowProgram {
                             flow,
                             ir: ir_val,
-                            emit_name,
-                            fail_name,
+                            emit_name: Some(emit_name),
+                            fail_name: Some(fail_name),
                             registry: registry.clone(),
                             kind,
                         },
@@ -538,17 +590,29 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                     })?;
 
                     let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
-                    let codec_ops: HashSet<String> = CodecRegistry::default_registry().known_ops().into_iter().collect();
+                    let codec_ops: HashSet<String> = CodecRegistry::default_registry()
+                        .known_ops()
+                        .into_iter()
+                        .collect();
                     let mut ops = Vec::new();
                     collect_ops(&flow.body, &mut ops);
                     let unknown: Vec<_> = ops
                         .iter()
-                        .filter(|op| !known.contains(op.as_str()) && !codec_ops.contains(op.as_str()) && !flow_registry.is_flow(op))
+                        .filter(|op| {
+                            !known.contains(op.as_str())
+                                && !codec_ops.contains(op.as_str())
+                                && !flow_registry.is_flow(op)
+                        })
                         .collect();
                     if !unknown.is_empty() {
                         return Err(unknown
                             .iter()
-                            .map(|op| format!("{}: flow `{}` uses unknown op `{op}`", file.display(), f.name))
+                            .map(|op| {
+                                format_unknown_op(
+                                    &format!("{}: flow `{}`", file.display(), f.name),
+                                    op,
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("\n"));
                     }
@@ -556,17 +620,8 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
                     let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
                         format!("{}: flow `{}` lower error: {e}", file.display(), f.name)
                     })?;
-                    let emit_name =
-                        flow.outputs
-                            .first()
-                            .map(|p| p.name.clone())
-                            .ok_or_else(|| {
-                                format!("{}: flow `{}` has no emit output", file.display(), f.name)
-                            })?;
-                    let fail_name =
-                        flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
-                            format!("{}: flow `{}` has no fail output", file.display(), f.name)
-                        })?;
+                    let emit_name = flow.outputs.first().map(|p| p.name.clone());
+                    let fail_name = flow.outputs.get(1).map(|p| p.name.clone());
                     flows.insert(
                         f.name.clone(),
                         FlowProgram {
@@ -592,25 +647,29 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
         for test in tests {
             summary.total += 1;
             let start = Instant::now();
-            match run_test_body(&test.body_text, &flows, Some(&flow_registry)).await {
+            match run_test_body(&test.body_text, &flows, Some(&flow_registry), quiet).await {
                 Ok(()) => {
                     summary.passed += 1;
-                    println!(
-                        "PASS  {}.{}   ({}ms)",
-                        file_label,
-                        test.name,
-                        start.elapsed().as_millis()
-                    );
+                    if !quiet {
+                        println!(
+                            "PASS  {}.{}   ({}ms)",
+                            file_label,
+                            test.name,
+                            start.elapsed().as_millis()
+                        );
+                    }
                 }
                 Err(err) => {
                     summary.failed += 1;
-                    let doc_hint = docs_map
-                        .get(&test.name)
-                        .and_then(|s| s.lines().next())
-                        .unwrap_or("(no docs)");
-                    println!("FAIL  {}.{}", file_label, test.name);
-                    println!("      > {}", err);
-                    println!("      > {}", doc_hint);
+                    if !quiet {
+                        let doc_hint = docs_map
+                            .get(&test.name)
+                            .and_then(|s| s.lines().next())
+                            .unwrap_or("(no docs)");
+                        println!("FAIL  {}.{}", file_label, test.name);
+                        println!("      > {}", err);
+                        println!("      > {}", doc_hint);
+                    }
                     summary.failures.push(TestFailure {
                         name: format!("{}.{}", file_label, test.name),
                         error: err,
@@ -623,17 +682,161 @@ pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String>
     Ok(summary)
 }
 
+pub async fn run_tests_at_path_async(path: &Path) -> Result<TestSummary, String> {
+    run_tests_impl(path, false).await
+}
+
+pub async fn run_tests_at_path_build(path: &Path) -> Result<TestSummary, String> {
+    run_tests_impl(path, true).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::run_tests_at_path_async;
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
     async fn runs_classify_example_tests() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/read-docs/app/router/Classify.fa");
-        let summary = run_tests_at_path_async(&path).await.expect("test run should succeed");
+        let summary = run_tests_at_path_async(&path)
+            .await
+            .expect("test run should succeed");
         assert!(summary.total >= 1);
         assert_eq!(summary.failed, 0);
+    }
+
+    // Verifies that running tests from a project root finds tests in subdirectories,
+    // even when the main entry point is nested (e.g. config.main = "src/main.fa").
+    // This tests the same code path as `forai build` and `forai test` (no args).
+    #[tokio::test]
+    async fn runs_pipeline_example_tests_from_project_root() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/pipeline");
+        let summary = run_tests_at_path_async(&path)
+            .await
+            .expect("test run should succeed");
+        assert!(summary.total >= 1, "expected tests to be found under pipeline/");
+        assert_eq!(summary.failed, 0, "pipeline tests should all pass: {summary:?}");
+    }
+
+    #[tokio::test]
+    async fn finds_tests_in_nested_directories() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("forai_test_nested_{stamp}"));
+        let nested = root.join("sub");
+        fs::create_dir_all(&nested).expect("create nested dir");
+
+        let top = r#"
+docs Top
+  Top-level test fixture.
+done
+
+func Top
+  emit result as bool
+  fail error as text
+body
+  ok = true
+  emit ok
+done
+
+test Top
+  result = Top()
+  must result == true
+done
+"#;
+        let child = r#"
+docs Child
+  Nested test fixture.
+done
+
+func Child
+  emit result as bool
+  fail error as text
+body
+  ok = true
+  emit ok
+done
+
+test Child
+  result = Child()
+  must result == true
+done
+"#;
+
+        fs::write(root.join("Top.fa"), top).expect("write top module");
+        fs::write(nested.join("Child.fa"), child).expect("write nested module");
+
+        let summary = run_tests_at_path_async(&root)
+            .await
+            .expect("recursive test run should succeed");
+        assert_eq!(summary.total, 2, "summary={summary:?}");
+        assert_eq!(summary.failed, 0, "summary={summary:?}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn finds_tests_in_deep_nested_directories_and_ignores_non_fa_files() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("forai_test_deep_nested_{stamp}"));
+        let deep = root.join("sub").join("deeper");
+        fs::create_dir_all(&deep).expect("create deep nested dir");
+
+        let top = r#"
+docs TopLevel
+  Top-level module.
+done
+
+func TopLevel
+  emit result as bool
+  fail error as text
+body
+  ok = true
+  emit ok
+done
+
+test TopLevel
+  result = TopLevel()
+  must result == true
+done
+"#;
+        let deep_file = r#"
+docs Deep
+  Deep module.
+done
+
+func Deep
+  emit result as bool
+  fail error as text
+body
+  ok = true
+  emit ok
+done
+
+test Deep
+  result = Deep()
+  must result == true
+done
+"#;
+
+        fs::write(root.join("TopLevel.fa"), top).expect("write top-level module");
+        fs::write(deep.join("Deep.fa"), deep_file).expect("write deep nested module");
+        fs::write(root.join("README.txt"), "not a forai source file").expect("write non-fa file");
+
+        let summary = run_tests_at_path_async(&root)
+            .await
+            .expect("deep recursive test run should succeed");
+        assert_eq!(summary.total, 2, "summary={summary:?}");
+        assert_eq!(summary.failed, 0, "summary={summary:?}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

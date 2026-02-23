@@ -155,87 +155,85 @@ fn find_module_func(
     let module_name = parts[0];
     let func_name = parts[1];
 
-    let has_uses = module.decls.iter().any(|d| {
+    // Find the uses declaration that binds this module_name
+    let uses_path = module.decls.iter().find_map(|d| {
         if let TopDecl::Uses(u) = d {
-            u.module == module_name
+            if u.name == module_name { Some(u.path.clone()) } else { None }
         } else {
-            false
+            None
         }
     });
-    if !has_uses {
+    let Some(uses_path) = uses_path else {
         return None;
-    }
+    };
 
     let file_path = uri_to_file_path(uri)?;
     let dir = file_path.parent()?;
-    let module_dir = dir.join(module_name);
+    let resolved = dir.join(&uses_path);
 
-    if !module_dir.is_dir() {
-        return None;
-    }
-
-    let func_file = module_dir.join(format!("{func_name}.fa"));
-    if func_file.exists() {
-        let target_uri = file_path_to_uri(&func_file)?;
-        return Some(Location {
-            uri: target_uri,
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
+    if resolved.is_dir() {
+        let func_file = resolved.join(format!("{func_name}.fa"));
+        if func_file.exists() {
+            let target_uri = file_path_to_uri(&func_file)?;
+            return Some(Location {
+                uri: target_uri,
+                range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 0 },
                 },
-                end: Position {
-                    line: 0,
-                    character: 0,
-                },
-            },
-        });
+            });
+        }
     }
 
     None
 }
 
 fn find_uses_module(name: &str, module: &crate::ast::ModuleAst, uri: &Uri) -> Option<Location> {
-    let has_uses = module.decls.iter().any(|d| {
+    // Find the uses declaration that binds this name
+    let uses_path = module.decls.iter().find_map(|d| {
         if let TopDecl::Uses(u) = d {
-            u.module == name
+            if u.name == name { Some(u.path.clone()) } else { None }
         } else {
-            false
+            None
         }
     });
-    if !has_uses {
+    let Some(uses_path) = uses_path else {
         return None;
-    }
+    };
 
     let file_path = uri_to_file_path(uri)?;
     let dir = file_path.parent()?;
-    let module_dir = dir.join(name);
+    let resolved = dir.join(&uses_path);
 
-    if !module_dir.is_dir() {
-        return None;
+    if resolved.is_file() {
+        let target_uri = file_path_to_uri(&resolved)?;
+        return Some(Location {
+            uri: target_uri,
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 0 },
+            },
+        });
     }
 
-    let main_fa = module_dir.join("main.fa");
-    let target = if main_fa.exists() {
-        main_fa
-    } else {
-        first_fa_file(&module_dir)?
-    };
+    if resolved.is_dir() {
+        let main_fa = resolved.join("main.fa");
+        let target = if main_fa.exists() {
+            main_fa
+        } else {
+            first_fa_file(&resolved)?
+        };
+        let target_uri = file_path_to_uri(&target)?;
+        return Some(Location {
+            uri: target_uri,
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 0 },
+            },
+        });
+    }
 
-    let target_uri = file_path_to_uri(&target)?;
-    Some(Location {
-        uri: target_uri,
-        range: Range {
-            start: Position {
-                line: 0,
-                character: 0,
-            },
-            end: Position {
-                line: 0,
-                character: 0,
-            },
-        },
-    })
+    None
 }
 
 fn first_fa_file(dir: &PathBuf) -> Option<PathBuf> {

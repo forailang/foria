@@ -1,4 +1,4 @@
-uses data
+use data from "./data"
 
 docs Route
     Dispatches user commands to the appropriate data function.

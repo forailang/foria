@@ -146,7 +146,11 @@ fn handle_websocket(stream: TcpStream, session: &Arc<Session>) {
     }
     // Flush the initial snapshot (the execution thread sends it immediately on start).
     // Use a short blocking recv so we don't spin; it's almost always already waiting.
-    if let Ok(snap) = exec.handle.snapshot_rx.recv_timeout(Duration::from_millis(200)) {
+    if let Ok(snap) = exec
+        .handle
+        .snapshot_rx
+        .recv_timeout(Duration::from_millis(200))
+    {
         if send_msg(&mut ws, &ServerMessage::Snapshot(snap)).is_err() {
             return_exec(session, exec);
             return;
@@ -182,9 +186,12 @@ fn handle_websocket(stream: TcpStream, session: &Arc<Session>) {
                         let _ = send_msg(&mut ws, &ServerMessage::Error { message: e });
                     }
                     Err(_) => {
-                        let _ = send_msg(&mut ws, &ServerMessage::Error {
-                            message: "execution thread panicked".to_string(),
-                        });
+                        let _ = send_msg(
+                            &mut ws,
+                            &ServerMessage::Error {
+                                message: "execution thread panicked".to_string(),
+                            },
+                        );
                     }
                 }
                 // Start a fresh execution so the next Restart or reconnect has something.
@@ -196,7 +203,11 @@ fn handle_websocket(stream: TcpStream, session: &Arc<Session>) {
                     }
                 };
                 // Consume the initial pause snapshot from the fresh execution.
-                if let Ok(snap) = exec.handle.snapshot_rx.recv_timeout(Duration::from_millis(200)) {
+                if let Ok(snap) = exec
+                    .handle
+                    .snapshot_rx
+                    .recv_timeout(Duration::from_millis(200))
+                {
                     // Store but don't send — wait for user to reconnect/restart.
                     let _ = snap;
                 }
@@ -237,7 +248,11 @@ fn handle_websocket(stream: TcpStream, session: &Arc<Session>) {
                             return;
                         }
                         // Send the initial pause snapshot.
-                        if let Ok(snap) = exec.handle.snapshot_rx.recv_timeout(Duration::from_millis(200)) {
+                        if let Ok(snap) = exec
+                            .handle
+                            .snapshot_rx
+                            .recv_timeout(Duration::from_millis(200))
+                        {
                             if send_msg(&mut ws, &ServerMessage::Snapshot(snap)).is_err() {
                                 return_exec(session, exec);
                                 return;
@@ -253,8 +268,7 @@ fn handle_websocket(stream: TcpStream, session: &Arc<Session>) {
                 return_exec(session, exec);
                 return;
             }
-            Err(tungstenite::Error::Io(ref e))
-                if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(_) => {
                 return_exec(session, exec);
                 return;
@@ -273,14 +287,22 @@ fn handle_http(stream: TcpStream) {
     if reader.read_line(&mut request_line).is_err() {
         return;
     }
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .to_string();
 
     // Drain remaining headers
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => break,
-            Ok(_) => { if line.trim().is_empty() { break; } }
+            Ok(_) => {
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
             Err(_) => break,
         }
     }
@@ -342,9 +364,13 @@ pub fn serve_dev_server(
 
     // Best-effort open browser
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("open").arg(&url).spawn(); }
+    {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
     #[cfg(target_os = "linux")]
-    { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    }
 
     let session = Arc::new(Session {
         flow,
@@ -389,7 +415,9 @@ mod tests {
         let rtb: ClientMessage = serde_json::from_str(r#"{"type":"run_to_breakpoint"}"#).unwrap();
         assert!(matches!(rtb, ClientMessage::RunToBreakpoint));
 
-        let bp: ClientMessage = serde_json::from_str(r#"{"type":"set_breakpoints","node_ids":["n1_foo","n2_bar"]}"#).unwrap();
+        let bp: ClientMessage =
+            serde_json::from_str(r#"{"type":"set_breakpoints","node_ids":["n1_foo","n2_bar"]}"#)
+                .unwrap();
         match bp {
             ClientMessage::SetBreakpoints { node_ids } => {
                 assert_eq!(node_ids, vec!["n1_foo", "n2_bar"]);
@@ -403,7 +431,9 @@ mod tests {
 
     #[test]
     fn server_message_serializes() {
-        let err = ServerMessage::Error { message: "test error".to_string() };
+        let err = ServerMessage::Error {
+            message: "test error".to_string(),
+        };
         let json = serde_json::to_string(&err).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "error");

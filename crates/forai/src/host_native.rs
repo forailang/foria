@@ -69,12 +69,23 @@ impl HandleRegistry {
 
 pub struct NativeHost {
     handles: RefCell<HandleRegistry>,
+    quiet: bool,
 }
 
 impl NativeHost {
     pub fn new() -> Self {
         Self {
             handles: RefCell::new(HandleRegistry::new()),
+            quiet: false,
+        }
+    }
+
+    /// Quiet host: silences terminal I/O ops (term.print, term.prompt).
+    /// Used during `forai build` to suppress test output.
+    pub fn new_quiet() -> Self {
+        Self {
+            handles: RefCell::new(HandleRegistry::new()),
+            quiet: true,
         }
     }
 }
@@ -140,13 +151,12 @@ impl Host for NativeHost {
                         .conn
                         .prepare(&sql)
                         .map_err(|e| format!("db.query prepare failed: {e}"))?;
-                    let columns: Vec<String> = stmt
-                        .column_names()
-                        .iter()
-                        .map(|c| c.to_string())
-                        .collect();
+                    let columns: Vec<String> =
+                        stmt.column_names().iter().map(|c| c.to_string()).collect();
                     let rows = stmt
-                        .query_map(param_refs.as_slice(), |row| sqlite_row_to_json(row, &columns))
+                        .query_map(param_refs.as_slice(), |row| {
+                            sqlite_row_to_json(row, &columns)
+                        })
                         .map_err(|e| format!("db.query failed: {e}"))?;
                     let mut result = Vec::new();
                     for row in rows {
@@ -177,16 +187,21 @@ impl Host for NativeHost {
 
                 // --- Terminal I/O ops ---
                 "term.print" => {
-                    let value = args
-                        .first()
-                        .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
-                    match value {
-                        Value::String(s) => println!("{s}"),
-                        other => println!("{other}"),
+                    if !self.quiet {
+                        let value = args
+                            .first()
+                            .ok_or_else(|| format!("Op `{op}` missing arg0"))?;
+                        match value {
+                            Value::String(s) => println!("{s}"),
+                            other => println!("{other}"),
+                        }
                     }
                     Ok(json!(true))
                 }
                 "term.prompt" => {
+                    if self.quiet {
+                        return Ok(json!(""));
+                    }
                     let message = read_string_arg(args, 0, op)?;
                     let op = op.to_string();
                     let line = tokio::task::spawn_blocking(move || {
@@ -194,8 +209,14 @@ impl Host for NativeHost {
                         std::io::Write::flush(&mut std::io::stdout())
                             .map_err(|e| format!("Op `{op}` flush error: {e}"))?;
                         let mut line = String::new();
-                        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+                        let n = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
                             .map_err(|e| format!("Op `{op}` read error: {e}"))?;
+                        if n == 0 {
+                            return Err(
+                                "term.prompt: stdin closed (EOF); this app requires interactive input"
+                                    .to_string(),
+                            );
+                        }
                         Ok::<String, String>(
                             line.trim_end_matches('\n')
                                 .trim_end_matches('\r')
@@ -344,9 +365,7 @@ impl Host for NativeHost {
                 }
                 "file.exists" => {
                     let path = read_string_arg(args, 0, op)?;
-                    Ok(json!(
-                        tokio::fs::try_exists(&path).await.unwrap_or(false)
-                    ))
+                    Ok(json!(tokio::fs::try_exists(&path).await.unwrap_or(false)))
                 }
                 "file.list" => {
                     let path = read_string_arg(args, 0, op)?;
@@ -378,9 +397,7 @@ impl Host for NativeHost {
                     let dst = read_string_arg(args, 1, op)?;
                     tokio::fs::copy(&src, &dst)
                         .await
-                        .map_err(|e| {
-                            format!("Op `{op}` failed to copy `{src}` -> `{dst}`: {e}")
-                        })?;
+                        .map_err(|e| format!("Op `{op}` failed to copy `{src}` -> `{dst}`: {e}"))?;
                     Ok(json!(true))
                 }
                 "file.move" => {
@@ -388,9 +405,7 @@ impl Host for NativeHost {
                     let dst = read_string_arg(args, 1, op)?;
                     tokio::fs::rename(&src, &dst)
                         .await
-                        .map_err(|e| {
-                            format!("Op `{op}` failed to move `{src}` -> `{dst}`: {e}")
-                        })?;
+                        .map_err(|e| format!("Op `{op}` failed to move `{src}` -> `{dst}`: {e}"))?;
                     Ok(json!(true))
                 }
                 "file.size" => {
@@ -402,10 +417,12 @@ impl Host for NativeHost {
                 }
                 "file.is_dir" => {
                     let path = read_string_arg(args, 0, op)?;
-                    Ok(json!(tokio::fs::metadata(&path)
-                        .await
-                        .map(|m| m.is_dir())
-                        .unwrap_or(false)))
+                    Ok(json!(
+                        tokio::fs::metadata(&path)
+                            .await
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                    ))
                 }
 
                 // --- HTTP client ops (reqwest) ---
@@ -463,32 +480,24 @@ impl Host for NativeHost {
                             .borrow_mut()
                             .websockets
                             .remove(&handle_id)
-                            .ok_or_else(|| {
-                                format!("Op `{op}` unknown ws handle `{handle_id}`")
-                            })?;
+                            .ok_or_else(|| format!("Op `{op}` unknown ws handle `{handle_id}`"))?;
                         let msg_opt = ws_handle.socket.next().await;
-                        handles
-                            .borrow_mut()
-                            .websockets
-                            .insert(handle_id, ws_handle);
+                        handles.borrow_mut().websockets.insert(handle_id, ws_handle);
                         let msg = msg_opt
                             .ok_or_else(|| format!("Op `{op}` stream closed"))?
                             .map_err(|e| format!("Op `{op}` recv failed: {e}"))?;
                         ws_message_to_json(msg)
                     } else {
-                        Err(format!(
-                            "Op `{op}` unknown handle type for `{handle_id}`"
-                        ))
+                        Err(format!("Op `{op}` unknown handle type for `{handle_id}`"))
                     }
                 }
 
                 // --- HTTP server ops ---
                 "http.server.listen" => {
                     let port = read_i64_arg(args, 0, op)? as u16;
-                    let listener =
-                        tokio::net::TcpListener::bind(("127.0.0.1", port))
-                            .await
-                            .map_err(|e| format!("Op `{op}` bind failed: {e}"))?;
+                    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+                        .await
+                        .map_err(|e| format!("Op `{op}` bind failed: {e}"))?;
                     let mut h = handles.borrow_mut();
                     let key = h.next_key("srv");
                     h.servers.insert(
@@ -518,40 +527,53 @@ impl Host for NativeHost {
 
                     let mut writer = {
                         let mut h = handles.borrow_mut();
-                        let conn = h.connections.remove(&conn_id).ok_or_else(|| {
-                            format!("Op `{op}` unknown connection `{conn_id}`")
-                        })?;
+                        let conn = h
+                            .connections
+                            .remove(&conn_id)
+                            .ok_or_else(|| format!("Op `{op}` unknown connection `{conn_id}`"))?;
                         conn.writer
                     };
 
-                    use tokio::io::AsyncWriteExt;
                     let mut header_str = String::new();
                     for (k, v) in &resp_headers {
                         let val = v.as_str().unwrap_or("");
                         header_str.push_str(&format!("{k}: {val}\r\n"));
                     }
 
-                    let resp = format!(
-                        "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\n{header_str}\r\n{body}",
-                        http_reason_phrase(status),
-                        body.len()
-                    );
-                    writer
-                        .write_all(resp.as_bytes())
-                        .await
-                        .map_err(|e| format!("Op `{op}` write response: {e}"))?;
-                    writer
-                        .flush()
-                        .await
-                        .map_err(|e| format!("Op `{op}` flush: {e}"))?;
+                    send_http_response(&mut writer, op, status, &header_str, &body).await?;
+                    Ok(json!(true))
+                }
+                "http.respond.html" | "http.respond.json" | "http.respond.text" => {
+                    let conn_id = read_string_arg(args, 0, op)?;
+                    let status = read_i64_arg(args, 1, op)?;
+                    let body = read_string_arg(args, 2, op)?;
+
+                    let mut writer = {
+                        let mut h = handles.borrow_mut();
+                        let conn = h
+                            .connections
+                            .remove(&conn_id)
+                            .ok_or_else(|| format!("Op `{op}` unknown connection `{conn_id}`"))?;
+                        conn.writer
+                    };
+
+                    let content_type = match op {
+                        "http.respond.html" => "text/html; charset=utf-8",
+                        "http.respond.json" => "application/json",
+                        "http.respond.text" => "text/plain; charset=utf-8",
+                        _ => unreachable!(),
+                    };
+                    let header_str = format!("content-type: {content_type}\r\n");
+
+                    send_http_response(&mut writer, op, status, &header_str, &body).await?;
                     Ok(json!(true))
                 }
                 "http.server.close" => {
                     let handle_id = read_string_arg(args, 0, op)?;
                     let mut h = handles.borrow_mut();
-                    h.servers.remove(&handle_id).ok_or_else(|| {
-                        format!("Op `{op}` unknown server handle `{handle_id}`")
-                    })?;
+                    h.servers
+                        .remove(&handle_id)
+                        .ok_or_else(|| format!("Op `{op}` unknown server handle `{handle_id}`"))?;
                     Ok(json!(true))
                 }
 
@@ -561,9 +583,7 @@ impl Host for NativeHost {
                     let (host, port) = parse_ws_host_port(&url)?;
                     let tcp = tokio::net::TcpStream::connect((&*host, port))
                         .await
-                        .map_err(|e| {
-                            format!("Op `{op}` tcp connect to {host}:{port}: {e}")
-                        })?;
+                        .map_err(|e| format!("Op `{op}` tcp connect to {host}:{port}: {e}"))?;
                     let (ws, _) = tokio_tungstenite::client_async(&url, tcp)
                         .await
                         .map_err(|e| format!("Op `{op}` ws handshake: {e}"))?;
@@ -580,17 +600,12 @@ impl Host for NativeHost {
                         .borrow_mut()
                         .websockets
                         .remove(&handle_id)
-                        .ok_or_else(|| {
-                            format!("Op `{op}` unknown ws handle `{handle_id}`")
-                        })?;
+                        .ok_or_else(|| format!("Op `{op}` unknown ws handle `{handle_id}`"))?;
                     let result = ws_handle
                         .socket
                         .send(tungstenite::Message::Text(message))
                         .await;
-                    handles
-                        .borrow_mut()
-                        .websockets
-                        .insert(handle_id, ws_handle);
+                    handles.borrow_mut().websockets.insert(handle_id, ws_handle);
                     result.map_err(|e| format!("Op `{op}` send failed: {e}"))?;
                     Ok(json!(true))
                 }
@@ -601,14 +616,9 @@ impl Host for NativeHost {
                         .borrow_mut()
                         .websockets
                         .remove(&handle_id)
-                        .ok_or_else(|| {
-                            format!("Op `{op}` unknown ws handle `{handle_id}`")
-                        })?;
+                        .ok_or_else(|| format!("Op `{op}` unknown ws handle `{handle_id}`"))?;
                     let msg_opt = ws_handle.socket.next().await;
-                    handles
-                        .borrow_mut()
-                        .websockets
-                        .insert(handle_id, ws_handle);
+                    handles.borrow_mut().websockets.insert(handle_id, ws_handle);
                     let msg = msg_opt
                         .ok_or_else(|| format!("Op `{op}` stream closed"))?
                         .map_err(|e| format!("Op `{op}` recv failed: {e}"))?;
@@ -680,9 +690,7 @@ impl Host for NativeHost {
                         .args(&cmd_args)
                         .output()
                         .await
-                        .map_err(|e| {
-                            format!("Op `{op}` failed to execute `{cmd}`: {e}")
-                        })?;
+                        .map_err(|e| format!("Op `{op}` failed to execute `{cmd}`: {e}"))?;
 
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -715,9 +723,7 @@ impl Host for NativeHost {
                             let (y, mo, d) = civil_from_days(total_days + 719468);
                             (s, m, h, d, mo, y)
                         };
-                        format!(
-                            "{year:04}-{mon:02}-{day:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z"
-                        )
+                        format!("{year:04}-{mon:02}-{day:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
                     };
                     let line = match context {
                         Some(ctx) if !ctx.is_null() => {
@@ -788,10 +794,9 @@ async fn execute_reqwest(
 
     req = match body {
         Some(Value::String(s)) => req.body(s),
-        Some(v) if v.is_object() || v.is_array() => {
-            req.header("Content-Type", "application/json")
-                .body(v.to_string())
-        }
+        Some(v) if v.is_object() || v.is_array() => req
+            .header("Content-Type", "application/json")
+            .body(v.to_string()),
         Some(_) => req.body(""),
         None => req,
     };
@@ -816,6 +821,30 @@ async fn execute_reqwest(
         "headers": Value::Object(headers_map),
         "body": body_text
     }))
+}
+
+async fn send_http_response(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    op: &str,
+    status: i64,
+    header_str: &str,
+    body: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let resp = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\n{header_str}\r\n{body}",
+        http_reason_phrase(status),
+        body.len()
+    );
+    writer
+        .write_all(resp.as_bytes())
+        .await
+        .map_err(|e| format!("Op `{op}` write response: {e}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("Op `{op}` flush: {e}"))?;
+    Ok(())
 }
 
 fn http_reason_phrase(status: i64) -> &'static str {
@@ -875,10 +904,7 @@ fn json_to_sql_params(
     }
 }
 
-fn sqlite_row_to_json(
-    row: &rusqlite::Row,
-    columns: &[String],
-) -> Result<Value, rusqlite::Error> {
+fn sqlite_row_to_json(row: &rusqlite::Row, columns: &[String]) -> Result<Value, rusqlite::Error> {
     let mut map = serde_json::Map::new();
     for (i, col) in columns.iter().enumerate() {
         let val = row.get_ref(i)?;
@@ -948,8 +974,12 @@ fn ws_message_to_json(msg: tungstenite::Message) -> Result<Value, String> {
             Ok(json!({"type": "binary", "data": encoded}))
         }
         tungstenite::Message::Close(_) => Ok(json!({"type": "close", "data": ""})),
-        tungstenite::Message::Ping(d) => Ok(json!({"type": "ping", "data": String::from_utf8_lossy(&d).to_string()})),
-        tungstenite::Message::Pong(d) => Ok(json!({"type": "pong", "data": String::from_utf8_lossy(&d).to_string()})),
+        tungstenite::Message::Ping(d) => {
+            Ok(json!({"type": "ping", "data": String::from_utf8_lossy(&d).to_string()}))
+        }
+        tungstenite::Message::Pong(d) => {
+            Ok(json!({"type": "pong", "data": String::from_utf8_lossy(&d).to_string()}))
+        }
         _ => Ok(json!({"type": "other", "data": ""})),
     }
 }

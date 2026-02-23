@@ -23,7 +23,7 @@ body
     # List operations (pure ops — run entirely in WASM)
     items = [10, 20, 30, 40, 50]
     count = list.len(items)
-    third = list.get(items, 2)
+    third = items[2]
     _ = term.print("List: #{to.text(count)} items, third = #{to.text(third)}")
 
     # Object operations (pure ops)
@@ -39,7 +39,7 @@ body
     _ = term.print("Str: upper=#{upper}, trim=#{trimmed}, replace=#{replaced}")
 
     # Math operations (pure ops)
-    pi_approx = math.divide(355, 113)
+    pi_approx = 355 / 113
     rounded = math.round(pi_approx, 4)
     _ = term.print("Math: 355/113 = #{to.text(rounded)}")
 

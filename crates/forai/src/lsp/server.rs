@@ -10,9 +10,9 @@ use lsp_types::request::{
     Request as LspRequest,
 };
 use lsp_types::{
-    CompletionOptions, HoverProviderCapability, InitializeParams,
-    OneOf, PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Position, Range, Uri,
+    CompletionOptions, HoverProviderCapability, InitializeParams, OneOf, Position,
+    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
 
 use crate::formatter;

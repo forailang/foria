@@ -1,6 +1,6 @@
-uses sources
-uses router
-uses display
+use sources from "./sources"
+use router from "./router"
+use display from "./display"
 
 docs StartResult
     Result of the documentation browser session.

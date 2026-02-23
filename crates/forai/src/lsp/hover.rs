@@ -205,7 +205,7 @@ fn keyword_hover(word: &str) -> Option<Hover> {
         "type" => "Declares a struct or scalar type with optional constraints",
         "data" => "Declares a data type",
         "enum" => "Declares an enumeration type with string variants",
-        "uses" => "Imports a module directory — resolves relative to this file's directory",
+        "use" => "Imports a module — `use Name from \"./path\"` (file or directory, relative to this file)",
         "case" => "Pattern matching: `case value` with `when` arms and `else`",
         "loop" => "Iteration: `loop items as item` or bare `loop` with `break`",
         "sync" => "Concurrent execution: runs body statements in parallel via join_all",
@@ -213,13 +213,16 @@ fn keyword_hover(word: &str) -> Option<Hover> {
         "emit" => "Sends a value to the output port",
         "fail" => "Sends a value to the failure port",
         "take" => "Declares an input port with a name and type",
-        "done" => "Ends a block (func, flow, case, loop, sync, if, type, docs, test)",
+        "on" => "Event handler: `on :eventType from expr to var` — runs body per event",
+        "done" => "Ends a block (func, flow, case, loop, sync, if, on, type, docs, test)",
         "body" => "Begins the executable body of a func or flow",
         "break" => "Exits the current loop",
         "must" => "Test assertion — fails the test if the expression is false",
         "trap" => "Captures a failure in a test block for inspection",
         "mock" => "Substitutes a sub-func call with a fixed value in tests",
-        "branch" => "Conditional sub-pipeline in a flow: `branch when <expr>` runs body only if true; `branch` always runs",
+        "branch" => {
+            "Conditional sub-pipeline in a flow: `branch when <expr>` runs body only if true; `branch` always runs"
+        }
         "step" => "Declares a pipeline stage inside a flow body",
         "nowait" => "Fire-and-forget: starts a background task without waiting",
         _ => return None,

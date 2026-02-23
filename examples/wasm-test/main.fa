@@ -1,4 +1,4 @@
-uses app
+use app from "./app"
 
 docs main
     Entry flow for WASM round-trip test.
@@ -8,5 +8,14 @@ flow main
     emit result as text
     fail error as text
 body
-    step app.Compute() done
+    step app.Compute() then
+        next :result to msg
+    done
+    emit msg to :result
+done
+
+test main
+    mock app.Compute => "mocked"
+    r = main()
+    must r == "mocked"
 done

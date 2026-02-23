@@ -15,13 +15,13 @@ pub enum TokenKind {
     RegexLit(String),
     Symbol(char),
     FatArrow,
-    EqEq,      // ==
-    BangEq,    // !=
-    GtEq,      // >=
-    LtEq,      // <=
-    AmpAmp,    // &&
-    PipePipe,  // ||
-    StarStar,  // **
+    EqEq,     // ==
+    BangEq,   // !=
+    GtEq,     // >=
+    LtEq,     // <=
+    AmpAmp,   // &&
+    PipePipe, // ||
+    StarStar, // **
     Newline,
     Eof,
 }
@@ -57,14 +57,17 @@ fn dedent_string(s: &str, indent: usize) -> String {
             lines.pop();
         }
     }
-    let result: Vec<String> = lines.iter().map(|line| {
-        let stripped = line.as_bytes();
-        let mut skip = 0;
-        while skip < indent && skip < stripped.len() && stripped[skip] == b' ' {
-            skip += 1;
-        }
-        line[skip..].to_string()
-    }).collect();
+    let result: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            let stripped = line.as_bytes();
+            let mut skip = 0;
+            while skip < indent && skip < stripped.len() && stripped[skip] == b' ' {
+                skip += 1;
+            }
+            line[skip..].to_string()
+        })
+        .collect();
     result.join("\n")
 }
 
@@ -227,7 +230,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     }
 
                     // Check for closing """
-                    if c == '"' && i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                    if c == '"'
+                        && i + 2 < bytes.len()
+                        && bytes[i + 1] == b'"'
+                        && bytes[i + 2] == b'"'
+                    {
                         // Compute closing indent: col is 1-based position of first " of closing """
                         let closing_indent = col - 1; // convert to 0-based space count
 
@@ -268,8 +275,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                                     span: Span { line, col },
                                 });
                             }
-                            if ec == '{' { depth += 1; }
-                            if ec == '}' { depth -= 1; }
+                            if ec == '{' {
+                                depth += 1;
+                            }
+                            if ec == '}' {
+                                depth -= 1;
+                            }
                             if depth > 0 {
                                 i += 1;
                                 col += 1;
@@ -304,7 +315,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 if !found_close {
                     return Err(LexError {
                         message: "unterminated triple-quoted string".to_string(),
-                        span: Span { line: start_line, col: start_col },
+                        span: Span {
+                            line: start_line,
+                            col: start_col,
+                        },
                     });
                 }
 
@@ -314,14 +328,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     }
                     tokens.push(Token {
                         kind: TokenKind::StringInterp(parts),
-                        span: Span { line: start_line, col: start_col },
+                        span: Span {
+                            line: start_line,
+                            col: start_col,
+                        },
                         start,
                         end: i,
                     });
                 } else {
                     tokens.push(Token {
                         kind: TokenKind::StringLit(current),
-                        span: Span { line: start_line, col: start_col },
+                        span: Span {
+                            line: start_line,
+                            col: start_col,
+                        },
                         start,
                         end: i,
                     });
@@ -398,8 +418,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                                 span: Span { line, col },
                             });
                         }
-                        if ec == '{' { depth += 1; }
-                        if ec == '}' { depth -= 1; }
+                        if ec == '{' {
+                            depth += 1;
+                        }
+                        if ec == '}' {
+                            depth -= 1;
+                        }
                         if depth > 0 {
                             i += 1;
                             col += 1;
@@ -512,7 +536,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     col += 2;
                     tokens.push(Token {
                         kind: TokenKind::FatArrow,
-                        span: Span { line, col: start_col },
+                        span: Span {
+                            line,
+                            col: start_col,
+                        },
                         start,
                         end: i,
                     });
@@ -523,7 +550,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     col += 2;
                     tokens.push(Token {
                         kind: TokenKind::EqEq,
-                        span: Span { line, col: start_col },
+                        span: Span {
+                            line,
+                            col: start_col,
+                        },
                         start,
                         end: i,
                     });
@@ -534,7 +564,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('='),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -549,7 +582,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::BangEq,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -559,7 +595,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('!'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -574,7 +613,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::LtEq,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -584,7 +626,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('<'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -599,7 +644,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::GtEq,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -609,7 +657,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('>'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -624,7 +675,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::AmpAmp,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -634,7 +688,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('&'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -649,7 +706,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::PipePipe,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -659,7 +719,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('|'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -673,7 +736,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol(ch),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -688,7 +754,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 col += 2;
                 tokens.push(Token {
                     kind: TokenKind::StarStar,
-                    span: Span { line, col: start_col },
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
                     start,
                     end: i,
                 });
@@ -698,7 +767,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('*'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -748,12 +820,18 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     if !closed {
                         return Err(LexError {
                             message: "unterminated regex literal".to_string(),
-                            span: Span { line, col: start_col },
+                            span: Span {
+                                line,
+                                col: start_col,
+                            },
                         });
                     }
                     tokens.push(Token {
                         kind: TokenKind::RegexLit(pattern),
-                        span: Span { line, col: start_col },
+                        span: Span {
+                            line,
+                            col: start_col,
+                        },
                         start,
                         end: i,
                     });
@@ -766,7 +844,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('/'),
-                span: Span { line, col: start_col },
+                span: Span {
+                    line,
+                    col: start_col,
+                },
                 start,
                 end: i,
             });
@@ -869,7 +950,10 @@ mod tests {
     #[test]
     fn lexes_plain_string_unchanged() {
         let tokens = lex(r#""hello world""#).expect("should lex");
-        assert_eq!(tokens[0].kind, TokenKind::StringLit("hello world".to_string()));
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::StringLit("hello world".to_string())
+        );
     }
 
     #[test]
@@ -887,13 +971,19 @@ mod tests {
     fn lexes_escaped_hash() {
         let tokens = lex(r##""hello \#{name}""##).expect("should lex");
         // \# produces literal # — no interpolation
-        assert_eq!(tokens[0].kind, TokenKind::StringLit(r##"hello #{name}"##.to_string()));
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::StringLit(r##"hello #{name}"##.to_string())
+        );
     }
 
     #[test]
     fn lexes_bare_braces_as_literal() {
         let tokens = lex(r#""regex {4} test""#).expect("should lex");
-        assert_eq!(tokens[0].kind, TokenKind::StringLit("regex {4} test".to_string()));
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::StringLit("regex {4} test".to_string())
+        );
     }
 
     #[test]
@@ -923,14 +1013,20 @@ mod tests {
         let tokens = lex(src).expect("should lex");
         // Ident(x), Symbol(=), StringLit, Eof
         assert_eq!(tokens.len(), 4);
-        assert_eq!(tokens[2].kind, TokenKind::StringLit("hello\nworld".to_string()));
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::StringLit("hello\nworld".to_string())
+        );
     }
 
     #[test]
     fn lexes_triple_quote_with_dedent() {
         let src = "x = \"\"\"\n    hello\n    world\n    \"\"\"";
         let tokens = lex(src).expect("should lex");
-        assert_eq!(tokens[2].kind, TokenKind::StringLit("hello\nworld".to_string()));
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::StringLit("hello\nworld".to_string())
+        );
     }
 
     #[test]
@@ -938,7 +1034,10 @@ mod tests {
         // closing """ at 2-space indent, content at 4-space → strips 2 spaces
         let src = "x = \"\"\"\n    hello\n      deeper\n  \"\"\"";
         let tokens = lex(src).expect("should lex");
-        assert_eq!(tokens[2].kind, TokenKind::StringLit("  hello\n    deeper".to_string()));
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::StringLit("  hello\n    deeper".to_string())
+        );
     }
 
     #[test]
@@ -982,14 +1081,20 @@ mod tests {
     fn lexes_triple_quote_escape_sequences() {
         let src = "x = \"\"\"\nhello\\nworld\\t!\n\"\"\"";
         let tokens = lex(src).expect("should lex");
-        assert_eq!(tokens[2].kind, TokenKind::StringLit("hello\nworld\t!".to_string()));
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::StringLit("hello\nworld\t!".to_string())
+        );
     }
 
     #[test]
     fn lexes_triple_quote_escaped_hash() {
         let src = "x = \"\"\"\n\\#{not_interp}\n\"\"\"";
         let tokens = lex(src).expect("should lex");
-        assert_eq!(tokens[2].kind, TokenKind::StringLit("#{not_interp}".to_string()));
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::StringLit("#{not_interp}".to_string())
+        );
     }
 
     #[test]
@@ -997,7 +1102,12 @@ mod tests {
         let src = "x = \"\"\"\nhello\nworld\n";
         let result = lex(src);
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("unterminated triple-quoted"));
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("unterminated triple-quoted")
+        );
     }
 
     #[test]

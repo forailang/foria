@@ -38,40 +38,44 @@ Funcs and sinks declare their **interface** — what they take in, what they emi
 
 A source is a box that produces events. It blocks until the next event is ready, then yields it. The flowchart never sees the waiting.
 
+Sources always use a `body` block. The idiomatic way to handle events is the `on` block:
+
 ```
 source Commands
   emit cmd as text
   fail error as text
-from term.prompt("docs> ") as raw
-  trimmed = str.trim(raw)
-  emit trimmed
-  case trimmed
-    when "quit"
-      break
-    when "exit"
-      break
+body
+  on :input from term.prompt("docs> ") to raw
+    trimmed = str.trim(raw)
+    emit trimmed
+    case trimmed
+      when "quit"
+        break
+      when "exit"
+        break
+    done
   done
 done
 ```
 
-A source has two forms:
+**`on :tag from op(args) to var`** — event handler. The `:tag` names the event type (cosmetic in v1). The `from` expression is a blocking async call that returns one event per invocation. The `to` variable binds the result. The body runs per event. `emit` sends it downstream, `break` stops the source.
 
-**Poll form** — `from expr as var`: repeatedly calls the expression, runs the body for each result, `emit` sends it downstream, `break` stops the source.
-
-**Init + poll form** — set up a resource once, then poll it:
+**Init + on pattern** — set up a resource once, then handle events from it:
 
 ```
 source HTTPRequests
   take port as long
   emit req as dict
   fail error as text
-init
+body
   srv = http.server.listen(port)
-from http.server.accept(srv)
+  on :request from http.server.accept(srv) to req
+    emit req
+  done
 done
 ```
 
-**Body form** — full imperative loop with explicit `emit`:
+**Loop form** — for complex polling patterns, `loop` is available as an escape hatch:
 
 ```
 source QueuedJobs
@@ -86,7 +90,7 @@ body
       when 0
         _ = time.sleep(3)
       else
-        job = list.get(rows, 0)
+        job = rows[0]
         result = {type: "queued", job: job}
         emit result
     done
@@ -265,6 +269,8 @@ emit ok
 
 **Operators** (standard precedence): `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` `!`
 
+All arithmetic uses infix operators — there are no `math.add`, `math.divide`, etc. ops. Use `math.floor` and `math.round` for rounding.
+
 **Ternary**: `result = condition ? "yes" : "no"`
 
 **String interpolation**: `msg = "Hello #{name}, you have #{count} items"`
@@ -311,6 +317,8 @@ The rule: any `#{` inside a `tmpl.render("""...""", data)` string must be writte
 
 **Dict literals**: `config = {host: "localhost", port: 8080}` or `empty = {}`
 
+**Bracket indexing**: `first = items[0]`, `last = items[-1]`, `name = row["name"]`. Supports negative indices, chained indexing (`matrix[0][1]`), and works on both lists and dicts.
+
 **Function calls**: `result = str.upper(name)` or `result = MyFunc(arg1, arg2)`
 
 String `+` does concatenation. Escapes: `\n` `\t` `\\` `\"` `\#`.
@@ -343,6 +351,19 @@ case method
   else
     err = "Method not allowed"
     fail err
+done
+```
+
+`break` is valid inside a `when` arm and exits the enclosing loop:
+```
+loop
+  result = next_state()
+  case result
+    when "done"
+      break
+    when "continue"
+      _ = term.print("keep going")
+  done
 done
 ```
 
@@ -379,21 +400,26 @@ Statements inside sync run in parallel. Each gets its own scope — they can't r
 
 ### Modules
 
-Organize code into folders. Import with `uses`:
+Import files or directories with `use Name from "path"`:
 
 ```
-uses auth
-uses db
+use auth from "./auth"          # directory import → call as auth.Login(...)
+use db   from "./db"            # directory import → call as db.GetUser(...)
+use Round from "./round.fa"     # file import → call as Round(...)
 
-# Call as namespace.Function:
+# Call directory imports as namespace.Function:
 token = auth.Login(email, password)
 user = db.GetUser(conn, user_id)
+
+# Call file imports directly:
+result = Round(value)
 ```
 
 Rules:
 - One func/flow/sink per file. Name must match filename (`func Foo` in `Foo.fa`)
-- `uses` resolves relative to the importing file's directory
-- `server/Start.fa` with `uses db` looks for `server/db/`, not top-level `db/`
+- `use ... from "..."` paths are relative to the importing file's directory
+- `server/Start.fa` with `use db from "./db"` looks for `server/db/`, not top-level `db/`
+- Directory imports register as `name.FuncName`; file imports register as `name` directly
 
 ### Types
 
@@ -423,6 +449,22 @@ done
 Primitive types: `text`, `bool`, `long` (i64), `real` (f64), `uuid`, `time`, `list`, `dict`, `void`, `db_conn`, `http_server`, `http_conn`, `ws_conn`.
 
 Handle types (`db_conn`, `http_server`, `http_conn`, `ws_conn`) are opaque — they cannot be constructed from string literals. They are produced by specific ops (`db.open`, `http.server.listen`, etc.) and the compiler validates correct usage at compile time.
+
+**Built-in struct types** — these are returned by stdlib ops and available without declaration:
+
+| Type | Returned by | Fields |
+|------|-------------|--------|
+| `HttpRequest` | `http.server.accept` | `method`, `path`, `query`, `headers`, `body`, `conn_id` |
+| `HttpResponse` | `http.get/post/put/delete` | `status`, `headers`, `body` |
+| `Date` | `date.now`, `date.from_iso`, etc. | `unix_ms`, `tz_offset_min` |
+| `Stamp` | `stamp.now`, `stamp.from_ns` | `ns` |
+| `TimeRange` | `trange.new` | `start` (Date), `end` (Date) |
+| `ProcessOutput` | `exec.run` | `code`, `stdout`, `stderr`, `ok` |
+| `WebSocketMessage` | `ws.recv` | `type`, `data` |
+| `ErrorObject` | `error.new` | `code`, `message`, `details` |
+| `URLParts` | `url.parse` | `path`, `query`, `fragment` |
+
+The compiler tracks built-in struct return types for type checking — misusing a struct type (e.g., passing a `Date` to an op that expects `TimeRange`) is a compile error.
 
 ### Documentation (Required)
 
@@ -514,14 +556,15 @@ The runtime provides 160+ ops across namespaces. All called as `namespace.op(arg
 | Namespace | What | Key Ops |
 |-----------|------|---------|
 | `obj.*` | Dicts (immutable) | `new`, `set`, `get`, `has`, `delete`, `keys`, `merge` |
-| `list.*` | Lists (immutable) | `new`, `range`, `append`, `get`, `len`, `contains`, `slice` |
+| `list.*` | Lists (immutable) | `new`, `range`, `append`, `len`, `contains`, `slice`; access via `items[0]` |
 | `str.*` | Strings | `len`, `upper`, `lower`, `trim`, `split`, `join`, `replace`, `contains`, `starts_with`, `ends_with`, `slice`, `index_of` |
-| `math.*` | Arithmetic | `add`, `subtract`, `multiply`, `divide`, `floor`, `mod`, `power`, `round` |
+| `math.*` | Rounding | `floor`, `round` (arithmetic uses infix: `+` `-` `*` `/` `%` `**`) |
 | `to.*` | Type conversion | `text`, `long`, `real`, `bool` |
 | `type.*` | Introspection | `of` (returns `"text"`, `"long"`, etc.) |
 | `json.*` | JSON | `decode`, `encode`, `encode_pretty` |
 | `http.*` | HTTP client | `get`, `post`, `put`, `delete`, `response`, `error_response` |
 | `http.server.*` | HTTP server | `listen`, `accept`, `respond`, `close` |
+| `http.respond.*` | HTTP response shortcuts | `html`, `json`, `text` (auto content-type) |
 | `ws.*` | WebSocket | `connect`, `send`, `recv`, `close` |
 | `db.*` | SQLite (`db_conn` handles) | `open`, `exec`, `query`, `close` |
 | `file.*` | File I/O | `read`, `write`, `append`, `delete`, `exists`, `list`, `mkdir` |
@@ -637,6 +680,7 @@ Use `db.open` for connections (returns `db_conn`), `db.exec` for writes, `db.que
 9. **`_` discards a return value** — use `_ = op(...)` when you don't need the result
 10. **All data structures are immutable** — `obj.set` and `list.append` return new copies
 11. **`str.join` parameter is `:l`, not `:list`** — `str.join(items to :l, ", " to :sep)`. Using `:list` causes a parse error because `list` is a reserved type keyword. The same applies to any op parameter whose name coincides with a primitive type (`text`, `bool`, `long`, `real`, `list`, `dict`): use the actual parameter name from the stdlib reference, never the type name.
+12. **Wire names, locals, and ports cannot be forai keywords** — `done`, `step`, `body`, `emit`, `fail`, `return`, `loop`, `case`, `when`, `else`, `sync`, `branch`, `take`, `from`, and other keywords cannot be used as variable or wire names. The parser reads them as statement boundaries and produces confusing errors. Use `ok`, `result`, `finished`, or `out` instead.
 
 ## File Structure
 
@@ -668,7 +712,11 @@ my-app/
 ```bash
 forai compile main.fa              # Compile to IR JSON
 forai run main.fa                  # Execute the program
-forai test src/                    # Run test blocks
+forai test                         # Run ALL test blocks (scans entire project recursively)
+forai test lib/Foo.fa              # Run tests in a single file
+forai build                        # Build and run all tests end-to-end
 forai doc main.fa                  # Generate documentation
 forai dev main.fa                  # Interactive debugger
 ```
+
+`forai test` scans the project root recursively and runs every `test` block it finds, no matter how deeply nested. Passing a subdirectory (e.g. `forai test lib`) limits the scan to that subtree — avoid this unless you deliberately want partial coverage.

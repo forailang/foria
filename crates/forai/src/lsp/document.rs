@@ -7,6 +7,7 @@ use super::line_index::LineIndex;
 pub struct Document {
     pub text: String,
     pub line_index: LineIndex,
+    #[allow(dead_code)]
     pub version: i32,
 }
 

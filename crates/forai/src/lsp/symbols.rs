@@ -190,10 +190,7 @@ fn port_symbol(
     } else {
         0
     };
-    let pos = Position {
-        line,
-        character: 0,
-    };
+    let pos = Position { line, character: 0 };
     DocumentSymbol {
         name: format!("{kind_str} {name}"),
         detail: Some(type_name.to_string()),
@@ -213,20 +210,13 @@ fn port_symbol(
 }
 
 #[allow(deprecated)]
-fn field_symbol(
-    name: &str,
-    type_name: &str,
-    parent_span: &crate::ast::Span,
-) -> DocumentSymbol {
+fn field_symbol(name: &str, type_name: &str, parent_span: &crate::ast::Span) -> DocumentSymbol {
     let line = if parent_span.line > 0 {
         (parent_span.line - 1) as u32
     } else {
         0
     };
-    let pos = Position {
-        line,
-        character: 0,
-    };
+    let pos = Position { line, character: 0 };
     DocumentSymbol {
         name: name.to_string(),
         detail: Some(type_name.to_string()),
@@ -252,10 +242,7 @@ fn variant_symbol(name: &str, parent_span: &crate::ast::Span) -> DocumentSymbol 
     } else {
         0
     };
-    let pos = Position {
-        line,
-        character: 0,
-    };
+    let pos = Position { line, character: 0 };
     DocumentSymbol {
         name: name.to_string(),
         detail: None,

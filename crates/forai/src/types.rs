@@ -61,7 +61,7 @@ type Email as text :matches => /@/
     #[test]
     fn unknown_type_errors() {
         let registry = TypeRegistry::empty();
-        let errors = registry.validate(&json!("anything"), "HttpRequest", "request");
+        let errors = registry.validate(&json!("anything"), "NoSuchType", "request");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("unknown type"));
     }

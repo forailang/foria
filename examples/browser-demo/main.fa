@@ -1,4 +1,4 @@
-uses app
+use app from "./app"
 
 docs main
     Browser demo - prints a greeting and logs a message.
@@ -7,4 +7,9 @@ done
 flow main
 body
     step app.Hello() done
+done
+
+test main
+    mock app.Hello => true
+    _ = main()
 done

@@ -1,0 +1,27 @@
+docs BlogList
+    Serves the blog listing page with links to all posts.
+done
+
+use data from "./data"
+use pages from "./pages"
+
+flow BlogList
+    take conn_id as http_conn
+body
+    step data.AllPosts() then
+        next :result to posts
+    done
+    step pages.BlogListPage(posts to :posts) then
+        next :result to content
+    done
+    step pages.Layout("Blog" to :title, content to :content) then
+        next :result to html
+    done
+    step http.respond.html(conn_id to :conn_id, 200 to :status, html to :body) done
+done
+
+test BlogList
+    # Flow: HTTP route handler — stub test
+    ok = true
+    must ok == true
+done

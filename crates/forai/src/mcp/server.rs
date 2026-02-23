@@ -1,6 +1,6 @@
 use crate::mcp::protocol::{JsonRpcError, JsonRpcMessage, JsonRpcResponse};
 use crate::mcp::tools;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 pub async fn main_loop() {

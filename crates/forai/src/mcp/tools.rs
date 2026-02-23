@@ -1,12 +1,12 @@
 use crate::mcp::protocol::{CallToolResult, ToolInfo};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub fn tool_definitions() -> Vec<ToolInfo> {
     vec![
         ToolInfo {
             name: "forai_check".into(),
-            description: "Check a .fa file or directory for syntax and semantic errors. Returns structured diagnostics or \"ok\".".into(),
+            description: "Check a .fa file or directory for syntax, semantic, IR lowering, and typecheck errors. When given a .fa file, also checks all transitively imported modules. Returns structured diagnostics or \"ok\".".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -50,13 +50,12 @@ pub fn tool_definitions() -> Vec<ToolInfo> {
         },
         ToolInfo {
             name: "forai_test".into(),
-            description: "Run test blocks in .fa files. Returns test results with pass/fail counts.".into(),
+            description: "Run all test blocks in a forai project. Scans the project root recursively and runs every test block found. Omit path to test the whole project from the current working directory.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path to a .fa file or directory containing tests" }
-                },
-                "required": ["path"]
+                    "path": { "type": "string", "description": "Path to a .fa file or project directory. Defaults to \".\" (whole project from CWD)." }
+                }
             }),
         },
         ToolInfo {
@@ -159,18 +158,52 @@ fn resolve_path(raw: &str) -> PathBuf {
     }
 }
 
+/// BFS over `use` declarations starting from the already-collected `files`, adding any
+/// transitively-imported `.fa` files that have not been visited yet.
+pub fn expand_with_imports(files: &mut Vec<PathBuf>) {
+    use std::collections::HashSet;
+    let mut visited: HashSet<PathBuf> = files.iter().cloned().collect();
+    let mut queue: Vec<PathBuf> = files.clone();
+    while !queue.is_empty() {
+        let file = queue.remove(0);
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let module = match crate::parser::parse_module_v1(&text) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let base = file.parent().unwrap_or(Path::new("."));
+        for decl in &module.decls {
+            if let crate::ast::TopDecl::Uses(u) = decl {
+                for imp in collect_fa_files(&base.join(&u.path)) {
+                    if visited.insert(imp.clone()) {
+                        files.push(imp.clone());
+                        queue.push(imp);
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn tool_check(args: &Value) -> CallToolResult {
     let Some(raw_path) = get_string_arg(args, "path") else {
         return CallToolResult::error("Missing required argument: path".into());
     };
     let path = resolve_path(raw_path);
 
-    let files = collect_fa_files(&path);
+    let mut files = collect_fa_files(&path);
+    if path.is_file() {
+        expand_with_imports(&mut files);
+    }
     if files.is_empty() {
         return CallToolResult::error(format!("No .fa files found at {}", path.display()));
     }
 
     let mut diagnostics = Vec::new();
+    let mut warnings = Vec::new();
     let mut ok_count = 0;
 
     for file in &files {
@@ -198,12 +231,18 @@ async fn tool_check(args: &Value) -> CallToolResult {
         };
 
         // Semantic validation
-        let filename = file.file_name().and_then(|s| s.to_str()).map(|s| s.to_string());
+        let filename = file
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
         if let Err(errors) = crate::sema::validate_module(&module, filename.as_deref()) {
             for e in errors {
                 diagnostics.push(format!("{}:{e}", file.display()));
             }
             continue;
+        }
+        for w in crate::sema::test_call_warnings(&module) {
+            warnings.push(format!("{}:{w}", file.display()));
         }
 
         // Type registry
@@ -214,16 +253,112 @@ async fn tool_check(args: &Value) -> CallToolResult {
             continue;
         }
 
-        ok_count += 1;
+        // Per-file compilation: IR lowering + typecheck for each callable
+        let mut file_ok = true;
+        for decl in &module.decls {
+            match decl {
+                crate::ast::TopDecl::Func(f)
+                | crate::ast::TopDecl::Sink(f)
+                | crate::ast::TopDecl::Source(f) => {
+                    match crate::parser::parse_runtime_func_decl_v1(f) {
+                        Err(e) => {
+                            diagnostics.push(format!(
+                                "{}: func `{}` parse error: {e}",
+                                file.display(),
+                                f.name
+                            ));
+                            file_ok = false;
+                        }
+                        Ok(flow) => {
+                            if let Err(e) =
+                                crate::typecheck::typecheck_func(&f.name, &f.takes, &flow.body)
+                            {
+                                diagnostics.push(format!("{}:{e}", file.display()));
+                                file_ok = false;
+                            }
+                            if let Err(e) = forai_core::ir::lower_to_ir(&flow) {
+                                diagnostics.push(format!(
+                                    "{}: func `{}` IR error: {e}",
+                                    file.display(),
+                                    f.name
+                                ));
+                                file_ok = false;
+                            }
+                        }
+                    }
+                }
+                crate::ast::TopDecl::Flow(f) => {
+                    match crate::parser::parse_flow_graph_decl_v1(f) {
+                        Err(e) => {
+                            diagnostics.push(format!(
+                                "{}: flow `{}` parse error: {e}",
+                                file.display(),
+                                f.name
+                            ));
+                            file_ok = false;
+                        }
+                        Ok(graph) => match crate::parser::lower_flow_graph_to_flow(&graph) {
+                            Err(e) => {
+                                diagnostics.push(format!(
+                                    "{}: flow `{}` lower error: {e}",
+                                    file.display(),
+                                    f.name
+                                ));
+                                file_ok = false;
+                            }
+                            Ok(flow) => {
+                                if let Err(e) = forai_core::ir::lower_to_ir(&flow) {
+                                    diagnostics.push(format!(
+                                        "{}: flow `{}` IR error: {e}",
+                                        file.display(),
+                                        f.name
+                                    ));
+                                    file_ok = false;
+                                }
+                            }
+                        },
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if file_ok {
+            ok_count += 1;
+        }
     }
 
     if diagnostics.is_empty() {
-        CallToolResult::text(format!("ok — {ok_count} file(s) checked, no errors"))
+        if warnings.is_empty() {
+            CallToolResult::text(format!("ok — {ok_count} file(s) checked, no errors"))
+        } else {
+            let mut out = format!(
+                "ok — {ok_count} file(s) checked, no errors\n{} warning(s):\n",
+                warnings.len()
+            );
+            for w in &warnings {
+                out.push_str(w);
+                out.push('\n');
+            }
+            CallToolResult::text(out)
+        }
     } else {
-        let mut out = format!("{} error(s) in {} file(s):\n", diagnostics.len(), files.len() - ok_count);
+        let mut out = format!(
+            "{} error(s) in {} file(s):\n",
+            diagnostics.len(),
+            files.len() - ok_count
+        );
         for d in &diagnostics {
             out.push_str(d);
             out.push('\n');
+        }
+        if !warnings.is_empty() {
+            out.push('\n');
+            out.push_str(&format!("{} warning(s):\n", warnings.len()));
+            for w in &warnings {
+                out.push_str(w);
+                out.push('\n');
+            }
         }
         CallToolResult::text(out)
     }
@@ -241,7 +376,10 @@ fn tool_stdlib_ref(args: &Value) -> CallToolResult {
             .into_iter()
             .filter(|ns| {
                 ns.namespace.to_lowercase().contains(&q)
-                    || ns.ops.iter().any(|op| op.full_name.to_lowercase().contains(&q))
+                    || ns
+                        .ops
+                        .iter()
+                        .any(|op| op.full_name.to_lowercase().contains(&q))
             })
             .collect()
     };
@@ -338,23 +476,41 @@ async fn tool_build(args: &Value) -> CallToolResult {
 }
 
 async fn tool_test(args: &Value) -> CallToolResult {
-    let Some(raw_path) = get_string_arg(args, "path") else {
-        return CallToolResult::error("Missing required argument: path".into());
-    };
+    let raw_path = get_string_arg(args, "path").unwrap_or(".");
     let path = resolve_path(raw_path);
 
-    match crate::tester::run_tests_at_path_async(&path).await {
+    // When given a directory, walk up to find the forai.json project root and scan
+    // from there. This ensures all .fa files are found regardless of nesting depth —
+    // the same behavior as `forai test` CLI. Passing "lib" or "sinks" would otherwise
+    // silently miss tests in other parts of the project.
+    let test_path = if path.is_dir() {
+        match crate::config::find_config(&path) {
+            Ok((_, root)) => root,
+            Err(_) => path,
+        }
+    } else {
+        path
+    };
+
+    match crate::tester::run_tests_at_path_async(&test_path).await {
         Ok(summary) => {
-            let failures: Vec<_> = summary.failures.iter().map(|f| json!({
-                "test": f.name,
-                "error": f.error,
-            })).collect();
+            let failures: Vec<_> = summary
+                .failures
+                .iter()
+                .map(|f| {
+                    json!({
+                        "test": f.name,
+                        "error": f.error,
+                    })
+                })
+                .collect();
             let result = json!({
                 "total": summary.total,
                 "passed": summary.passed,
                 "failed": summary.failed,
                 "status": if summary.failed == 0 { "pass" } else { "fail" },
                 "failures": failures,
+                "warnings": summary.warnings,
             });
             CallToolResult::text(serde_json::to_string_pretty(&result).unwrap())
         }
@@ -370,7 +526,11 @@ async fn tool_run(args: &Value) -> CallToolResult {
     let cli_args: Vec<String> = args
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
@@ -403,9 +563,15 @@ async fn tool_run(args: &Value) -> CallToolResult {
     );
 
     let secs = timeout_secs.unwrap_or(120.0);
-    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future).await {
+    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future)
+        .await
+    {
         Ok(r) => r,
-        Err(_) => return CallToolResult::error(format!("Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event")),
+        Err(_) => {
+            return CallToolResult::error(format!(
+                "Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event"
+            ));
+        }
     };
 
     match run_result {
@@ -425,10 +591,7 @@ fn tool_fmt(args: &Value) -> CallToolResult {
         return CallToolResult::error("Missing required argument: path".into());
     };
     let path = resolve_path(raw_path);
-    let check = args
-        .get("check")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let check = args.get("check").and_then(|v| v.as_bool()).unwrap_or(false);
 
     match crate::formatter::fmt_path(&path, check) {
         Ok((changed, total)) => {
@@ -477,7 +640,11 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
     let cli_args: Vec<String> = args
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
@@ -510,9 +677,15 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
     );
 
     let secs = timeout_secs.unwrap_or(120.0);
-    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future).await {
+    let run_result = match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), future)
+        .await
+    {
         Ok(r) => r,
-        Err(_) => return CallToolResult::error(format!("Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event")),
+        Err(_) => {
+            return CallToolResult::error(format!(
+                "Execution timed out after {secs}s — the flow may be waiting for user input (term.prompt) or an external event"
+            ));
+        }
     };
 
     match run_result {
@@ -578,12 +751,12 @@ fn tool_impact(args: &Value) -> CallToolResult {
             Err(_) => continue,
         };
 
-        // Check for `uses <module_name>`
+        // Check for `use <module_name> from "..."` import
         if !module_name.is_empty() {
             for line in text.lines() {
                 let trimmed = line.trim();
-                if trimmed == format!("uses {module_name}")
-                    || trimmed.starts_with(&format!("uses {module_name} "))
+                if trimmed.starts_with("use ")
+                    && trimmed.contains(&format!(" {} from ", module_name))
                 {
                     importers.push(file.display().to_string());
                     break;
@@ -651,7 +824,7 @@ fn find_project_root(start: &Path) -> PathBuf {
     }
 }
 
-fn collect_fa_files(path: &Path) -> Vec<PathBuf> {
+pub fn collect_fa_files(path: &Path) -> Vec<PathBuf> {
     if path.is_file() {
         if path.extension().and_then(|s| s.to_str()) == Some("fa") {
             return vec![path.to_path_buf()];

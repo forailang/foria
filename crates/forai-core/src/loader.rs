@@ -16,8 +16,8 @@ pub struct ProgramBundle {
 pub struct FlowProgram {
     pub flow: crate::ast::Flow,
     pub ir: Ir,
-    pub emit_name: String,
-    pub fail_name: String,
+    pub emit_name: Option<String>,
+    pub fail_name: Option<String>,
     pub registry: TypeRegistry,
     pub kind: DeclKind,
 }

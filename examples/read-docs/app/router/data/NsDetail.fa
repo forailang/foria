@@ -27,7 +27,7 @@ body
             t = t + n
             t = t + "  list.new      Create an empty list" + n
             t = t + "  list.append   Append an item (returns new list)" + n
-            t = t + "  list.get      Get item by index" + n
+            t = t + "  items[0]      Get item by index (bracket syntax)" + n
             t = t + "  list.len      Get the length" + n
             t = t + "  list.range    Create a numeric range" + n
             t = t + "  list.contains Check if item exists"
@@ -46,15 +46,10 @@ body
             t = t + "  str.contains  Check for substring"
             emit t
         when "math"
-            t = "=== math — Arithmetic ===" + n
-            t = t + "Numeric computation ops." + n
+            t = "=== math — Rounding ===" + n
+            t = t + "Rounding ops (arithmetic uses infix operators: + - * / % **)." + n
             t = t + n
-            t = t + "  math.add      Addition" + n
-            t = t + "  math.subtract Subtraction" + n
-            t = t + "  math.multiply Multiplication" + n
-            t = t + "  math.divide   Division" + n
-            t = t + "  math.mod      Modulo" + n
-            t = t + "  math.power    Exponentiation" + n
+            t = t + "  math.floor    Round down to integer" + n
             t = t + "  math.round    Round to N decimals"
             emit t
         when "json"

@@ -1,11 +1,11 @@
-mod server;
-mod document;
-mod diagnostics;
 mod completion;
-mod hover;
+mod diagnostics;
+mod document;
 mod goto_def;
-mod symbols;
+mod hover;
 mod line_index;
+mod server;
+mod symbols;
 
 pub fn run_lsp() {
     server::main_loop();

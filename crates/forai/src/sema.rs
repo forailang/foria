@@ -1,5 +1,163 @@
-use crate::ast::{DocsDecl, ModuleAst, TopDecl, TypeKind};
+use crate::ast::{DocsDecl, ModuleAst, TakeDecl, TopDecl, TypeKind};
 use std::collections::{HashMap, HashSet};
+
+fn docs_hint(kind: &str, name: &str) -> String {
+    format!(
+        "{kind} `{name}` is undocumented. Add a docs block immediately before it:\n\n\
+         \x20\x20\x20\x20docs {name}\n\
+         \x20\x20\x20\x20    Describe what {name} does here.\n\
+         \x20\x20\x20\x20done\n\n\
+         \x20\x20\x20\x20{kind} {name}\n\
+         \x20\x20\x20\x20    ..."
+    )
+}
+
+fn type_docs_hint(name: &str, kind: &TypeKind) -> String {
+    let mut hint = format!(
+        "type `{name}` is undocumented. Add a docs block immediately before it:\n\n\
+         \x20\x20\x20\x20docs {name}\n\
+         \x20\x20\x20\x20    Describe what {name} represents.\n"
+    );
+
+    if let TypeKind::Struct { fields } = kind
+        && !fields.is_empty()
+    {
+        hint.push('\n');
+        for field in fields {
+            hint.push_str(&format!(
+                "    docs {}\n\
+                 \x20\x20\x20\x20        Describe {}.\n\
+                 \x20\x20\x20\x20    done\n\n",
+                field.name, field.name
+            ));
+        }
+    }
+
+    hint.push_str(&format!(
+        "    done\n\n\
+         \x20\x20\x20\x20type {name}\n\
+         \x20\x20\x20\x20    ..."
+    ));
+    hint
+}
+
+fn call_expr(name: &str, takes: &[TakeDecl]) -> String {
+    if takes.is_empty() {
+        format!("{name}()")
+    } else {
+        let args = takes
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{name}({args})")
+    }
+}
+
+fn test_hint(kind: &str, name: &str, takes: &[TakeDecl]) -> String {
+    let call = call_expr(name, takes);
+    if kind == "sink" {
+        return format!(
+            "{kind} `{name}` has no test block. Add a test block after the {kind}:\n\n\
+             \x20\x20\x20\x20test {name}\n\
+             \x20\x20\x20\x20    # mock dependencies if needed\n\
+             \x20\x20\x20\x20    # mock module.Func => value\n\
+             \x20\x20\x20\x20    r = {call}\n\
+             \x20\x20\x20\x20    must r == true\n\
+             \x20\x20\x20\x20done"
+        );
+    }
+    format!(
+        "{kind} `{name}` has no test block. Add a test block after the {kind}:\n\n\
+         \x20\x20\x20\x20test {name}\n\
+         \x20\x20\x20\x20    # mock dependencies if needed\n\
+         \x20\x20\x20\x20    # mock module.Func => value\n\
+         \x20\x20\x20\x20    result = {call}\n\
+         \x20\x20\x20\x20    must result == <expected>\n\
+         \x20\x20\x20\x20done"
+    )
+}
+
+fn test_body_calls_target(body: &str, target: &str) -> bool {
+    let call_pat = format!("={target}(");
+    let trap_pat = format!("trap{target}(");
+
+    body.lines().any(|raw| {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        compact.contains(&call_pat) || compact.contains(&trap_pat)
+    })
+}
+
+pub fn test_call_warnings(module: &ModuleAst) -> Vec<String> {
+    let mut callables = HashMap::<String, (&'static str, Vec<TakeDecl>)>::new();
+    for decl in &module.decls {
+        match decl {
+            TopDecl::Flow(d) => {
+                callables.insert(d.name.clone(), ("flow", d.takes.clone()));
+            }
+            TopDecl::Func(d) => {
+                callables.insert(d.name.clone(), ("func", d.takes.clone()));
+            }
+            TopDecl::Sink(d) => {
+                callables.insert(d.name.clone(), ("sink", d.takes.clone()));
+            }
+            TopDecl::Source(d) => {
+                callables.insert(d.name.clone(), ("source", d.takes.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for decl in &module.decls {
+        if let TopDecl::Test(t) = decl
+            && let Some((kind, takes)) = callables.get(&t.name)
+            && !test_body_calls_target(&t.body_text, &t.name)
+        {
+            warnings.push(format!(
+                "{}:{} warning: test `{}` never calls `{}` — consider adding a call with mocks:\n\n{}",
+                t.span.line,
+                t.span.col,
+                t.name,
+                t.name,
+                test_hint(kind, &t.name, takes)
+            ));
+        }
+    }
+
+    warnings
+}
+
+fn looks_like_cross_file_func_name(op: &str) -> bool {
+    if op.contains('.') {
+        return false;
+    }
+    let mut chars = op.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphabetic())
+}
+
+pub fn unknown_op_fix_hint(op: &str) -> Option<String> {
+    if !looks_like_cross_file_func_name(op) {
+        return None;
+    }
+
+    let lower = op.to_ascii_lowercase();
+    Some(format!(
+        "cross-file calls require a `use` import:\n\n\
+         \x20\x20\x20\x20use {op} from \"./{lower}.fa\"\n\n\
+         \x20\x20\x20\x20result = {op}()"
+    ))
+}
 
 pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(), Vec<String>> {
     let mut symbol_names = HashSet::new();
@@ -215,48 +373,60 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
             TopDecl::Flow(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} flow `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        docs_hint("flow", &d.name)
                     ));
                 }
             }
             TopDecl::Func(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} func `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        docs_hint("func", &d.name)
                     ));
                 }
             }
             TopDecl::Sink(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} sink `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        docs_hint("sink", &d.name)
                     ));
                 }
             }
             TopDecl::Source(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} source `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        docs_hint("source", &d.name)
                     ));
                 }
             }
             TopDecl::Type(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} type `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        type_docs_hint(&d.name, &d.kind)
                     ));
                 }
             }
             TopDecl::Test(d) => {
                 if !docs_targets.contains_key(&d.name) {
                     errors.push(format!(
-                        "{}:{} test `{}` is undocumented; add `docs {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        docs_hint("test", &d.name)
                     ));
                 }
             }
@@ -306,38 +476,46 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
         }
     }
 
-    // Check that every callable (except `main`) has a corresponding `test {Name}` block
+    // Check that every callable has a corresponding `test {Name}` block
     for decl in &module.decls {
         match decl {
-            TopDecl::Flow(d) if d.name != "main" => {
+            TopDecl::Flow(d) => {
                 if !test_names.contains(&d.name) {
                     errors.push(format!(
-                        "{}:{} flow `{}` has no test block; add `test {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        test_hint("flow", &d.name, &d.takes)
                     ));
                 }
             }
             TopDecl::Func(d) => {
                 if !test_names.contains(&d.name) {
                     errors.push(format!(
-                        "{}:{} func `{}` has no test block; add `test {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        test_hint("func", &d.name, &d.takes)
                     ));
                 }
             }
             TopDecl::Sink(d) => {
                 if !test_names.contains(&d.name) {
                     errors.push(format!(
-                        "{}:{} sink `{}` has no test block; add `test {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        test_hint("sink", &d.name, &d.takes)
                     ));
                 }
             }
             TopDecl::Source(d) => {
                 if !test_names.contains(&d.name) {
                     errors.push(format!(
-                        "{}:{} source `{}` has no test block; add `test {}`",
-                        d.span.line, d.span.col, d.name, d.name
+                        "{}:{} {}",
+                        d.span.line,
+                        d.span.col,
+                        test_hint("source", &d.name, &d.takes)
                     ));
                 }
             }
@@ -354,7 +532,7 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::validate_module;
+    use super::{test_call_warnings, unknown_op_fix_hint, validate_module};
     use crate::parser::parse_module_v1;
 
     #[test]
@@ -511,7 +689,9 @@ done
         let module = parse_module_v1(src).expect("parse");
         let errors = validate_module(&module, Some("main.fa")).unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("must be declared as a flow")),
+            errors
+                .iter()
+                .any(|e| e.contains("must be declared as a flow")),
             "should reject func main, got: {errors:?}"
         );
     }
@@ -534,7 +714,9 @@ done
         let module = parse_module_v1(src).expect("parse");
         let errors = validate_module(&module, Some("main.fa")).unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("must be declared as a flow")),
+            errors
+                .iter()
+                .any(|e| e.contains("must be declared as a flow")),
             "should reject sink main, got: {errors:?}"
         );
     }
@@ -556,9 +738,13 @@ body
     emit :result => output
   done
 done
+
+test main
+  _ = main(x)
+done
 "#;
         let module = parse_module_v1(src).expect("parse");
-        validate_module(&module, Some("main.fa")).expect("flow main should be accepted");
+        validate_module(&module, Some("main.fa")).expect("flow main with test should be accepted");
     }
 
     #[test]
@@ -614,11 +800,13 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should reject undocumented field");
         assert!(
-            err.iter().any(|e| e.contains("field `bar` is undocumented")),
+            err.iter()
+                .any(|e| e.contains("field `bar` is undocumented")),
             "got: {err:?}"
         );
         assert!(
-            err.iter().any(|e| e.contains("field `baz` is undocumented")),
+            err.iter()
+                .any(|e| e.contains("field `baz` is undocumented")),
             "got: {err:?}"
         );
     }
@@ -645,7 +833,8 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should reject orphan field docs");
         assert!(
-            err.iter().any(|e| e.contains("field docs for `ghost`") && e.contains("no such field")),
+            err.iter()
+                .any(|e| e.contains("field docs for `ghost`") && e.contains("no such field")),
             "got: {err:?}"
         );
     }
@@ -754,7 +943,8 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should reject mixed v2+v1");
         assert!(
-            err.iter().any(|e| e.contains("cannot also have named `emit` ports")),
+            err.iter()
+                .any(|e| e.contains("cannot also have named `emit` ports")),
             "got: {err:?}"
         );
     }
@@ -777,7 +967,9 @@ done
         let module = parse_module_v1(src).expect("parse");
         let errors = validate_module(&module, Some("main.fa")).unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("must be declared as a flow")),
+            errors
+                .iter()
+                .any(|e| e.contains("must be declared as a flow")),
             "should reject source main, got: {errors:?}"
         );
     }
@@ -796,7 +988,8 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should fail sema");
         assert!(
-            err.iter().any(|e| e.contains("source `HTTPRequests` is undocumented")),
+            err.iter()
+                .any(|e| e.contains("source `HTTPRequests` is undocumented")),
             "got: {err:?}"
         );
     }
@@ -842,7 +1035,8 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should reject missing test");
         assert!(
-            err.iter().any(|e| e.contains("func `Greet` has no test block")),
+            err.iter()
+                .any(|e| e.contains("func `Greet` has no test block")),
             "got: {err:?}"
         );
     }
@@ -868,13 +1062,14 @@ done
         let module = parse_module_v1(src).expect("parse");
         let err = validate_module(&module, None).expect_err("should reject missing test");
         assert!(
-            err.iter().any(|e| e.contains("flow `Pipeline` has no test block")),
+            err.iter()
+                .any(|e| e.contains("flow `Pipeline` has no test block")),
             "got: {err:?}"
         );
     }
 
     #[test]
-    fn accepts_flow_main_without_test() {
+    fn rejects_flow_main_without_test() {
         let src = r#"
 docs main
   Entry point.
@@ -892,9 +1087,107 @@ body
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
-        validate_module(&module, Some("main.fa")).expect("flow main should not require a test");
+        let err = validate_module(&module, Some("main.fa")).expect_err("flow main should require a test");
+        assert!(
+            err.iter().any(|e| e.contains("flow `main` has no test block")),
+            "got: {err:?}"
+        );
     }
 
+    #[test]
+    fn accepts_flow_main_with_test() {
+        let src = r#"
+docs main
+  Entry point.
+done
+
+flow main
+body
+  step app.Start() done
+done
+
+test main
+  mock app.Start => true
+  _ = main()
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        validate_module(&module, Some("main.fa")).expect("flow main with test should pass");
+    }
+
+    #[test]
+    fn warns_when_test_does_not_call_target() {
+        let src = r#"
+docs Start
+  Entry.
+done
+
+func Start
+  emit result as text
+  fail error as text
+body
+  out = "ok"
+  emit out
+done
+
+docs Start
+  Test docs.
+done
+
+test Start
+  ok = true
+  must ok == true
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let warnings = test_call_warnings(&module);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("test `Start` never calls `Start`")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn does_not_warn_when_test_calls_target() {
+        let src = r#"
+docs Start
+  Entry.
+done
+
+func Start
+  emit result as text
+  fail error as text
+body
+  out = "ok"
+  emit out
+done
+
+docs Start
+  Test docs.
+done
+
+test Start
+  result = Start()
+  must result == "ok"
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let warnings = test_call_warnings(&module);
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+    }
+
+    #[test]
+    fn builds_unknown_op_fix_hint_for_pascal_case_call() {
+        let hint = unknown_op_fix_hint("Round").expect("hint expected");
+        assert!(hint.contains("use Round from \"./round.fa\""), "got: {hint}");
+        assert!(hint.contains("result = Round()"), "got: {hint}");
+    }
+
+    #[test]
+    fn does_not_build_unknown_op_hint_for_non_pascal_case_call() {
+        assert!(unknown_op_fix_hint("round").is_none());
+        assert!(unknown_op_fix_hint("str.upper").is_none());
+    }
 }
-
-
