@@ -47,6 +47,7 @@ pub enum CliCommand {
     New {
         name: String,
     },
+    Version,
     Help,
 }
 
@@ -340,6 +341,7 @@ pub fn parse_cli() -> Result<CliCommand, String> {
     }
 
     match args[0].as_str() {
+        "--version" | "-V" => Ok(CliCommand::Version),
         "help" | "-h" | "--help" => Ok(CliCommand::Help),
         "build" => parse_build_args(&args[1..]),
         "check" => parse_check_args(&args[1..]),

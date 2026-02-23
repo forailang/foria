@@ -568,6 +568,10 @@ fn generate_docs_for_source(source_path: &Path, project_root: Option<&Path>) {
 
 async fn run() -> Result<(), String> {
     match parse_cli()? {
+        CliCommand::Version => {
+            println!("forai {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         CliCommand::Help => {
             println!("{}", usage());
             Ok(())
