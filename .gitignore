@@ -24,3 +24,6 @@ plans/
 # Context manager
 .cm/
 
+# Proptest regression files
+**/proptest-regressions/
+

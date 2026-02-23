@@ -1,4 +1,5 @@
 [workspace]
 members = ["crates/forai", "crates/forai-core", "crates/forai-wasm"]
 default-members = ["crates/forai", "crates/forai-core"]
+exclude = ["crates/forai/fuzz"]
 resolver = "3"

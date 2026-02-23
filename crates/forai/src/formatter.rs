@@ -21,7 +21,15 @@ enum Block {
 
 /// Format a `.fa` source string, returning the formatted version.
 pub fn format_source(source: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
+    // Normalize \r\n and bare \r to \n for consistent line handling.
+    let normalized;
+    let src = if source.contains('\r') {
+        normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+        normalized.as_str()
+    } else {
+        source
+    };
+    let lines: Vec<&str> = src.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut stack: Vec<Block> = Vec::new();
     let mut prev_blank = false;
@@ -61,8 +69,12 @@ pub fn format_source(source: &str) -> String {
             continue;
         }
 
-        let first_word = first_token(trimmed);
-        let is_else_if = trimmed.starts_with("else if ");
+        // Normalize spaces in trimmed for consistent keyword detection.
+        // format_line_content() collapses runs of spaces outside strings,
+        // so our push/pop decisions must see the same normalized form.
+        let norm = normalize_spaces(trimmed);
+        let first_word = first_token(&norm);
+        let is_else_if = first_word == "else" && second_token(&norm) == "if";
 
         // --- Pops (dedent before printing) ---
         match first_word {
@@ -73,7 +85,7 @@ pub fn format_source(source: &str) -> String {
                 }
                 stack.pop(); // structural block (Case, If, Loop, Body, Docs, etc.)
             }
-            "body" if second_token(trimmed) != "=" => {
+            "body" if second_token(&norm) != "=" => {
                 // Close the Decl header
                 if stack.last() == Some(&Block::Decl) {
                     stack.pop();
@@ -137,7 +149,7 @@ pub fn format_source(source: &str) -> String {
         prev_blank = false;
 
         // --- Pushes (indent after printing) ---
-        let single_line_done = trimmed.ends_with("done");
+        let single_line_done = norm.ends_with("done");
         let in_docs = matches!(stack.last(), Some(Block::Docs));
 
         // `docs` always pushes (supports nested field docs); all other keywords are
@@ -150,7 +162,7 @@ pub fn format_source(source: &str) -> String {
                 "func" | "flow" | "sink" | "source" => {
                     stack.push(Block::Decl);
                 }
-                "body" if second_token(trimmed) != "=" => {
+                "body" if second_token(&norm) != "=" => {
                     stack.push(Block::Body);
                 }
                 "test" => {
@@ -158,7 +170,7 @@ pub fn format_source(source: &str) -> String {
                 }
                 "type" | "data" | "enum" if !single_line_done => {
                     // Only treat as a declaration if not an assignment (e.g. `data = {…}`).
-                    if second_token(trimmed) != "=" {
+                    if second_token(&norm) != "=" {
                         stack.push(Block::TypeDecl);
                     }
                 }
@@ -193,7 +205,7 @@ pub fn format_source(source: &str) -> String {
                 "sync" if !single_line_done => {
                     stack.push(Block::Sync);
                 }
-                "step" if trimmed.contains(" then") && !single_line_done => {
+                "step" if norm.contains(" then") && !single_line_done => {
                     stack.push(Block::Step);
                 }
                 "branch" if !single_line_done => {
@@ -201,7 +213,7 @@ pub fn format_source(source: &str) -> String {
                 }
                 _ => {
                     // Check for sync assignment: `[vars] = sync` or `x = sync`
-                    if !single_line_done && line_is_sync_assignment(trimmed) {
+                    if !single_line_done && line_is_sync_assignment(&norm) {
                         stack.push(Block::Sync);
                     }
                 }
@@ -994,6 +1006,36 @@ done
 ";
         let formatted = format_source(input);
         assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn fuzz_sync_assignment_extra_spaces() {
+        // Found by cargo-fuzz: `e =  sync\n k`
+        // Extra spaces before `sync` should not break idempotency
+        let input = "e =  sync\n k";
+        let once = format_source(input);
+        let twice = format_source(&once);
+        assert_eq!(once, twice, "formatter must be idempotent");
+    }
+
+    #[test]
+    fn fuzz_triple_quote_with_cr() {
+        // Found by cargo-fuzz: `"""\ne\r`
+        // Carriage return in multiline string should not break idempotency
+        let input = "\"\"\"\ne\r";
+        let once = format_source(input);
+        let twice = format_source(&once);
+        assert_eq!(once, twice, "formatter must be idempotent");
+    }
+
+    #[test]
+    fn fuzz_else_if_done_on_same_line() {
+        // Found by cargo-fuzz: "  else  if  done\nt "
+        // `else if` followed by `done` on the same line should not break idempotency
+        let input = "  else  if  done\nt ";
+        let once = format_source(input);
+        let twice = format_source(&once);
+        assert_eq!(once, twice, "formatter must be idempotent");
     }
 
     #[test]

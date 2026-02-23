@@ -25,3 +25,6 @@ wasmtime = "29"
 flate2 = "1"
 lsp-server = "0.7"
 lsp-types = "0.97"
+
+[dev-dependencies]
+proptest = "1.10.0"

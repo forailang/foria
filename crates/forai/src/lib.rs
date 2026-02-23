@@ -1,0 +1,11 @@
+// lib.rs — re-exports for fuzz targets.
+// Only includes modules needed for fuzzing (parser, lexer, formatter).
+// The full application entry point is main.rs.
+
+mod ast {
+    pub use forai_core::ast::*;
+}
+
+pub mod lexer;
+pub mod parser;
+pub mod formatter;

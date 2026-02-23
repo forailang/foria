@@ -7034,3 +7034,977 @@ done
         assert_eq!(report.outputs["error"], "error: bad input");
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    fn make_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn test_op(op: &str, args: &[Value]) -> Result<Value, String> {
+        let rt = make_rt();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let h = NativeHost::new();
+            let codecs = CodecRegistry::default_registry();
+            execute_op(op, args, &h, &codecs).await
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // String ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn str_len_never_panics(s in ".*") {
+            let _ = test_op("str.len", &[json!(s)]);
+        }
+
+        #[test]
+        fn str_len_correct(s in "\\PC*") {
+            let result = test_op("str.len", &[json!(s)]).unwrap();
+            prop_assert_eq!(result.as_i64().unwrap(), s.chars().count() as i64);
+        }
+
+        #[test]
+        fn str_upper_lower_roundtrip(s in "[a-zA-Z]{0,50}") {
+            // For ASCII letters, lowering the uppercased string gives back the lowercase.
+            let up = test_op("str.upper", &[json!(s)]).unwrap();
+            let down = test_op("str.lower", &[up]).unwrap();
+            prop_assert_eq!(down.as_str().unwrap(), s.to_lowercase());
+        }
+
+        #[test]
+        fn str_trim_idempotent(s in ".*") {
+            let once = test_op("str.trim", &[json!(s)]).unwrap();
+            let twice = test_op("str.trim", &[once.clone()]).unwrap();
+            prop_assert_eq!(once, twice);
+        }
+
+        #[test]
+        fn str_contains_self(s in "\\PC{1,50}") {
+            let result = test_op("str.contains", &[json!(&s), json!(&s)]).unwrap();
+            prop_assert_eq!(result, json!(true));
+        }
+
+        #[test]
+        fn str_starts_with_prefix(s in "\\PC{0,50}", extra in "\\PC{0,10}") {
+            let full = format!("{s}{extra}");
+            let result = test_op("str.starts_with", &[json!(full), json!(&s)]).unwrap();
+            prop_assert_eq!(result, json!(true));
+        }
+
+        #[test]
+        fn str_ends_with_suffix(extra in "\\PC{0,10}", s in "\\PC{0,50}") {
+            let full = format!("{extra}{s}");
+            let result = test_op("str.ends_with", &[json!(full), json!(&s)]).unwrap();
+            prop_assert_eq!(result, json!(true));
+        }
+
+        #[test]
+        fn str_split_join_roundtrip(s in "[a-z]{0,30}", delim in "[,;|]") {
+            let parts = test_op("str.split", &[json!(&s), json!(&delim)]).unwrap();
+            let joined = test_op("str.join", &[parts, json!(&delim)]).unwrap();
+            prop_assert_eq!(joined.as_str().unwrap(), s.as_str());
+        }
+
+        #[test]
+        fn str_slice_bounds_safe(s in "\\PC{0,30}", i in 0i64..40, j in 0i64..40) {
+            // Should never panic regardless of i, j
+            let result = test_op("str.slice", &[json!(&s), json!(i), json!(j)]);
+            prop_assert!(result.is_ok());
+        }
+
+        #[test]
+        fn str_slice_len_correct(s in "\\PC{0,30}", i in 0i64..30, j in 0i64..30) {
+            let result = test_op("str.slice", &[json!(&s), json!(i), json!(j)]).unwrap();
+            let slice = result.as_str().unwrap();
+            let len = s.chars().count() as i64;
+            let si = i.max(0).min(len);
+            let sj = j.max(0).min(len);
+            let expected_len = if si <= sj { (sj - si) as usize } else { 0 };
+            prop_assert_eq!(slice.chars().count(), expected_len);
+        }
+
+        #[test]
+        fn str_index_of_found(haystack in "[a-z]{5,20}", needle in "[a-z]{1,3}") {
+            let result = test_op("str.index_of", &[json!(&haystack), json!(&needle)]).unwrap();
+            let idx = result.as_i64().unwrap();
+            if haystack.contains(&needle) {
+                prop_assert!(idx >= 0);
+            } else {
+                prop_assert_eq!(idx, -1);
+            }
+        }
+
+        #[test]
+        fn str_replace_removes(s in "[a-z]{0,20}", from in "[a-z]{1,3}", to in "[a-z]{0,3}") {
+            let result = test_op("str.replace", &[json!(&s), json!(&from), json!(&to)]).unwrap();
+            let replaced = result.as_str().unwrap().to_string();
+            // After replacing, original `from` should not appear (unless `to` contains `from`)
+            if !to.contains(&from) {
+                prop_assert!(!replaced.contains(&from));
+            }
+        }
+
+        #[test]
+        fn str_repeat_length(s in "\\PC{0,10}", n in 0i64..20) {
+            let result = test_op("str.repeat", &[json!(&s), json!(n)]).unwrap();
+            let repeated = result.as_str().unwrap();
+            prop_assert_eq!(
+                repeated.chars().count(),
+                s.chars().count() * n as usize
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // List ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn list_append_increases_len(items in prop::collection::vec(any::<i64>(), 0..20), new_item in any::<i64>()) {
+            let arr: Vec<Value> = items.iter().map(|i| json!(i)).collect();
+            let appended = test_op("list.append", &[Value::Array(arr.clone()), json!(new_item)]).unwrap();
+            let len = test_op("list.len", &[appended]).unwrap();
+            prop_assert_eq!(len.as_i64().unwrap(), items.len() as i64 + 1);
+        }
+
+        #[test]
+        fn list_contains_appended(items in prop::collection::vec(any::<i64>(), 0..10), new_item in any::<i64>()) {
+            let arr: Vec<Value> = items.iter().map(|i| json!(i)).collect();
+            let appended = test_op("list.append", &[Value::Array(arr), json!(new_item)]).unwrap();
+            let found = test_op("list.contains", &[appended, json!(new_item)]).unwrap();
+            prop_assert_eq!(found, json!(true));
+        }
+
+        #[test]
+        fn list_slice_bounds_safe(items in prop::collection::vec(any::<i64>(), 0..20), i in -5i64..25, j in -5i64..25) {
+            let arr: Vec<Value> = items.iter().map(|v| json!(v)).collect();
+            let result = test_op("list.slice", &[Value::Array(arr), json!(i), json!(j)]);
+            prop_assert!(result.is_ok());
+        }
+
+        #[test]
+        fn list_indices_matches_len(items in prop::collection::vec(any::<i64>(), 0..20)) {
+            let arr: Vec<Value> = items.iter().map(|v| json!(v)).collect();
+            let indices = test_op("list.indices", &[Value::Array(arr)]).unwrap();
+            let idx_arr = indices.as_array().unwrap();
+            prop_assert_eq!(idx_arr.len(), items.len());
+            // Each index should be sequential 0..n
+            for (i, v) in idx_arr.iter().enumerate() {
+                prop_assert_eq!(v.as_i64().unwrap(), i as i64);
+            }
+        }
+
+        #[test]
+        fn list_range_length(start in -10i64..50, end in -10i64..50) {
+            let result = test_op("list.range", &[json!(start), json!(end)]).unwrap();
+            let arr = result.as_array().unwrap();
+            let expected_len = if end >= start { (end - start + 1) as usize } else { 0 };
+            prop_assert_eq!(arr.len(), expected_len);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Object ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn obj_set_get_roundtrip(key in "[a-z]{1,10}", val in any::<i64>()) {
+            let obj = test_op("obj.new", &[]).unwrap();
+            let with_key = test_op("obj.set", &[obj, json!(&key), json!(val)]).unwrap();
+            let got = test_op("obj.get", &[with_key, json!(&key)]).unwrap();
+            prop_assert_eq!(got, json!(val));
+        }
+
+        #[test]
+        fn obj_has_after_set(key in "[a-z]{1,10}", val in any::<i64>()) {
+            let obj = test_op("obj.new", &[]).unwrap();
+            let with_key = test_op("obj.set", &[obj, json!(&key), json!(val)]).unwrap();
+            let has = test_op("obj.has", &[with_key, json!(&key)]).unwrap();
+            prop_assert_eq!(has, json!(true));
+        }
+
+        #[test]
+        fn obj_delete_removes(key in "[a-z]{1,10}", val in any::<i64>()) {
+            let obj = test_op("obj.new", &[]).unwrap();
+            let with_key = test_op("obj.set", &[obj, json!(&key), json!(val)]).unwrap();
+            let deleted = test_op("obj.delete", &[with_key, json!(&key)]).unwrap();
+            let has = test_op("obj.has", &[deleted, json!(&key)]).unwrap();
+            prop_assert_eq!(has, json!(false));
+        }
+
+        #[test]
+        fn obj_keys_count(keys in prop::collection::hash_set("[a-z]{1,5}", 0..10)) {
+            let mut obj = test_op("obj.new", &[]).unwrap();
+            for k in &keys {
+                obj = test_op("obj.set", &[obj, json!(k), json!(1)]).unwrap();
+            }
+            let result_keys = test_op("obj.keys", &[obj]).unwrap();
+            prop_assert_eq!(result_keys.as_array().unwrap().len(), keys.len());
+        }
+
+        #[test]
+        fn obj_merge_contains_both(
+            k1 in "[a-e]{1,3}", v1 in any::<i64>(),
+            k2 in "[f-j]{1,3}", v2 in any::<i64>(),
+        ) {
+            let o1 = test_op("obj.set", &[test_op("obj.new", &[]).unwrap(), json!(&k1), json!(v1)]).unwrap();
+            let o2 = test_op("obj.set", &[test_op("obj.new", &[]).unwrap(), json!(&k2), json!(v2)]).unwrap();
+            let merged = test_op("obj.merge", &[o1, o2]).unwrap();
+            let has_k1 = test_op("obj.has", &[merged.clone(), json!(&k1)]).unwrap();
+            let has_k2 = test_op("obj.has", &[merged, json!(&k2)]).unwrap();
+            prop_assert_eq!(has_k1, json!(true));
+            prop_assert_eq!(has_k2, json!(true));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Type conversion ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn to_text_never_panics(i in any::<i64>()) {
+            let result = test_op("to.text", &[json!(i)]);
+            prop_assert!(result.is_ok());
+            prop_assert!(result.unwrap().is_string());
+        }
+
+        #[test]
+        fn to_long_from_int_identity(i in any::<i64>()) {
+            let result = test_op("to.long", &[json!(i)]).unwrap();
+            prop_assert_eq!(result.as_i64().unwrap(), i);
+        }
+
+        #[test]
+        fn to_bool_empty_string_is_false(s in "(|false|0)") {
+            let result = test_op("to.bool", &[json!(s)]).unwrap();
+            prop_assert_eq!(result, json!(false));
+        }
+
+        #[test]
+        fn to_bool_nonempty_string_is_true(s in "[a-z]{1,10}") {
+            let result = test_op("to.bool", &[json!(s)]).unwrap();
+            prop_assert_eq!(result, json!(true));
+        }
+
+        #[test]
+        fn type_of_string(s in ".*") {
+            let result = test_op("type.of", &[json!(s)]).unwrap();
+            prop_assert_eq!(result, json!("text"));
+        }
+
+        #[test]
+        fn type_of_int(i in any::<i64>()) {
+            let result = test_op("type.of", &[json!(i)]).unwrap();
+            prop_assert_eq!(result, json!("long"));
+        }
+
+        #[test]
+        fn type_of_bool(b in any::<bool>()) {
+            let result = test_op("type.of", &[json!(b)]).unwrap();
+            prop_assert_eq!(result, json!("bool"));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Round-trip ops (encode/decode)
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn base64_roundtrip(s in "\\PC{0,100}") {
+            let encoded = test_op("base64.encode", &[json!(&s)]).unwrap();
+            let decoded = test_op("base64.decode", &[encoded]).unwrap();
+            prop_assert_eq!(decoded.as_str().unwrap(), s.as_str());
+        }
+
+        #[test]
+        fn base64_url_roundtrip(s in "\\PC{0,100}") {
+            let encoded = test_op("base64.encode_url", &[json!(&s)]).unwrap();
+            let decoded = test_op("base64.decode_url", &[encoded]).unwrap();
+            prop_assert_eq!(decoded.as_str().unwrap(), s.as_str());
+        }
+
+        #[test]
+        fn url_encode_decode_roundtrip(s in "[a-zA-Z0-9 @#&=?/]{0,50}") {
+            let encoded = test_op("url.encode", &[json!(&s)]).unwrap();
+            let decoded = test_op("url.decode", &[encoded]).unwrap();
+            prop_assert_eq!(decoded.as_str().unwrap(), s.as_str());
+        }
+
+        #[test]
+        fn json_encode_decode_roundtrip_int(i in any::<i64>()) {
+            let encoded = test_op("json.encode", &[json!(i)]).unwrap();
+            let decoded = test_op("json.decode", &[encoded]).unwrap();
+            prop_assert_eq!(decoded, json!(i));
+        }
+
+        #[test]
+        fn json_encode_decode_roundtrip_string(s in "\\PC{0,50}") {
+            let encoded = test_op("json.encode", &[json!(&s)]).unwrap();
+            let decoded = test_op("json.decode", &[encoded]).unwrap();
+            prop_assert_eq!(decoded.as_str().unwrap(), s.as_str());
+        }
+
+        #[test]
+        fn html_escape_unescape_roundtrip(s in "[a-zA-Z0-9 <>&\"']{0,50}") {
+            let escaped = test_op("html.escape", &[json!(&s)]).unwrap();
+            let unescaped = test_op("html.unescape", &[escaped]).unwrap();
+            prop_assert_eq!(unescaped.as_str().unwrap(), s.as_str());
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Regex ops — never panic on arbitrary patterns/input
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn regex_match_never_panics(text in "\\PC{0,30}", pat in "[a-z.*+?]{1,10}") {
+            let _ = test_op("regex.match", &[json!(&text), json!(&pat)]);
+        }
+
+        #[test]
+        fn regex_find_all_superset_of_match(text in "[a-z]{0,30}", pat in "[a-z]{1,3}") {
+            let matched = test_op("regex.match", &[json!(&text), json!(&pat)]).unwrap();
+            let found = test_op("regex.find_all", &[json!(&text), json!(&pat)]).unwrap();
+            let found_arr = found.as_array().unwrap();
+            if matched == json!(true) {
+                prop_assert!(!found_arr.is_empty());
+            } else {
+                prop_assert!(found_arr.is_empty());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Math ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn math_floor_is_integer(f in any::<f64>().prop_filter("finite", |f| f.is_finite())) {
+            let result = test_op("math.floor", &[json!(f)]).unwrap();
+            prop_assert!(result.is_i64());
+        }
+
+        #[test]
+        fn math_round_identity_for_integers(i in -1000i64..1000) {
+            let result = test_op("math.round", &[json!(i as f64), json!(0)]).unwrap();
+            // math.round returns a float; verify numeric equivalence
+            prop_assert_eq!(result.as_f64().unwrap(), i as f64);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Headers ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn headers_set_get_roundtrip(name in "[a-z-]{1,15}", value in "\\PC{0,30}") {
+            let hdrs = test_op("headers.new", &[]).unwrap();
+            let with = test_op("headers.set", &[hdrs, json!(&name), json!(&value)]).unwrap();
+            let got = test_op("headers.get", &[with, json!(&name)]).unwrap();
+            prop_assert_eq!(got.as_str().unwrap(), value.as_str());
+        }
+
+        #[test]
+        fn headers_case_insensitive(name in "[A-Za-z]{1,10}", value in "[a-z]{1,10}") {
+            let hdrs = test_op("headers.new", &[]).unwrap();
+            let with = test_op("headers.set", &[hdrs, json!(&name), json!(&value)]).unwrap();
+            // Get with lowercase should still find it
+            let got = test_op("headers.get", &[with, json!(name.to_lowercase())]).unwrap();
+            prop_assert_eq!(got.as_str().unwrap(), value.as_str());
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Route matching
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn route_exact_matches_itself(path in "/[a-z]{1,5}(/[a-z]{1,5}){0,3}") {
+            let result = test_op("route.match", &[json!(&path), json!(&path)]).unwrap();
+            prop_assert_eq!(result, json!(true));
+        }
+
+        #[test]
+        fn route_match_never_panics(pattern in "/[a-z:*]{0,20}", path in "/[a-z/]{0,20}") {
+            let _ = test_op("route.match", &[json!(&pattern), json!(&path)]);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Crypto round-trips (sign/verify)
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn jwt_sign_verify_roundtrip(
+            key_val in "[a-z]{1,5}",
+            payload_val in "[a-z]{1,10}",
+            secret in "[a-zA-Z0-9]{8,16}",
+        ) {
+            let payload = json!({"data": payload_val, "key": key_val});
+            let token = test_op("crypto.sign_token", &[payload.clone(), json!(&secret)]).unwrap();
+            let verified = test_op("crypto.verify_token", &[token, json!(&secret)]).unwrap();
+            let obj = verified.as_object().unwrap();
+            prop_assert_eq!(obj.get("valid").unwrap(), &json!(true));
+            prop_assert_eq!(obj.get("payload").unwrap(), &payload);
+        }
+
+        #[test]
+        fn jwt_wrong_secret_fails(
+            payload_val in "[a-z]{1,5}",
+            secret1 in "[a-z]{8,12}",
+            secret2 in "[A-Z]{8,12}",
+        ) {
+            let payload = json!({"v": payload_val});
+            let token = test_op("crypto.sign_token", &[payload, json!(&secret1)]).unwrap();
+            let verified = test_op("crypto.verify_token", &[token, json!(&secret2)]).unwrap();
+            let obj = verified.as_object().unwrap();
+            prop_assert_eq!(obj.get("valid").unwrap(), &json!(false));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Hash ops — deterministic, never panic
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn sha256_deterministic(s in "\\PC{0,100}") {
+            let h1 = test_op("hash.sha256", &[json!(&s)]).unwrap();
+            let h2 = test_op("hash.sha256", &[json!(&s)]).unwrap();
+            prop_assert_eq!(&h1, &h2);
+            prop_assert_eq!(h1.as_str().unwrap().len(), 64); // SHA-256 = 64 hex chars
+        }
+
+        #[test]
+        fn sha512_deterministic(s in "\\PC{0,100}") {
+            let h1 = test_op("hash.sha512", &[json!(&s)]).unwrap();
+            let h2 = test_op("hash.sha512", &[json!(&s)]).unwrap();
+            prop_assert_eq!(&h1, &h2);
+            prop_assert_eq!(h1.as_str().unwrap().len(), 128); // SHA-512 = 128 hex chars
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Date ops
+    // ---------------------------------------------------------------
+
+    fn make_date(unix_ms: i64, tz: i64) -> Value {
+        json!({"unix_ms": unix_ms, "tz_offset_min": tz})
+    }
+
+    proptest! {
+        #[test]
+        fn date_from_parts_to_parts_roundtrip(
+            y in 1970i64..2100,
+            mo in 1i64..=12,
+            d in 1i64..=28,  // stay safe across all months
+            h in 0i64..24,
+            mi in 0i64..60,
+            s in 0i64..60,
+            ms in 0i64..1000,
+        ) {
+            let date = test_op("date.from_parts", &[
+                json!(y), json!(mo), json!(d), json!(h), json!(mi), json!(s), json!(ms),
+            ]).unwrap();
+            let parts = test_op("date.to_parts", &[date]).unwrap();
+            let p = parts.as_object().unwrap();
+            prop_assert_eq!(p["year"].as_i64().unwrap(), y);
+            prop_assert_eq!(p["month"].as_i64().unwrap(), mo);
+            prop_assert_eq!(p["day"].as_i64().unwrap(), d);
+            prop_assert_eq!(p["hour"].as_i64().unwrap(), h);
+            prop_assert_eq!(p["min"].as_i64().unwrap(), mi);
+            prop_assert_eq!(p["sec"].as_i64().unwrap(), s);
+            prop_assert_eq!(p["ms"].as_i64().unwrap(), ms);
+        }
+
+        #[test]
+        fn date_from_iso_to_iso_roundtrip(
+            y in 1970i64..2100,
+            mo in 1i64..=12,
+            d in 1i64..=28,
+            h in 0i64..24,
+            mi in 0i64..60,
+            s in 0i64..60,
+        ) {
+            let iso = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+            let date = test_op("date.from_iso", &[json!(&iso)]).unwrap();
+            let back = test_op("date.to_iso", &[date]).unwrap();
+            prop_assert_eq!(back.as_str().unwrap(), iso.as_str());
+        }
+
+        #[test]
+        fn date_from_iso_with_tz_roundtrip(
+            y in 1970i64..2100,
+            mo in 1i64..=12,
+            d in 1i64..=28,
+            h in 0i64..24,
+            mi in 0i64..60,
+            s in 0i64..60,
+            tz_h in 1i64..=12,  // >0 so offset is non-zero (offset 0 normalizes to Z)
+            tz_m in 0i64..=59,
+        ) {
+            let iso = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+{:02}:{:02}",
+                y, mo, d, h, mi, s, tz_h, tz_m);
+            let date = test_op("date.from_iso", &[json!(&iso)]).unwrap();
+            let back = test_op("date.to_iso", &[date]).unwrap();
+            prop_assert_eq!(back.as_str().unwrap(), iso.as_str());
+        }
+
+        #[test]
+        fn date_from_iso_with_ms_roundtrip(
+            y in 1970i64..2100,
+            mo in 1i64..=12,
+            d in 1i64..=28,
+            h in 0i64..24,
+            mi in 0i64..60,
+            s in 0i64..60,
+            ms in 1i64..1000,  // >0 so the .NNN is emitted
+        ) {
+            let iso = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mo, d, h, mi, s, ms);
+            let date = test_op("date.from_iso", &[json!(&iso)]).unwrap();
+            let back = test_op("date.to_iso", &[date]).unwrap();
+            prop_assert_eq!(back.as_str().unwrap(), iso.as_str());
+        }
+
+        #[test]
+        fn date_add_diff_inverse(unix_ms in 0i64..1_000_000_000_000, delta in -86_400_000i64..86_400_000) {
+            let d1 = make_date(unix_ms, 0);
+            let d2 = test_op("date.add", &[d1.clone(), json!(delta)]).unwrap();
+            let diff = test_op("date.diff", &[d2, d1]).unwrap();
+            prop_assert_eq!(diff.as_i64().unwrap(), delta);
+        }
+
+        #[test]
+        fn date_add_days_correct(unix_ms in 0i64..1_000_000_000_000, days in -365i64..365) {
+            let d1 = make_date(unix_ms, 0);
+            let d2 = test_op("date.add_days", &[d1.clone(), json!(days)]).unwrap();
+            let diff = test_op("date.diff", &[d2, d1]).unwrap();
+            prop_assert_eq!(diff.as_i64().unwrap(), days * 86_400_000);
+        }
+
+        #[test]
+        fn date_compare_consistent(a_ms in 0i64..1_000_000_000_000, b_ms in 0i64..1_000_000_000_000) {
+            let a = make_date(a_ms, 0);
+            let b = make_date(b_ms, 0);
+            let cmp = test_op("date.compare", &[a, b]).unwrap().as_i64().unwrap();
+            if a_ms < b_ms {
+                prop_assert_eq!(cmp, -1);
+            } else if a_ms > b_ms {
+                prop_assert_eq!(cmp, 1);
+            } else {
+                prop_assert_eq!(cmp, 0);
+            }
+        }
+
+        #[test]
+        fn date_weekday_in_range(unix_ms in 0i64..2_000_000_000_000) {
+            let d = make_date(unix_ms, 0);
+            let wd = test_op("date.weekday", &[d]).unwrap().as_i64().unwrap();
+            prop_assert!(wd >= 1 && wd <= 7, "weekday {} out of range", wd);
+        }
+
+        #[test]
+        fn date_with_tz_preserves_unix(unix_ms in 0i64..1_000_000_000_000, tz in -720i64..720) {
+            let d = make_date(unix_ms, 0);
+            let d2 = test_op("date.with_tz", &[d, json!(tz)]).unwrap();
+            let obj = d2.as_object().unwrap();
+            prop_assert_eq!(obj["unix_ms"].as_i64().unwrap(), unix_ms);
+            prop_assert_eq!(obj["tz_offset_min"].as_i64().unwrap(), tz);
+        }
+
+        #[test]
+        fn date_to_unix_ms_extracts(unix_ms in 0i64..2_000_000_000_000) {
+            let d = make_date(unix_ms, 0);
+            let result = test_op("date.to_unix_ms", &[d]).unwrap();
+            prop_assert_eq!(result.as_i64().unwrap(), unix_ms);
+        }
+
+        #[test]
+        fn date_from_unix_ms_roundtrip(unix_ms in 0i64..2_000_000_000_000) {
+            let d = test_op("date.from_unix_ms", &[json!(unix_ms)]).unwrap();
+            let back = test_op("date.to_unix_ms", &[d]).unwrap();
+            prop_assert_eq!(back.as_i64().unwrap(), unix_ms);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Stamp ops
+    // ---------------------------------------------------------------
+
+    fn make_stamp(ns: i64) -> Value {
+        json!({"ns": ns})
+    }
+
+    proptest! {
+        #[test]
+        fn stamp_from_ns_to_ns_roundtrip(ns in 0i64..1_000_000_000_000_000) {
+            let stamp = test_op("stamp.from_ns", &[json!(ns)]).unwrap();
+            let back = test_op("stamp.to_ns", &[stamp]).unwrap();
+            prop_assert_eq!(back.as_i64().unwrap(), ns);
+        }
+
+        #[test]
+        fn stamp_to_ms_truncates(ns in 0i64..1_000_000_000_000_000) {
+            let stamp = make_stamp(ns);
+            let ms = test_op("stamp.to_ms", &[stamp]).unwrap().as_i64().unwrap();
+            prop_assert_eq!(ms, ns / 1_000_000);
+        }
+
+        #[test]
+        fn stamp_add_diff_inverse(ns in 0i64..1_000_000_000_000, delta in -1_000_000_000i64..1_000_000_000) {
+            let s1 = make_stamp(ns);
+            let s2 = test_op("stamp.add", &[s1.clone(), json!(delta)]).unwrap();
+            let diff = test_op("stamp.diff", &[s2, s1]).unwrap();
+            prop_assert_eq!(diff.as_i64().unwrap(), delta);
+        }
+
+        #[test]
+        fn stamp_compare_consistent(a_ns in 0i64..1_000_000_000_000, b_ns in 0i64..1_000_000_000_000) {
+            let a = make_stamp(a_ns);
+            let b = make_stamp(b_ns);
+            let cmp = test_op("stamp.compare", &[a, b]).unwrap().as_i64().unwrap();
+            if a_ns < b_ns {
+                prop_assert_eq!(cmp, -1);
+            } else if a_ns > b_ns {
+                prop_assert_eq!(cmp, 1);
+            } else {
+                prop_assert_eq!(cmp, 0);
+            }
+        }
+
+        #[test]
+        fn stamp_to_date_consistent(ns in 0i64..1_000_000_000_000_000) {
+            let stamp = make_stamp(ns);
+            let date = test_op("stamp.to_date", &[stamp]).unwrap();
+            let date_ms = date.as_object().unwrap()["unix_ms"].as_i64().unwrap();
+            prop_assert_eq!(date_ms, ns / 1_000_000);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Time range ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn trange_start_end_accessors(s_ms in 0i64..1_000_000_000, e_ms in 0i64..1_000_000_000) {
+            let (lo, hi) = if s_ms <= e_ms { (s_ms, e_ms) } else { (e_ms, s_ms) };
+            let start = make_date(lo, 0);
+            let end = make_date(hi, 0);
+            let tr = test_op("trange.new", &[start.clone(), end.clone()]).unwrap();
+            let got_start = test_op("trange.start", &[tr.clone()]).unwrap();
+            let got_end = test_op("trange.end", &[tr]).unwrap();
+            prop_assert_eq!(got_start, start);
+            prop_assert_eq!(got_end, end);
+        }
+
+        #[test]
+        fn trange_duration_correct(s_ms in 0i64..500_000_000, gap in 0i64..500_000_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms + gap, 0);
+            let tr = test_op("trange.new", &[start, end]).unwrap();
+            let dur = test_op("trange.duration_ms", &[tr]).unwrap().as_i64().unwrap();
+            prop_assert_eq!(dur, gap);
+        }
+
+        #[test]
+        fn trange_contains_endpoints(s_ms in 0i64..500_000_000, gap in 1i64..500_000_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms + gap, 0);
+            let tr = test_op("trange.new", &[start.clone(), end.clone()]).unwrap();
+            let has_start = test_op("trange.contains", &[tr.clone(), start]).unwrap();
+            let has_end = test_op("trange.contains", &[tr, end]).unwrap();
+            prop_assert_eq!(has_start, json!(true));
+            prop_assert_eq!(has_end, json!(true));
+        }
+
+        #[test]
+        fn trange_contains_not_outside(s_ms in 100i64..500_000_000, gap in 1i64..500_000_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms + gap, 0);
+            let tr = test_op("trange.new", &[start, end]).unwrap();
+            let before = make_date(s_ms - 1, 0);
+            let after = make_date(s_ms + gap + 1, 0);
+            let has_before = test_op("trange.contains", &[tr.clone(), before]).unwrap();
+            let has_after = test_op("trange.contains", &[tr, after]).unwrap();
+            prop_assert_eq!(has_before, json!(false));
+            prop_assert_eq!(has_after, json!(false));
+        }
+
+        #[test]
+        fn trange_overlaps_self(s_ms in 0i64..500_000_000, gap in 1i64..500_000_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms + gap, 0);
+            let tr = test_op("trange.new", &[start, end]).unwrap();
+            let overlaps = test_op("trange.overlaps", &[tr.clone(), tr]).unwrap();
+            prop_assert_eq!(overlaps, json!(true));
+        }
+
+        #[test]
+        fn trange_shift_preserves_duration(s_ms in 0i64..500_000_000, gap in 1i64..500_000_000, shift in -100_000i64..100_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms + gap, 0);
+            let tr = test_op("trange.new", &[start, end]).unwrap();
+            let shifted = test_op("trange.shift", &[tr.clone(), json!(shift)]).unwrap();
+            let dur_before = test_op("trange.duration_ms", &[tr]).unwrap().as_i64().unwrap();
+            let dur_after = test_op("trange.duration_ms", &[shifted]).unwrap().as_i64().unwrap();
+            prop_assert_eq!(dur_before, dur_after);
+        }
+
+        #[test]
+        fn trange_invalid_start_after_end(s_ms in 1i64..1_000_000_000, gap in 1i64..1_000_000) {
+            let start = make_date(s_ms, 0);
+            let end = make_date(s_ms - gap, 0);
+            let result = test_op("trange.new", &[start, end]);
+            prop_assert!(result.is_err());
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Error ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn error_new_code_message_roundtrip(code in "[A-Z_]{3,10}", msg in "\\PC{0,30}") {
+            let err = test_op("error.new", &[json!(&code), json!(&msg)]).unwrap();
+            let got_code = test_op("error.code", &[err.clone()]).unwrap();
+            let got_msg = test_op("error.message", &[err]).unwrap();
+            prop_assert_eq!(got_code.as_str().unwrap(), code.as_str());
+            prop_assert_eq!(got_msg.as_str().unwrap(), msg.as_str());
+        }
+
+        #[test]
+        fn error_wrap_prepends_context(code in "[A-Z]{3,5}", msg in "[a-z]{3,15}", ctx in "[a-z]{3,15}") {
+            let err = test_op("error.new", &[json!(&code), json!(&msg)]).unwrap();
+            let wrapped = test_op("error.wrap", &[err, json!(&ctx)]).unwrap();
+            let got_msg = test_op("error.message", &[wrapped]).unwrap();
+            let expected = format!("{ctx}: {msg}");
+            prop_assert_eq!(got_msg.as_str().unwrap(), expected.as_str());
+        }
+
+        #[test]
+        fn error_new_with_details(code in "[A-Z]{3,5}", msg in "[a-z]{3,10}", detail_val in any::<i64>()) {
+            let err = test_op("error.new", &[json!(&code), json!(&msg), json!(detail_val)]).unwrap();
+            let obj = err.as_object().unwrap();
+            prop_assert_eq!(obj.get("details").unwrap(), &json!(detail_val));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Cookie ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn cookie_set_parse_roundtrip(name in "[a-z]{1,10}", value in "[a-zA-Z0-9]{1,20}") {
+            let header = test_op("cookie.set", &[json!(&name), json!(&value)]).unwrap();
+            let header_str = header.as_str().unwrap();
+            // cookie.set returns "name=value", parse should recover it
+            let parsed = test_op("cookie.parse", &[json!(header_str)]).unwrap();
+            let got = test_op("cookie.get", &[parsed, json!(&name)]).unwrap();
+            prop_assert_eq!(got.as_str().unwrap(), value.as_str());
+        }
+
+        #[test]
+        fn cookie_parse_multiple(
+            n1 in "[a-e]{1,5}", v1 in "[a-zA-Z0-9]{1,10}",
+            n2 in "[f-j]{1,5}", v2 in "[a-zA-Z0-9]{1,10}",
+        ) {
+            // Non-overlapping key ranges so names can't collide
+            let header = format!("{n1}={v1}; {n2}={v2}");
+            let parsed = test_op("cookie.parse", &[json!(&header)]).unwrap();
+            let got1 = test_op("cookie.get", &[parsed.clone(), json!(&n1)]).unwrap();
+            let got2 = test_op("cookie.get", &[parsed, json!(&n2)]).unwrap();
+            prop_assert_eq!(got1.as_str().unwrap(), v1.as_str());
+            prop_assert_eq!(got2.as_str().unwrap(), v2.as_str());
+        }
+
+        #[test]
+        fn cookie_get_missing_returns_null(name in "[a-z]{1,10}") {
+            let empty = test_op("cookie.parse", &[json!("")]).unwrap();
+            let got = test_op("cookie.get", &[empty, json!(&name)]).unwrap();
+            prop_assert!(got.is_null());
+        }
+
+        #[test]
+        fn cookie_delete_format(name in "[a-z]{1,10}") {
+            let header = test_op("cookie.delete", &[json!(&name)]).unwrap();
+            let expected = format!("{name}=; Max-Age=0");
+            prop_assert_eq!(header.as_str().unwrap(), expected.as_str());
+        }
+
+        #[test]
+        fn cookie_set_with_opts(name in "[a-z]{1,5}", value in "[a-z]{1,5}", max_age in 0i64..86400) {
+            let opts = json!({"path": "/", "max_age": max_age, "secure": true, "http_only": true});
+            let header = test_op("cookie.set", &[json!(&name), json!(&value), opts]).unwrap();
+            let s = header.as_str().unwrap();
+            let nv = format!("{}={}", name, value);
+            let ma = format!("Max-Age={}", max_age);
+            prop_assert!(s.contains(&nv));
+            prop_assert!(s.contains("Path=/"));
+            prop_assert!(s.contains(&ma));
+            prop_assert!(s.contains("Secure"));
+            prop_assert!(s.contains("HttpOnly"));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // URL parsing ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn url_parse_extracts_path(path in "/[a-z]{1,5}(/[a-z]{1,5}){0,3}") {
+            let url = format!("http://example.com{path}");
+            let result = test_op("url.parse", &[json!(&url)]).unwrap();
+            let obj = result.as_object().unwrap();
+            prop_assert_eq!(obj["path"].as_str().unwrap(), path.as_str());
+        }
+
+        #[test]
+        fn url_parse_extracts_query(
+            path in "/[a-z]{1,5}",
+            key in "[a-z]{1,5}",
+            val in "[a-z]{1,5}",
+        ) {
+            let url = format!("http://example.com{path}?{key}={val}");
+            let result = test_op("url.parse", &[json!(&url)]).unwrap();
+            let obj = result.as_object().unwrap();
+            prop_assert_eq!(obj["path"].as_str().unwrap(), path.as_str());
+            let expected_query = format!("{}={}", key, val);
+            prop_assert_eq!(obj["query"].as_str().unwrap(), expected_query.as_str());
+        }
+
+        #[test]
+        fn url_parse_extracts_fragment(
+            path in "/[a-z]{1,5}",
+            frag in "[a-z]{1,10}",
+        ) {
+            let url = format!("http://example.com{path}#{frag}");
+            let result = test_op("url.parse", &[json!(&url)]).unwrap();
+            let obj = result.as_object().unwrap();
+            prop_assert_eq!(obj["path"].as_str().unwrap(), path.as_str());
+            prop_assert_eq!(obj["fragment"].as_str().unwrap(), frag.as_str());
+        }
+
+        #[test]
+        fn url_parse_no_scheme(path in "/[a-z]{1,5}") {
+            let result = test_op("url.parse", &[json!(&path)]).unwrap();
+            let obj = result.as_object().unwrap();
+            prop_assert_eq!(obj["path"].as_str().unwrap(), path.as_str());
+        }
+
+        #[test]
+        fn url_query_parse_roundtrip(
+            k1 in "[a-e]{1,5}", v1 in "[a-z]{1,5}",
+            k2 in "[f-j]{1,5}", v2 in "[a-z]{1,5}",
+        ) {
+            let qs = format!("{k1}={v1}&{k2}={v2}");
+            let parsed = test_op("url.query_parse", &[json!(&qs)]).unwrap();
+            let obj = parsed.as_object().unwrap();
+            prop_assert_eq!(obj[&k1].as_str().unwrap(), v1.as_str());
+            prop_assert_eq!(obj[&k2].as_str().unwrap(), v2.as_str());
+        }
+
+        #[test]
+        fn url_query_parse_with_encoding(key in "[a-z]{1,5}", val in "[a-z ]{1,10}") {
+            let encoded_val = val.replace(' ', "+");
+            let qs = format!("{key}={encoded_val}");
+            let parsed = test_op("url.query_parse", &[json!(&qs)]).unwrap();
+            let obj = parsed.as_object().unwrap();
+            prop_assert_eq!(obj[&key].as_str().unwrap(), val.as_str());
+        }
+
+        #[test]
+        fn url_parse_never_panics(s in "\\PC{0,50}") {
+            let _ = test_op("url.parse", &[json!(&s)]);
+        }
+
+        #[test]
+        fn url_query_parse_never_panics(s in "\\PC{0,50}") {
+            let _ = test_op("url.query_parse", &[json!(&s)]);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Template rendering ops
+    // ---------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn tmpl_render_substitutes_var(key in "[a-z]{1,8}", val in "[a-zA-Z0-9]{1,20}") {
+            let template = format!("Hello {{{{{key}}}}}!");
+            let data = json!({&key: &val});
+            let result = test_op("tmpl.render", &[json!(&template), data]).unwrap();
+            // tmpl.render HTML-escapes by default with {{key}}
+            // For simple alphanumeric values, escape is a no-op
+            prop_assert!(result.as_str().unwrap().contains(&val));
+        }
+
+        #[test]
+        fn tmpl_render_unescaped(key in "[a-z]{1,8}", val in "[a-zA-Z0-9]{1,20}") {
+            let template = format!("Hello {{{{{{{key}}}}}}}!");
+            let data = json!({&key: &val});
+            let result = test_op("tmpl.render", &[json!(&template), data]).unwrap();
+            let expected = format!("Hello {val}!");
+            prop_assert_eq!(result.as_str().unwrap(), expected.as_str());
+        }
+
+        #[test]
+        fn tmpl_render_missing_key_empty(key in "[a-z]{1,8}") {
+            let template = format!("{{{{{key}}}}}");
+            let data = json!({});
+            let result = test_op("tmpl.render", &[json!(&template), data]).unwrap();
+            // Missing keys render as empty string
+            prop_assert_eq!(result.as_str().unwrap(), "");
+        }
+
+        #[test]
+        fn tmpl_render_no_tags_passthrough(text in "[a-zA-Z0-9 ,.!]{1,50}") {
+            let data = json!({});
+            let result = test_op("tmpl.render", &[json!(&text), data]).unwrap();
+            prop_assert_eq!(result.as_str().unwrap(), text.as_str());
+        }
+
+        #[test]
+        fn tmpl_render_section_with_array(key in "[a-z]{1,5}", items in prop::collection::vec("[a-z]{1,5}", 0..5)) {
+            let template = format!("{{{{#{key}}}}}[{{{{.}}}}]{{{{/{key}}}}}");
+            let arr: Vec<Value> = items.iter().map(|s| json!(s)).collect();
+            let data = json!({&key: arr});
+            let result = test_op("tmpl.render", &[json!(&template), data]).unwrap();
+            let s = result.as_str().unwrap();
+            // Each item should produce a [item] segment
+            for item in &items {
+                let expected = format!("[{}]", item);
+                prop_assert!(s.contains(&expected));
+            }
+        }
+
+        #[test]
+        fn tmpl_render_never_panics(template in "\\PC{0,50}", key in "[a-z]{1,5}", val in "\\PC{0,20}") {
+            let data = json!({&key: &val});
+            let _ = test_op("tmpl.render", &[json!(&template), data]);
+        }
+    }
+}
