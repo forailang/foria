@@ -1,9 +1,15 @@
 pub mod ast;
 pub mod codec;
+pub mod formatter;
 pub mod host;
 pub mod ir;
+pub mod lexer;
 pub mod loader;
+pub mod op_types;
+pub mod parser;
 pub mod pure_ops;
+pub mod sema;
 pub mod sync_host;
+pub mod typecheck;
 pub mod sync_runtime;
 pub mod types;

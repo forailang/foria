@@ -25,16 +25,26 @@ mod doc;
 mod ffi_manager;
 mod formatter;
 mod host_native;
-mod lexer;
+mod lexer {
+    pub use forai_core::lexer::*;
+}
 mod lsp;
 mod mcp;
-mod op_types;
-mod parser;
+mod op_types {
+    pub use forai_core::op_types::*;
+}
+mod parser {
+    pub use forai_core::parser::*;
+}
 mod runtime;
-mod sema;
+mod sema {
+    pub use forai_core::sema::*;
+}
 mod stdlib_docs;
 mod tester;
-mod typecheck;
+mod typecheck {
+    pub use forai_core::typecheck::*;
+}
 mod wasm_runner;
 
 use crate::ast::{Flow, Statement, TopDecl};

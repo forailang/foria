@@ -6,9 +6,15 @@ mod ast {
     pub use forai_core::ast::*;
 }
 
-pub mod lexer;
-pub mod parser;
-pub mod formatter;
+pub mod lexer {
+    pub use forai_core::lexer::*;
+}
+pub mod parser {
+    pub use forai_core::parser::*;
+}
+pub mod formatter {
+    pub use forai_core::formatter::*;
+}
 
 pub mod deps {
     pub mod semver;
