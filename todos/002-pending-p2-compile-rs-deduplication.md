@@ -1,6 +1,6 @@
 ---
 status: pending
-priority: p1
+priority: p2
 issue_id: "002"
 tags: [code-review, architecture, correctness, duplication]
 ---
