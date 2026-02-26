@@ -1,5 +1,4 @@
 import { StreamLanguage, LanguageSupport } from "@codemirror/language";
-import { tags as t } from "@lezer/highlight";
 
 const keywords = new Set([
   "func", "flow", "source", "sink", "docs", "test", "type", "data", "enum",

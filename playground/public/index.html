@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'">
   <title>forai Playground</title>
   <style>
     :root {
@@ -82,16 +83,6 @@
     .toolbar .status {
       font-size: 12px;
       color: var(--text-muted);
-    }
-
-    .toolbar select {
-      background: var(--bg-tertiary);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 8px;
-      font-size: 13px;
-      cursor: pointer;
     }
 
     .toolbar kbd {
@@ -321,11 +312,8 @@
 
   <div class="toolbar">
     <span class="logo">forai</span>
-    <button class="primary" id="btn-run">Run <kbd>Cmd+Enter</kbd></button>
+    <button class="primary" id="btn-run">Run <kbd id="run-shortcut"></kbd></button>
     <button id="btn-format">Format</button>
-    <select id="examples-select">
-      <option value="">Examples...</option>
-    </select>
     <span class="spacer"></span>
     <span class="status" id="status">Initializing...</span>
   </div>

@@ -57,37 +57,6 @@ pub fn format_source(source: &str) -> String {
     forai_core::formatter::format_source(source)
 }
 
-/// Check if .fa source is already correctly formatted.
-#[wasm_bindgen]
-pub fn check_formatted(source: &str) -> bool {
-    forai_core::formatter::check_formatted(source)
-}
-
-/// Lex .fa source into a JSON array of tokens.
-/// Each token: `{"kind": "Ident"|"Number"|..., "text": "...", "line": N, "col": N}`
-/// Returns `{"ok": [...]}` on success or `{"error": "..."}` on lex error.
-#[wasm_bindgen]
-pub fn tokenize(source: &str) -> String {
-    match forai_core::lexer::lex(source) {
-        Ok(tokens) => {
-            let arr: Vec<serde_json::Value> = tokens
-                .iter()
-                .map(|t| serde_json::json!({
-                    "kind": format!("{:?}", t.kind),
-                    "text": &source[t.start..t.end],
-                    "line": t.span.line,
-                    "col": t.span.col,
-                }))
-                .collect();
-            serde_json::json!({ "ok": arr }).to_string()
-        }
-        Err(e) => {
-            serde_json::json!({
-                "error": format!("{}:{} {}", e.span.line, e.span.col, e.message)
-            }).to_string()
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -116,15 +85,6 @@ mod tests {
     fn format_roundtrip() {
         let src = "func Foo\n    take x as text\n    emit result as text\n    fail error as text\nbody\n    emit x\ndone\n";
         let formatted = format_source(src);
-        assert!(check_formatted(&formatted));
-    }
-
-    #[test]
-    fn tokenize_returns_json() {
-        let result = tokenize("func main\ndone\n");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let tokens = parsed.get("ok").expect("expected ok key");
-        assert!(tokens.is_array());
-        assert!(!tokens.as_array().unwrap().is_empty());
+        assert_eq!(src, formatted);
     }
 }

@@ -6,6 +6,7 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { linter, Diagnostic } from "@codemirror/lint";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { forai } from "./lang/forai";
+import type { CompileError, IrData, WorkerResponse } from "./types";
 
 // --- State ---
 
@@ -64,8 +65,8 @@ done
 ];
 
 let activeFileIndex = 0;
-let compileErrors: any[] = [];
-let lastIrJson = "";
+let compileErrors: CompileError[] = [];
+let lastIrData: IrData | null = null;
 let compilerReady = false;
 let compileTimer: ReturnType<typeof setTimeout> | null = null;
 let editorView: EditorView | null = null;
@@ -75,7 +76,7 @@ let editorView: EditorView | null = null;
 const compilerWorker = new Worker("./compiler-worker.js", { type: "module" });
 let compileId = 0;
 
-compilerWorker.onmessage = (e: MessageEvent) => {
+compilerWorker.onmessage = (e: MessageEvent<WorkerResponse>) => {
   const msg = e.data;
 
   if (msg.type === "ready") {
@@ -86,18 +87,20 @@ compilerWorker.onmessage = (e: MessageEvent) => {
   }
 
   if (msg.type === "compile-result") {
+    if (msg.id !== compileId) return; // Discard stale results
     if (msg.error) {
       setCompileStatus(`Error: ${msg.error}`);
       return;
     }
-    const { result, elapsed } = msg;
-    if (result.ok) {
+    const result = msg.result;
+    const elapsed = msg.elapsed ?? 0;
+    if (result?.ok) {
       compileErrors = [];
-      lastIrJson = JSON.stringify(result.ok.entry_ir, null, 2);
+      lastIrData = result.ok.entry_ir;
       setCompileStatus(`Compiled in ${elapsed.toFixed(0)}ms`);
-    } else if (result.errors) {
+    } else if (result?.errors) {
       compileErrors = result.errors;
-      lastIrJson = "";
+      lastIrData = null;
       setCompileStatus(`${result.errors.length} error(s)`);
     }
     updateLintDiagnostics();
@@ -233,7 +236,9 @@ function renderTabs() {
   files.forEach((f, i) => {
     const tab = document.createElement("div");
     tab.className = `tab${i === activeFileIndex ? " active" : ""}`;
-    tab.innerHTML = `<span>${f.name}</span>`;
+    const span = document.createElement("span");
+    span.textContent = f.name;
+    tab.appendChild(span);
     tab.onclick = () => switchFile(i);
     tabBar.appendChild(tab);
   });
@@ -256,8 +261,9 @@ function updateOutputPanel() {
         .join("");
     }
   } else if (activeOutputTab === "ir-json") {
-    if (lastIrJson) {
-      panel.innerHTML = `<pre class="ir-json">${escapeHtml(lastIrJson)}</pre>`;
+    if (lastIrData) {
+      const json = JSON.stringify(lastIrData, null, 2);
+      panel.innerHTML = `<pre class="ir-json">${escapeHtml(json)}</pre>`;
     } else {
       panel.innerHTML = '<div class="empty-state">No IR available</div>';
     }
@@ -305,9 +311,9 @@ function handleRun() {
     entryPoint: "main.fa",
   });
 
-  if (compileErrors.length === 0 && lastIrJson) {
+  if (compileErrors.length === 0 && lastIrData) {
     outputLines.push("Compilation successful.");
-    outputLines.push(`IR has ${JSON.parse(lastIrJson).nodes?.length || 0} nodes.`);
+    outputLines.push(`IR has ${lastIrData.nodes?.length || 0} nodes.`);
     outputLines.push("");
     outputLines.push("(Runtime execution coming soon)");
   } else {
@@ -391,6 +397,10 @@ function init() {
 
   document.getElementById("btn-run")!.onclick = handleRun;
   document.getElementById("btn-format")!.onclick = handleFormat;
+
+  // Detect platform for keyboard shortcut display
+  const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+  document.getElementById("run-shortcut")!.textContent = isMac ? "Cmd+Enter" : "Ctrl+Enter";
 
   // Update file count
   document.getElementById("file-count")!.textContent = `${files.length} file(s)`;

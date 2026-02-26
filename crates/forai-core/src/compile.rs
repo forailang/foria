@@ -1,4 +1,4 @@
-use crate::ast::{Arg, DeclKind, Expr, FlowDecl, FuncDecl, Statement, TopDecl};
+use crate::ast::{DeclKind, Expr, FlowDecl, FuncDecl, Statement, TopDecl};
 use crate::codec::CodecRegistry;
 use crate::ir;
 use crate::loader::{FlowProgram, FlowRegistry, ProgramBundle};
@@ -7,6 +7,7 @@ use crate::sema;
 use crate::typecheck;
 use crate::types::TypeRegistry;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 /// A structured compile error with location info.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -23,10 +24,10 @@ impl std::fmt::Display for CompileError {
     }
 }
 
-/// Complete list of known runtime ops (pure + I/O).
-/// Used for unknown-op validation during compilation.
-pub fn known_ops() -> HashSet<&'static str> {
-    let mut ops: HashSet<&str> = crate::pure_ops::known_ops().iter().copied().collect();
+/// Complete list of known runtime ops (pure + I/O + codec).
+/// Computed once and cached for the lifetime of the process.
+static KNOWN_OPS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let mut ops: HashSet<String> = crate::pure_ops::known_ops().iter().map(|s| s.to_string()).collect();
     // I/O ops (from host.rs and runtime)
     for op in &[
         "http.extract_path", "http.extract_params",
@@ -82,15 +83,19 @@ pub fn known_ops() -> HashSet<&'static str> {
         "tmpl.render",
         "ffi.available",
     ] {
-        ops.insert(op);
+        ops.insert(op.to_string());
     }
     // Codec ops
     let codec_registry = CodecRegistry::default_registry();
-    let codec_ops = codec_registry.known_ops();
-    for cop in &codec_ops {
-        ops.insert(Box::leak(cop.clone().into_boxed_str()));
+    for cop in codec_registry.known_ops() {
+        ops.insert(cop);
     }
     ops
+});
+
+/// Returns the cached set of all known ops.
+pub fn known_ops() -> &'static HashSet<String> {
+    &KNOWN_OPS
 }
 
 /// Compile a project from a virtual filesystem (HashMap of path -> source).
@@ -151,8 +156,6 @@ pub fn compile_project(
 
     // Resolve uses from virtual filesystem
     let known = known_ops();
-    let codec_registry = CodecRegistry::default_registry();
-    let extra_ops: HashSet<String> = codec_registry.known_ops().into_iter().collect();
     let mut flow_registry = FlowRegistry::new();
     let mut loading_set = HashSet::new();
 
@@ -168,8 +171,7 @@ pub fn compile_project(
                 &uses.name,
                 &resolved_path,
                 files,
-                &known,
-                &extra_ops,
+                known,
                 &mut flow_registry,
                 &mut loading_set,
             )
@@ -201,7 +203,6 @@ pub fn compile_project(
         .iter()
         .filter(|op| {
             !known.contains(op.as_str())
-                && !extra_ops.contains(op.as_str())
                 && !flow_registry.is_flow(op)
                 && !op.starts_with("ffi.")
         })
@@ -267,8 +268,7 @@ fn load_virtual_module(
     name: &str,
     path: &str,
     files: &HashMap<String, String>,
-    known: &HashSet<&str>,
-    extra_ops: &HashSet<String>,
+    known: &HashSet<String>,
     registry: &mut FlowRegistry,
     loading_set: &mut HashSet<String>,
 ) -> Result<(), String> {
@@ -289,7 +289,7 @@ fn load_virtual_module(
 
     if let Some(src) = files.get(&file_key) {
         let program = compile_single_virtual_file(
-            name, &file_key, src, files, known, extra_ops, registry, loading_set,
+            name, &file_key, src, files, known, registry, loading_set,
         )?;
         registry.insert(name.to_string(), program);
     } else {
@@ -330,7 +330,6 @@ fn load_virtual_module(
                 src,
                 files,
                 known,
-                extra_ops,
                 registry,
                 loading_set,
             )?;
@@ -348,9 +347,8 @@ fn compile_single_virtual_file(
     file_path: &str,
     src: &str,
     files: &HashMap<String, String>,
-    known: &HashSet<&str>,
-    extra_ops: &HashSet<String>,
-    parent_registry: &FlowRegistry,
+    known: &HashSet<String>,
+    parent_registry: &mut FlowRegistry,
     loading_set: &mut HashSet<String>,
 ) -> Result<FlowProgram, String> {
     let module = parser::parse_module_v1(src)
@@ -368,9 +366,8 @@ fn compile_single_virtual_file(
     let type_registry = TypeRegistry::from_module(&module)
         .map_err(|errors| format!("{}: type errors:\n{}", file_path, errors.join("\n")))?;
 
-    // Resolve nested uses
+    // Resolve nested uses — load into parent registry so they're available at runtime
     let file_dir = file_path.rfind('/').map(|i| &file_path[..i]).unwrap_or("");
-    let mut sub_registry = FlowRegistry::new();
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
             let resolved = resolve_virtual_path(&uses.path, file_dir);
@@ -379,8 +376,7 @@ fn compile_single_virtual_file(
                 &resolved,
                 files,
                 known,
-                extra_ops,
-                &mut sub_registry,
+                parent_registry,
                 loading_set,
             )?;
         }
@@ -389,20 +385,19 @@ fn compile_single_virtual_file(
     // Find the callable
     let result = module.decls.iter().find_map(|decl| match decl {
         TopDecl::Func(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, extra_ops, parent_registry,
-            &sub_registry, DeclKind::Func,
+            f, &type_registry, file_path, known, parent_registry,
+            DeclKind::Func,
         )),
         TopDecl::Sink(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, extra_ops, parent_registry,
-            &sub_registry, DeclKind::Sink,
+            f, &type_registry, file_path, known, parent_registry,
+            DeclKind::Sink,
         )),
         TopDecl::Source(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, extra_ops, parent_registry,
-            &sub_registry, DeclKind::Source,
+            f, &type_registry, file_path, known, parent_registry,
+            DeclKind::Source,
         )),
         TopDecl::Flow(f) => Some(compile_virtual_flow(
-            f, &type_registry, file_path, known, extra_ops, parent_registry,
-            &sub_registry,
+            f, &type_registry, file_path, known, parent_registry,
         )),
         _ => None,
     });
@@ -419,10 +414,8 @@ fn compile_virtual_func(
     func_decl: &FuncDecl,
     registry: &TypeRegistry,
     file_path: &str,
-    known: &HashSet<&str>,
-    extra_ops: &HashSet<String>,
-    parent_registry: &FlowRegistry,
-    sub_registry: &FlowRegistry,
+    known: &HashSet<String>,
+    flow_registry: &FlowRegistry,
     kind: DeclKind,
 ) -> Result<FlowProgram, String> {
     let flow = parser::parse_runtime_func_decl_v1(func_decl)
@@ -437,9 +430,7 @@ fn compile_virtual_func(
         .iter()
         .filter(|op| {
             !known.contains(op.as_str())
-                && !extra_ops.contains(op.as_str())
-                && !parent_registry.is_flow(op)
-                && !sub_registry.is_flow(op)
+                && !flow_registry.is_flow(op)
                 && !op.starts_with("ffi.")
         })
         .collect();
@@ -479,10 +470,8 @@ fn compile_virtual_flow(
     flow_decl: &FlowDecl,
     registry: &TypeRegistry,
     file_path: &str,
-    known: &HashSet<&str>,
-    extra_ops: &HashSet<String>,
-    parent_registry: &FlowRegistry,
-    sub_registry: &FlowRegistry,
+    known: &HashSet<String>,
+    flow_registry: &FlowRegistry,
 ) -> Result<FlowProgram, String> {
     let flow_graph = parser::parse_flow_graph_decl_v1(flow_decl)
         .map_err(|e| format!("{}: flow `{}` parse error: {e}", file_path, flow_decl.name))?;
@@ -495,9 +484,7 @@ fn compile_virtual_flow(
         .iter()
         .filter(|op| {
             !known.contains(op.as_str())
-                && !extra_ops.contains(op.as_str())
-                && !parent_registry.is_flow(op)
-                && !sub_registry.is_flow(op)
+                && !flow_registry.is_flow(op)
                 && !op.starts_with("ffi.")
         })
         .collect();
@@ -529,49 +516,29 @@ fn compile_virtual_flow(
 fn collect_ops(stmts: &[Statement], out: &mut Vec<String>) {
     for stmt in stmts {
         match stmt {
-            Statement::Node(n) => {
-                out.push(n.op.clone());
-                for arg in &n.args {
-                    collect_arg_ops(arg, out);
-                }
-            }
-            Statement::ExprAssign(ea) => {
-                collect_expr_ops(&ea.expr, out);
-            }
-            Statement::Emit(e) => {
-                collect_expr_ops(&e.value_expr, out);
-            }
+            Statement::Node(n) => out.push(n.op.clone()),
+            Statement::ExprAssign(ea) => collect_expr_ops(&ea.expr, out),
+            Statement::Emit(_) => {}
             Statement::Case(c) => {
                 for arm in &c.arms {
                     collect_ops(&arm.body, out);
                 }
                 collect_ops(&c.else_body, out);
             }
-            Statement::Loop(l) => {
-                collect_expr_ops(&l.collection, out);
-                collect_ops(&l.body, out);
-            }
-            Statement::BareLoop(l) => {
-                collect_ops(&l.body, out);
-            }
-            Statement::Sync(s) => {
-                collect_ops(&s.body, out);
-            }
-            Statement::SendNowait(s) => {
-                out.push(s.target.clone());
-            }
+            Statement::Loop(l) => collect_ops(&l.body, out),
+            Statement::BareLoop(l) => collect_ops(&l.body, out),
+            Statement::Sync(s) => collect_ops(&s.body, out),
+            Statement::SendNowait(s) => out.push(s.target.clone()),
+            Statement::Break => {}
             Statement::SourceLoop(sl) => {
                 out.push(sl.source_op.clone());
                 collect_ops(&sl.body, out);
             }
-            _ => {}
+            Statement::On(on_block) => {
+                out.push(on_block.source_op.clone());
+                collect_ops(&on_block.body, out);
+            }
         }
-    }
-}
-
-fn collect_arg_ops(arg: &Arg, _out: &mut Vec<String>) {
-    match arg {
-        Arg::Var { .. } | Arg::Lit { .. } => {}
     }
 }
 
@@ -609,30 +576,55 @@ fn collect_expr_ops(expr: &Expr, out: &mut Vec<String>) {
             collect_expr_ops(then_expr, out);
             collect_expr_ops(else_expr, out);
         }
-        _ => {}
+        Expr::Interp(parts) => {
+            for part in parts {
+                if let crate::ast::InterpExpr::Expr(e) = part {
+                    collect_expr_ops(e, out);
+                }
+            }
+        }
+        Expr::Var(_) | Expr::Lit(_) => {}
     }
 }
 
 /// Transform source-call steps into SourceLoop blocks.
-/// (Replicated from the native loader for virtual compilation.)
+/// All statements after the source call become the loop body,
+/// and nested sources are recursively transformed.
 fn transform_source_steps(
     stmts: &[Statement],
     source_names: &HashSet<String>,
 ) -> Vec<Statement> {
-    let mut result = Vec::new();
-    for stmt in stmts {
-        match stmt {
-            Statement::Node(n) if source_names.contains(&n.op) => {
-                result.push(Statement::SourceLoop(crate::ast::SourceLoopBlock {
-                    source_op: n.op.clone(),
-                    source_args: n.args.clone(),
-                    bind: n.bind.clone(),
-                    body: Vec::new(),
-                }));
-            }
-            _ => result.push(stmt.clone()),
+    let source_idx = stmts.iter().position(|s| {
+        if let Statement::Node(n) = s {
+            source_names.contains(&n.op)
+        } else {
+            false
         }
-    }
+    });
+
+    let Some(idx) = source_idx else {
+        return stmts.to_vec();
+    };
+
+    let source_node = match &stmts[idx] {
+        Statement::Node(n) => n,
+        _ => unreachable!(),
+    };
+
+    // Everything before the source node stays as-is
+    let mut result: Vec<Statement> = stmts[..idx].to_vec();
+
+    // Everything after the source node becomes the SourceLoop body
+    let remaining = &stmts[idx + 1..];
+    let body = transform_source_steps(remaining, source_names);
+
+    result.push(Statement::SourceLoop(crate::ast::SourceLoopBlock {
+        source_op: source_node.op.clone(),
+        source_args: source_node.args.clone(),
+        bind: source_node.bind.clone(),
+        body,
+    }));
+
     result
 }
 

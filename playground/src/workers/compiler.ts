@@ -1,60 +1,53 @@
 // Compiler Web Worker — loads forai-playground-wasm and compiles on demand.
 
-let wasmModule: any = null;
+import type { WasmModule, WorkerRequest, WorkerResponse } from "../types";
+
+let wasmModule: WasmModule | null = null;
+
+function post(msg: WorkerResponse) {
+  self.postMessage(msg);
+}
 
 async function initWasm() {
   try {
-    const wasm = await import("./forai_playground_wasm.js");
+    const wasm = await import("./forai_playground_wasm.js") as WasmModule;
     await wasm.default();
     wasmModule = wasm;
-    self.postMessage({ type: "ready" });
-  } catch (e: any) {
-    self.postMessage({ type: "error", message: `Failed to load WASM: ${e.message}` });
+    post({ type: "ready" });
+  } catch (e: unknown) {
+    post({ type: "error", message: `Failed to load WASM: ${e instanceof Error ? e.message : String(e)}` });
   }
 }
 
-self.onmessage = async (e: MessageEvent) => {
-  const { type, id, files, entryPoint, source } = e.data;
+self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
+  const msg = e.data;
 
-  if (type === "compile") {
+  if (msg.type === "compile") {
     if (!wasmModule) {
-      self.postMessage({ type: "compile-result", id, error: "WASM not loaded" });
+      post({ type: "compile-result", id: msg.id, error: "WASM not loaded" });
       return;
     }
     const start = performance.now();
     try {
-      const result = wasmModule.compile(JSON.stringify(files), entryPoint);
+      const result = wasmModule.compile(JSON.stringify(msg.files), msg.entryPoint);
       const elapsed = performance.now() - start;
       const parsed = JSON.parse(result);
-      self.postMessage({ type: "compile-result", id, result: parsed, elapsed });
-    } catch (e: any) {
-      self.postMessage({ type: "compile-result", id, error: e.message });
+      post({ type: "compile-result", id: msg.id, result: parsed, elapsed });
+    } catch (e: unknown) {
+      post({ type: "compile-result", id: msg.id, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
-  if (type === "format") {
+  if (msg.type === "format") {
     if (!wasmModule) {
-      self.postMessage({ type: "format-result", id, error: "WASM not loaded" });
+      post({ type: "format-result", id: msg.id, error: "WASM not loaded" });
       return;
     }
     try {
-      const formatted = wasmModule.format_source(source);
-      self.postMessage({ type: "format-result", id, formatted });
-    } catch (e: any) {
-      self.postMessage({ type: "format-result", id, error: e.message });
-    }
-  }
-
-  if (type === "tokenize") {
-    if (!wasmModule) {
-      self.postMessage({ type: "tokenize-result", id, error: "WASM not loaded" });
-      return;
-    }
-    try {
-      const result = wasmModule.tokenize(source);
-      self.postMessage({ type: "tokenize-result", id, result: JSON.parse(result) });
-    } catch (e: any) {
-      self.postMessage({ type: "tokenize-result", id, error: e.message });
+      const formatted = wasmModule.format_source(msg.source);
+      post({ type: "format-result", id: msg.id, formatted });
+    } catch (e: unknown) {
+      post({ type: "format-result", id: msg.id, error: e instanceof Error ? e.message : String(e) });
     }
   }
 };
