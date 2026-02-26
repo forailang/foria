@@ -99,6 +99,7 @@ pub fn all_stdlib_docs() -> Vec<StdlibNamespaceDoc> {
         route_docs(),
         html_docs(),
         tmpl_docs(),
+        ffi_docs(),
     ]
 }
 
@@ -722,6 +723,7 @@ fn http_respond_docs() -> StdlibNamespaceDoc {
                     arg(0, "conn", "http_conn", "Connection handle from accept"),
                     arg(1, "status", "long", "HTTP status code"),
                     arg(2, "body", "text", "HTML response body"),
+                    arg(3, "headers", "dict", "Optional extra response headers"),
                 ],
                 ret("bool", "True on success"),
                 "Fails on I/O error",
@@ -734,6 +736,7 @@ fn http_respond_docs() -> StdlibNamespaceDoc {
                     arg(0, "conn", "http_conn", "Connection handle from accept"),
                     arg(1, "status", "long", "HTTP status code"),
                     arg(2, "body", "text", "JSON response body"),
+                    arg(3, "headers", "dict", "Optional extra response headers"),
                 ],
                 ret("bool", "True on success"),
                 "Fails on I/O error",
@@ -746,6 +749,7 @@ fn http_respond_docs() -> StdlibNamespaceDoc {
                     arg(0, "conn", "http_conn", "Connection handle from accept"),
                     arg(1, "status", "long", "HTTP status code"),
                     arg(2, "body", "text", "Plain text response body"),
+                    arg(3, "headers", "dict", "Optional extra response headers"),
                 ],
                 ret("bool", "True on success"),
                 "Fails on I/O error",
@@ -2165,6 +2169,20 @@ fn tmpl_docs() -> StdlibNamespaceDoc {
                 arg(1, "data", "dict", "Data dict for variable substitution"),
             ],
             ret("text", "Rendered text output"),
+        )],
+    )
+}
+
+fn ffi_docs() -> StdlibNamespaceDoc {
+    ns(
+        "ffi",
+        "Foreign function interface for calling external C libraries",
+        vec![op(
+            "available",
+            "ffi",
+            "Check whether an FFI library is available on this system",
+            vec![arg(0, "lib_name", "text", "Library name to check availability for")],
+            ret("bool", "true if the library can be loaded, false otherwise"),
         )],
     )
 }

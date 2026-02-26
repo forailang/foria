@@ -456,7 +456,7 @@ pub fn extract_module_doc(module: &ModuleAst, file_path: &str) -> ModuleDoc {
                     },
                 });
             }
-            TopDecl::Docs(_) => {}
+            TopDecl::Docs(_) | TopDecl::Extern(_) => {}
         }
     }
 

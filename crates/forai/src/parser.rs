@@ -1,11 +1,11 @@
 use crate::ast::{
     Arg, BareLoopBlock, BinOp, CaseArm, CaseBlock, ConstraintValue, ContinuationWire, DocsDecl,
-    Emit, EnumDecl, Expr, ExprAssign, FieldDecl, FieldDocsEntry, Flow, FlowBranchBlock, FlowDecl,
-    FlowEmitStmt, FlowGraph, FlowLogStmt, FlowSendNowait, FlowStateDecl, FlowStatement, FuncDecl,
-    InterpExpr,
-    LoopBlock, ModuleAst, NextWire, NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping,
-    SendNowait, Span, Statement, StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl,
-    TestDecl, TopDecl, TypeConstraint, TypeDecl, TypeKind, UnaryOp, UsesDecl,
+    Emit, EnumDecl, Expr, ExprAssign, ExternBlock, ExternFnDecl, FieldDecl, FieldDocsEntry, Flow,
+    FlowBranchBlock, FlowDecl, FlowEmitStmt, FlowGraph, FlowLogStmt, FlowSendNowait,
+    FlowStateDecl, FlowStatement, FuncDecl, InterpExpr, LoopBlock, ModuleAst, NextWire,
+    NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping, SendNowait, Span, Statement,
+    StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl, TestDecl, TopDecl, TypeConstraint,
+    TypeDecl, TypeKind, UnaryOp, UsesDecl,
 };
 use crate::lexer::{InterpPart, Token, TokenKind, lex};
 use serde_json::json;
@@ -161,19 +161,17 @@ pub fn parse_runtime_func_decl_v1(func_decl: &FuncDecl) -> Result<Flow, String> 
             ],
         )
     } else {
-        // v1 func: named `emit`/`fail` ports
-        let emit_decl = func_decl.emits.first().ok_or_else(|| {
-            format!(
-                "{}:{} func `{}` is missing `emit <name> as <Type>` declaration",
-                func_decl.span.line, func_decl.span.col, func_decl.name
-            )
-        })?;
-        let fail_decl = func_decl.fails.first().ok_or_else(|| {
-            format!(
-                "{}:{} func `{}` is missing `fail <name> as <Type>` declaration",
-                func_decl.span.line, func_decl.span.col, func_decl.name
-            )
-        })?;
+        // v1 func: named `emit`/`fail` ports (both optional for void funcs)
+        let emit_name = func_decl
+            .emits
+            .first()
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| "_void".to_string());
+        let fail_name = func_decl
+            .fails
+            .first()
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| "_void_fail".to_string());
 
         let mut outs = Vec::new();
         for emit in &func_decl.emits {
@@ -188,7 +186,7 @@ pub fn parse_runtime_func_decl_v1(func_decl: &FuncDecl) -> Result<Flow, String> 
                 type_name: fail.type_name.clone(),
             });
         }
-        (emit_decl.name.clone(), fail_decl.name.clone(), outs)
+        (emit_name, fail_name, outs)
     };
 
     let body = parse_runtime_body_v1(&func_decl.body_text, &emit_name, &fail_name)
@@ -1567,8 +1565,8 @@ impl FlowBodyParser {
                     }
                 }
                 TokenKind::Ident(_) => {
-                    let ident = self.expect_ident("expected wire label in port mapping")?;
-                    Arg::Var { var: ident }
+                    let var_path = self.parse_var_path("expected wire label in port mapping")?;
+                    Arg::Var { var: var_path }
                 }
                 _ => return self.err_here("expected identifier or literal in port mapping"),
             };
@@ -2054,6 +2052,11 @@ impl<'a> TokenParser<'a> {
                     return self.err_here("`open test` is not valid");
                 }
                 decls.push(TopDecl::Test(self.parse_test()?));
+            } else if self.peek_keyword("extern") {
+                if open {
+                    return self.err_here("`open extern` is not valid");
+                }
+                decls.push(TopDecl::Extern(self.parse_extern_block()?));
             } else {
                 return self.err_here("expected top-level declaration");
             }
@@ -2564,6 +2567,74 @@ impl<'a> TokenParser<'a> {
         self.err_at(span, "unclosed test block")
     }
 
+    fn parse_extern_block(&mut self) -> Result<ExternBlock, ParseError> {
+        let span = self.expect_keyword("extern")?.span;
+        let lib_name = self.expect_string_lit_value("expected library name string after `extern`")?;
+        self.expect_line_end("expected newline after extern declaration")?;
+
+        let mut fns = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.at_eof() {
+                return self.err_at(span, "unclosed extern block");
+            }
+            if self.peek_keyword("done") {
+                self.bump();
+                self.consume_newline();
+                break;
+            }
+            if self.peek_keyword("fn") {
+                fns.push(self.parse_extern_fn()?);
+            } else {
+                return self.err_here("expected `fn` or `done` in extern block");
+            }
+        }
+
+        Ok(ExternBlock {
+            lib_name,
+            fns,
+            span,
+        })
+    }
+
+    fn parse_extern_fn(&mut self) -> Result<ExternFnDecl, ParseError> {
+        let span = self.expect_keyword("fn")?.span;
+        let name = self.expect_ident_value("expected function name after `fn`")?;
+        self.expect_line_end("expected newline after fn declaration")?;
+
+        let mut takes = Vec::new();
+        let mut return_type = None;
+
+        loop {
+            self.skip_newlines();
+            if self.at_eof() {
+                return self.err_at(span, "unclosed extern fn block");
+            }
+            if self.peek_keyword("done") {
+                self.bump();
+                self.consume_newline();
+                break;
+            }
+            if self.peek_keyword("take") {
+                takes.push(self.parse_take()?);
+            } else if self.peek_keyword("return") {
+                self.bump();
+                let type_name = self.expect_ident_value("expected type name after `return`")?;
+                self.expect_line_end("expected newline after return declaration")?;
+                return_type = Some(type_name);
+            } else {
+                return self.err_here("expected `take`, `return`, or `done` in extern fn");
+            }
+        }
+
+        Ok(ExternFnDecl {
+            name,
+            takes,
+            return_type,
+            span,
+        })
+    }
+
     fn expect_line_end(&mut self, message: &str) -> Result<(), ParseError> {
         if self.consume_newline() {
             return Ok(());
@@ -2831,6 +2902,29 @@ done
             err.contains("expected `next`"),
             "error should mention valid then-block items, got: {err}"
         );
+    }
+
+    #[test]
+    fn parses_dotted_var_in_step_arg() {
+        let src = r#"
+flow Route
+  take req as dict
+body
+  step handler.Run(req.conn_id to :id, req.method to :method) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        match &graph.body[0] {
+            FlowStatement::Step(step) => {
+                assert_eq!(step.inputs.len(), 2);
+                assert_eq!(step.inputs[0].value, Arg::Var { var: "req.conn_id".to_string() });
+                assert_eq!(step.inputs[0].port, "id");
+                assert_eq!(step.inputs[1].value, Arg::Var { var: "req.method".to_string() });
+                assert_eq!(step.inputs[1].port, "method");
+            }
+            _ => panic!("expected Step"),
+        }
     }
 
     #[test]

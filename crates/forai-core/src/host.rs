@@ -14,6 +14,9 @@ pub trait Host {
 }
 
 pub fn is_io_op(op: &str) -> bool {
+    if op.starts_with("ffi.") {
+        return true;
+    }
     matches!(
         op,
         // HTTP server

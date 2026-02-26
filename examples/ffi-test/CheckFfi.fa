@@ -1,0 +1,32 @@
+extern "c"
+    fn strlen
+        take s as text
+        return long
+    done
+done
+
+docs CheckFfi
+    Checks FFI availability and calls C strlen via libffi.
+done
+
+func CheckFfi
+    emit result as text
+    fail error as text
+body
+    available = ffi.available("c")
+    if available
+        len = ffi.c.strlen("hello world")
+        emit "strlen of 'hello world': #{len}"
+    else
+        _ = term.print("libc available: #{available}")
+        emit "libc not available"
+    done
+done
+
+test CheckFfi
+    mock ffi.available => true
+    mock ffi.c.strlen => 11
+    mock term.print => true
+    r = CheckFfi()
+    must r == "strlen of 'hello world': 11"
+done

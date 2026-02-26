@@ -1,0 +1,20 @@
+use CheckFfi from "./CheckFfi.fa"
+use Output from "./Output.fa"
+
+docs main
+    Tests FFI by calling C strlen via libffi.
+done
+
+flow main
+body
+    step CheckFfi() then
+        next :result to message
+    done
+    step Output(message to :message) done
+done
+
+test main
+    mock CheckFfi => "done"
+    mock Output => true
+    _ = main()
+done

@@ -622,6 +622,8 @@ pub fn known_ops() -> &'static [&'static str] {
         "html.unescape",
         // template
         "tmpl.render",
+        // FFI
+        "ffi.available",
     ]
 }
 

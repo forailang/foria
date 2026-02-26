@@ -116,7 +116,7 @@ pub fn document_symbols(doc: &Document, _params: &DocumentSymbolParams) -> Vec<D
                     Vec::new(),
                 ));
             }
-            TopDecl::Docs(_) | TopDecl::Uses(_) => {}
+            TopDecl::Docs(_) | TopDecl::Uses(_) | TopDecl::Extern(_) => {}
         }
     }
 

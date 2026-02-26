@@ -1,0 +1,8 @@
+{
+  "name": "ffi-test",
+  "main": "main.fa",
+  "build": { "targets": [] },
+  "ffi": {
+    "c": { "lib": "c" }
+  }
+}

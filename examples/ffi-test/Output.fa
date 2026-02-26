@@ -1,0 +1,17 @@
+docs Output
+    Formats and prints a colored table of listening ports.
+    Each entry is a dict with port, command, and pid fields.
+    Uses term.color for colored output and term.print for plain text.
+done
+
+sink Output
+    take message as text
+    fail error as text
+body
+    _ = term.print(message)
+done
+
+test Output
+    mock term.print => true
+    _ = Output("hello")
+done

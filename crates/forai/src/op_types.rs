@@ -89,7 +89,7 @@ pub fn op_signature(op: &str) -> Option<OpSignature> {
         },
         // HTTP respond convenience ops
         "http.respond.html" | "http.respond.json" | "http.respond.text" => OpSignature {
-            args: vec![OpType::HttpConn, OpType::Long, OpType::Text],
+            args: vec![OpType::HttpConn, OpType::Long, OpType::Text, OpType::Optional(Box::new(OpType::Dict))],
             returns: OpType::Bool,
         },
         // WebSocket ops

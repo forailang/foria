@@ -1,3 +1,4 @@
+use crate::ffi_manager::{FfiManager, FfiRegistry};
 use crate::host::Host;
 use crate::runtime::{
     civil_from_days, read_f64_arg, read_i64_arg, read_object_arg, read_string_arg,
@@ -70,6 +71,8 @@ impl HandleRegistry {
 pub struct NativeHost {
     handles: RefCell<HandleRegistry>,
     quiet: bool,
+    ffi: RefCell<FfiManager>,
+    ffi_registry: FfiRegistry,
 }
 
 impl NativeHost {
@@ -77,6 +80,8 @@ impl NativeHost {
         Self {
             handles: RefCell::new(HandleRegistry::new()),
             quiet: false,
+            ffi: RefCell::new(FfiManager::new()),
+            ffi_registry: FfiRegistry::new(),
         }
     }
 
@@ -86,7 +91,14 @@ impl NativeHost {
         Self {
             handles: RefCell::new(HandleRegistry::new()),
             quiet: true,
+            ffi: RefCell::new(FfiManager::new()),
+            ffi_registry: FfiRegistry::new(),
         }
+    }
+
+    pub fn with_ffi_registry(mut self, registry: FfiRegistry) -> Self {
+        self.ffi_registry = registry;
+        self
     }
 }
 
@@ -103,6 +115,23 @@ impl Host for NativeHost {
         args: &'a [Value],
     ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + 'a>> {
         Box::pin(async move {
+            // FFI dispatch
+            if op == "ffi.available" {
+                let lib = read_string_arg(args, 0, op)?;
+                return Ok(json!(self.ffi.borrow_mut().is_available(&lib)));
+            }
+            if op.starts_with("ffi.") {
+                let meta = self.ffi_registry.get(op)
+                    .ok_or_else(|| format!("unknown FFI function `{op}`"))?;
+                return self.ffi.borrow_mut().call(
+                    &meta.lib_name,
+                    &meta.fn_name,
+                    args,
+                    &meta.param_types,
+                    meta.return_type.as_deref(),
+                );
+            }
+
             let handles = &self.handles;
             match op {
                 // --- SQLite database ops ---
@@ -547,6 +576,11 @@ impl Host for NativeHost {
                     let conn_id = read_string_arg(args, 0, op)?;
                     let status = read_i64_arg(args, 1, op)?;
                     let body = read_string_arg(args, 2, op)?;
+                    let extra_headers = if args.len() > 3 {
+                        Some(read_object_arg(args, 3, op)?)
+                    } else {
+                        None
+                    };
 
                     let mut writer = {
                         let mut h = handles.borrow_mut();
@@ -563,7 +597,15 @@ impl Host for NativeHost {
                         "http.respond.text" => "text/plain; charset=utf-8",
                         _ => unreachable!(),
                     };
-                    let header_str = format!("content-type: {content_type}\r\n");
+                    let mut header_str = format!("content-type: {content_type}\r\n");
+                    if let Some(hdrs) = extra_headers {
+                        for (k, v) in &hdrs {
+                            if k.to_lowercase() != "content-type" {
+                                let val = v.as_str().unwrap_or("");
+                                header_str.push_str(&format!("{k}: {val}\r\n"));
+                            }
+                        }
+                    }
 
                     send_http_response(&mut writer, op, status, &header_str, &body).await?;
                     Ok(json!(true))

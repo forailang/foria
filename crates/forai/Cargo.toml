@@ -23,6 +23,8 @@ bcrypt = "0.16"
 rusqlite = { version = "0.31", features = ["bundled"] }
 wasmtime = "29"
 flate2 = "1"
+libloading = "0.8"
+libffi = "5"
 lsp-server = "0.7"
 lsp-types = "0.97"
 

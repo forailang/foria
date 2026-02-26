@@ -19,6 +19,7 @@ pub enum PrimitiveType {
     HttpServer,
     HttpConn,
     WsConn,
+    Ptr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ fn parse_primitive(name: &str) -> Option<PrimitiveType> {
         "http_server" => Some(PrimitiveType::HttpServer),
         "http_conn" => Some(PrimitiveType::HttpConn),
         "ws_conn" => Some(PrimitiveType::WsConn),
+        "ptr" => Some(PrimitiveType::Ptr),
         _ => None,
     }
 }
@@ -123,6 +125,10 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "ws_conn".to_string(),
         TypeDef::Primitive(PrimitiveType::WsConn),
+    );
+    types.insert(
+        "ptr".to_string(),
+        TypeDef::Primitive(PrimitiveType::Ptr),
     );
 
     // Helper closures for building struct fields
@@ -267,6 +273,7 @@ pub fn is_builtin_type(name: &str) -> bool {
             | "http_server"
             | "http_conn"
             | "ws_conn"
+            | "ptr"
             | "HttpRequest"
             | "HttpResponse"
             | "Date"
@@ -476,7 +483,8 @@ impl TypeRegistry {
             PrimitiveType::DbConn
             | PrimitiveType::HttpServer
             | PrimitiveType::HttpConn
-            | PrimitiveType::WsConn => value.is_string(),
+            | PrimitiveType::WsConn
+            | PrimitiveType::Ptr => value.is_string(),
         };
         if ok {
             vec![]
@@ -495,6 +503,7 @@ impl TypeRegistry {
                 PrimitiveType::HttpServer => "http_server",
                 PrimitiveType::HttpConn => "http_conn",
                 PrimitiveType::WsConn => "ws_conn",
+                PrimitiveType::Ptr => "ptr",
             };
             vec![ValidationError {
                 path: path.to_string(),

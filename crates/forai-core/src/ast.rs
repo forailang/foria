@@ -42,6 +42,7 @@ pub enum TopDecl {
     Type(TypeDecl),
     Enum(EnumDecl),
     Test(TestDecl),
+    Extern(ExternBlock),
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +158,21 @@ pub struct EnumDecl {
 pub struct TestDecl {
     pub name: String,
     pub body_text: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternBlock {
+    pub lib_name: String,
+    pub fns: Vec<ExternFnDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternFnDecl {
+    pub name: String,
+    pub takes: Vec<TakeDecl>,
+    pub return_type: Option<String>,
     pub span: Span,
 }
 
