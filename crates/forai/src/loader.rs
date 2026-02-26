@@ -1,5 +1,8 @@
 pub use forai_core::loader::{FlowProgram, FlowRegistry};
 
+use crate::config;
+use crate::deps::ResolvedDeps;
+use crate::ffi_manager::{self, FfiRegistry};
 use crate::parser;
 use crate::runtime;
 use crate::sema;
@@ -11,6 +14,30 @@ use forai_core::types::TypeRegistry;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+fn resolve_use_path(
+    uses_path: &str,
+    base_dir: &Path,
+    resolved_deps: &ResolvedDeps,
+) -> Result<PathBuf, String> {
+    // Check if the from path matches any declared dependency key
+    if let Some(dep) = resolved_deps.get(uses_path) {
+        // Load the package's forai.json to find its main entry
+        let (dep_config, _) = config::load_config(&dep.path)?;
+        let main_path = dep.path.join(&dep_config.main);
+        if main_path.is_dir() {
+            Ok(main_path)
+        } else if main_path.is_file() {
+            Ok(main_path)
+        } else {
+            // Treat main as a directory reference
+            let parent = main_path.parent().unwrap_or(&dep.path);
+            Ok(parent.to_path_buf())
+        }
+    } else {
+        Ok(base_dir.join(uses_path))
+    }
+}
 
 fn format_unknown_op(prefix: &str, op: &str) -> String {
     let base = format!("{prefix} uses unknown op `{op}`");
@@ -125,6 +152,7 @@ fn compile_func_decl(
             !known.contains(op.as_str())
                 && !extra_ops.contains(op.as_str())
                 && !flow_registry.is_flow(op)
+                && !op.starts_with("ffi.")
         })
         .collect();
     if !unknown.is_empty() {
@@ -148,30 +176,22 @@ fn compile_func_decl(
         )
     })?;
 
-    let emit_name = flow
-        .outputs
-        .first()
-        .map(|p| p.name.clone())
-        .ok_or_else(|| {
-            format!(
-                "{}: func `{}` has no emit output",
-                file_path.display(),
-                func_decl.name
-            )
-        })?;
-    let fail_name = flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
-        format!(
-            "{}: func `{}` has no fail output",
-            file_path.display(),
-            func_decl.name
-        )
-    })?;
+    let emit_name = if func_decl.return_type.is_some() {
+        Some("_return".to_string())
+    } else {
+        func_decl.emits.first().map(|e| e.name.clone())
+    };
+    let fail_name = if func_decl.fail_type.is_some() {
+        Some("_fail".to_string())
+    } else {
+        func_decl.fails.first().map(|f| f.name.clone())
+    };
 
     Ok(FlowProgram {
         flow,
         ir,
-        emit_name: Some(emit_name),
-        fail_name: Some(fail_name),
+        emit_name,
+        fail_name,
         registry: registry.clone(),
         kind,
     })
@@ -208,6 +228,7 @@ fn compile_flow_decl(
             !known.contains(op.as_str())
                 && !extra_ops.contains(op.as_str())
                 && !flow_registry.is_flow(op)
+                && !op.starts_with("ffi.")
         })
         .collect();
     if !unknown.is_empty() {
@@ -363,6 +384,7 @@ pub fn load_single_file(
     file_path: &Path,
     loading_set: &mut HashSet<String>,
     extra_ops: &HashSet<String>,
+    resolved_deps: &ResolvedDeps,
 ) -> Result<FlowProgram, String> {
     if loading_set.contains(name) {
         return Err(format!(
@@ -400,12 +422,12 @@ pub fn load_single_file(
         .ok_or_else(|| format!("cannot determine parent dir of {}", file_path.display()))?;
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
-            let resolved = file_dir.join(&uses.path);
+            let resolved = resolve_use_path(&uses.path, file_dir, resolved_deps)?;
             if resolved.is_file() {
-                let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops)?;
+                let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
                 sub_registry.insert(uses.name.clone(), sub);
             } else if resolved.is_dir() {
-                let sub = load_module(&uses.name, &resolved, loading_set, extra_ops)?;
+                let sub = load_module(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
                 for (sub_name, program) in sub.flows {
                     sub_registry.insert(sub_name, program);
                 }
@@ -471,6 +493,7 @@ pub fn load_module(
     module_dir: &Path,
     loading_set: &mut HashSet<String>,
     extra_ops: &HashSet<String>,
+    resolved_deps: &ResolvedDeps,
 ) -> Result<FlowRegistry, String> {
     if loading_set.contains(module_name) {
         return Err(format!(
@@ -525,12 +548,12 @@ pub fn load_module(
         let mut sub_registry = FlowRegistry::new();
         for decl in &module.decls {
             if let TopDecl::Uses(uses) = decl {
-                let resolved = module_dir.join(&uses.path);
+                let resolved = resolve_use_path(&uses.path, module_dir, resolved_deps)?;
                 if resolved.is_file() {
-                    let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops)?;
+                    let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
                     sub_registry.insert(uses.name.clone(), sub);
                 } else if resolved.is_dir() {
-                    let sub = load_module(&uses.name, &resolved, loading_set, extra_ops)?;
+                    let sub = load_module(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
                     for (name, program) in sub.flows {
                         sub_registry.insert(name, program);
                     }
@@ -616,6 +639,7 @@ pub fn load_module(
 pub fn build_flow_registry(
     entry_path: &Path,
     module: &forai_core::ast::ModuleAst,
+    resolved_deps: &ResolvedDeps,
 ) -> Result<FlowRegistry, String> {
     let base_dir = entry_path
         .parent()
@@ -629,13 +653,13 @@ pub fn build_flow_registry(
 
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
-            let resolved = base_dir.join(&uses.path);
+            let resolved = resolve_use_path(&uses.path, base_dir, resolved_deps)?;
             if resolved.is_file() {
                 let program =
-                    load_single_file(&uses.name, &resolved, &mut loading_set, &extra_ops)?;
+                    load_single_file(&uses.name, &resolved, &mut loading_set, &extra_ops, resolved_deps)?;
                 registry.insert(uses.name.clone(), program);
             } else if resolved.is_dir() {
-                let loaded = load_module(&uses.name, &resolved, &mut loading_set, &extra_ops)?;
+                let loaded = load_module(&uses.name, &resolved, &mut loading_set, &extra_ops, resolved_deps)?;
                 for (name, program) in loaded.flows {
                     registry.insert(name, program);
                 }
@@ -650,4 +674,86 @@ pub fn build_flow_registry(
     }
 
     Ok(registry)
+}
+
+/// Collect extern blocks from all imported modules (not the main module itself).
+pub fn collect_imported_ffi(
+    entry_path: &Path,
+    module: &forai_core::ast::ModuleAst,
+    resolved_deps: &ResolvedDeps,
+) -> FfiRegistry {
+    let base_dir = match entry_path.parent() {
+        Some(d) => d,
+        None => return FfiRegistry::new(),
+    };
+    let mut ffi = FfiRegistry::new();
+    collect_ffi_recursive(module, base_dir, resolved_deps, &mut HashSet::new(), &mut ffi);
+    ffi
+}
+
+fn collect_ffi_recursive(
+    module: &forai_core::ast::ModuleAst,
+    base_dir: &Path,
+    resolved_deps: &ResolvedDeps,
+    visited: &mut HashSet<PathBuf>,
+    ffi: &mut FfiRegistry,
+) {
+    for decl in &module.decls {
+        if let TopDecl::Uses(uses) = decl {
+            let resolved = match resolve_use_path(&uses.path, base_dir, resolved_deps) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if resolved.is_file() {
+                if !visited.insert(resolved.clone()) {
+                    continue;
+                }
+                let src = match fs::read_to_string(&resolved) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let sub_module = match parser::parse_module_v1(&src) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                ffi.merge(ffi_manager::build_ffi_registry(&sub_module));
+                let sub_dir = resolved.parent().unwrap_or(base_dir);
+                collect_ffi_recursive(&sub_module, sub_dir, resolved_deps, visited, ffi);
+            } else if resolved.is_dir() {
+                collect_ffi_from_dir(&resolved, resolved_deps, visited, ffi);
+            }
+        }
+    }
+}
+
+fn collect_ffi_from_dir(
+    dir: &Path,
+    resolved_deps: &ResolvedDeps,
+    visited: &mut HashSet<PathBuf>,
+    ffi: &mut FfiRegistry,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("fa") {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            let src = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let sub_module = match parser::parse_module_v1(&src) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            ffi.merge(ffi_manager::build_ffi_registry(&sub_module));
+            collect_ffi_recursive(&sub_module, dir, resolved_deps, visited, ffi);
+        } else if path.is_dir() {
+            collect_ffi_from_dir(&path, resolved_deps, visited, ffi);
+        }
+    }
 }

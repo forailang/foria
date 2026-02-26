@@ -1,6 +1,21 @@
+use crate::deps::source::DepSource;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ProjectType {
+    #[serde(rename = "app")]
+    App,
+    #[serde(rename = "lib")]
+    Lib,
+}
+
+impl Default for ProjectType {
+    fn default() -> Self {
+        ProjectType::App
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -16,6 +31,9 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub forai: Option<String>,
 
+    #[serde(rename = "type", default)]
+    pub project_type: ProjectType,
+
     pub main: String,
 
     #[serde(default)]
@@ -29,6 +47,14 @@ pub struct ProjectConfig {
 
     #[serde(default)]
     pub dependencies: std::collections::HashMap<String, String>,
+
+    #[serde(default)]
+    pub ffi: std::collections::HashMap<String, FfiLibConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FfiLibConfig {
+    pub lib: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -189,6 +215,19 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
+pub fn validate_dependencies(config: &ProjectConfig) -> Result<(), String> {
+    for (name, value) in &config.dependencies {
+        let source = DepSource::parse(name, value)?;
+        // GitHub shorthand requires @user/repo format
+        if matches!(source, DepSource::GitHub { .. }) && (!name.starts_with('@') || name.matches('/').count() != 1) {
+            return Err(format!(
+                "invalid dependency '{name}': GitHub packages must use '@user/repo' format"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,11 +312,13 @@ mod tests {
             version: "0.0.0".into(),
             description: None,
             forai: None,
+            project_type: ProjectType::App,
             main: "main.fa".into(),
             build: BuildConfig::default(),
             test: TestConfig::default(),
             docs: DocsConfig::default(),
             dependencies: Default::default(),
+            ffi: Default::default(),
         };
         assert!(check_version(&config).is_ok());
     }
@@ -288,5 +329,63 @@ mod tests {
         assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
         assert_eq!(parse_semver("bad"), None);
         assert_eq!(parse_semver("1.2"), None);
+    }
+
+    #[test]
+    fn parse_project_type_app() {
+        let json = r#"{"name": "hello", "main": "main.fa", "type": "app"}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.project_type, ProjectType::App);
+    }
+
+    #[test]
+    fn parse_project_type_lib() {
+        let json = r#"{"name": "mylib", "main": "lib/", "type": "lib"}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.project_type, ProjectType::Lib);
+    }
+
+    #[test]
+    fn parse_project_type_defaults_to_app() {
+        let json = r#"{"name": "hello", "main": "main.fa"}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.project_type, ProjectType::App);
+    }
+
+    #[test]
+    fn validate_dependencies_github() {
+        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"@user/repo": "^1.0.0"}}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert!(validate_dependencies(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_dependencies_file() {
+        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"mylib": "file:../mylib/"}}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert!(validate_dependencies(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_dependencies_git_url() {
+        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"requests": "git+https://somesite.com/repo.git#^1.0.0"}}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert!(validate_dependencies(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_dependencies_bad_github_name() {
+        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"badname": "1.0.0"}}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        let err = validate_dependencies(&config).unwrap_err();
+        assert!(err.contains("@user/repo"));
+    }
+
+    #[test]
+    fn validate_dependencies_bad_version() {
+        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"@user/repo": "xyz"}}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        let err = validate_dependencies(&config).unwrap_err();
+        assert!(err.contains("cannot parse version requirement"));
     }
 }

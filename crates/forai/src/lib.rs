@@ -9,3 +9,8 @@ mod ast {
 pub mod lexer;
 pub mod parser;
 pub mod formatter;
+
+pub mod deps {
+    pub mod semver;
+    pub mod source;
+}
