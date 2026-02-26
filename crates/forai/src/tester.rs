@@ -79,6 +79,8 @@ fn split_csv(raw: &str) -> Vec<String> {
     let mut in_string = false;
     let mut quote_char = '\0';
     let mut escape = false;
+    let mut brace_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
 
     for ch in raw.chars() {
         if in_string {
@@ -97,7 +99,19 @@ fn split_csv(raw: &str) -> Vec<String> {
             in_string = true;
             quote_char = ch;
             cur.push(ch);
-        } else if ch == ',' {
+        } else if ch == '{' {
+            brace_depth += 1;
+            cur.push(ch);
+        } else if ch == '}' {
+            brace_depth -= 1;
+            cur.push(ch);
+        } else if ch == '[' {
+            bracket_depth += 1;
+            cur.push(ch);
+        } else if ch == ']' {
+            bracket_depth -= 1;
+            cur.push(ch);
+        } else if ch == ',' && brace_depth == 0 && bracket_depth == 0 {
             let token = cur.trim();
             if !token.is_empty() {
                 items.push(token.to_string());
@@ -116,6 +130,31 @@ fn split_csv(raw: &str) -> Vec<String> {
     items
 }
 
+fn unescape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\'') => out.push('\''),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn resolve_path(env: &HashMap<String, Value>, path: &str) -> Option<Value> {
     let mut parts = path.split('.');
     let first = parts.next()?;
@@ -127,13 +166,98 @@ fn resolve_path(env: &HashMap<String, Value>, path: &str) -> Option<Value> {
     Some(current)
 }
 
-fn eval_value_expr(expr: &str, env: &HashMap<String, Value>) -> Result<Value, String> {
+/// Convert forai-style dict literals (`{key: val}`) to valid JSON (`{"key": val}`).
+/// Bare identifier keys after `{` or `,` that are followed by `:` get quoted.
+/// Already-quoted keys and strings are left untouched.
+fn quote_bare_keys(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut expect_key = false;
+
+    while i < len {
+        let c = chars[i];
+        // Skip over string literals
+        if c == '"' {
+            out.push(c);
+            i += 1;
+            while i < len {
+                let sc = chars[i];
+                out.push(sc);
+                i += 1;
+                if sc == '\\' && i < len {
+                    out.push(chars[i]);
+                    i += 1;
+                } else if sc == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '{' || c == ',' {
+            out.push(c);
+            i += 1;
+            expect_key = true;
+            continue;
+        }
+        if expect_key && c.is_ascii_whitespace() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if expect_key && (c.is_ascii_alphabetic() || c == '_') {
+            // Collect the identifier
+            let start = i;
+            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let ident = &s[start..i];
+            // Skip whitespace before potential colon
+            let mut j = i;
+            while j < len && chars[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < len && chars[j] == ':' {
+                // It's a bare key — quote it
+                out.push('"');
+                out.push_str(ident);
+                out.push('"');
+            } else {
+                // Not a key, emit as-is
+                out.push_str(ident);
+            }
+            expect_key = false;
+            continue;
+        }
+        expect_key = false;
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+fn eval_value_expr<'a>(
+    expr: &'a str,
+    env: &'a HashMap<String, Value>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + 'a>> {
+    Box::pin(async move {
     let token = expr.trim();
+
+    // Array/object literals — support both JSON-quoted and forai bare-key styles
+    if (token.starts_with('[') && token.ends_with(']'))
+        || (token.starts_with('{') && token.ends_with('}'))
+    {
+        let json_str = quote_bare_keys(token);
+        return serde_json::from_str(&json_str)
+            .map_err(|e| format!("Invalid literal: {e}"));
+    }
+
     if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
-        return Ok(Value::String(token[1..token.len() - 1].to_string()));
+        return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
     }
     if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
-        return Ok(Value::String(token[1..token.len() - 1].to_string()));
+        return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
     }
     if token == "true" {
         return Ok(Value::Bool(true));
@@ -153,10 +277,11 @@ fn eval_value_expr(expr: &str, env: &HashMap<String, Value>) -> Result<Value, St
         && !fn_name.trim().is_empty()
     {
         let args_raw = &rest[..rest.len() - 1];
-        let args: Vec<Value> = split_csv(args_raw)
-            .into_iter()
-            .map(|a| eval_value_expr(&a, env))
-            .collect::<Result<_, _>>()?;
+        let arg_tokens = split_csv(args_raw);
+        let mut args = Vec::with_capacity(arg_tokens.len());
+        for a in &arg_tokens {
+            args.push(eval_value_expr(a, env).await?);
+        }
 
         if fn_name.trim() == "dict" {
             return Ok(Value::Object(serde_json::Map::new()));
@@ -192,6 +317,14 @@ fn eval_value_expr(expr: &str, env: &HashMap<String, Value>) -> Result<Value, St
                 }
             }));
         }
+        // Dispatch dotted names to runtime ops (e.g. list.len, obj.get)
+        if fn_name.trim().contains('.') {
+            let h = NativeHost::new();
+            let codecs = CodecRegistry::default_registry();
+            return runtime::execute_op(fn_name.trim(), &args, &h, &codecs)
+                .await
+                .map_err(|e| format!("op `{}` failed: {e}", fn_name.trim()));
+        }
         if args.len() == 1 {
             return Ok(args[0].clone());
         }
@@ -199,6 +332,7 @@ fn eval_value_expr(expr: &str, env: &HashMap<String, Value>) -> Result<Value, St
     }
 
     resolve_path(env, token).ok_or_else(|| format!("Unknown value `{token}`"))
+    }) // end Box::pin(async move)
 }
 
 fn value_truthy(value: &Value) -> bool {
@@ -214,8 +348,13 @@ fn value_truthy(value: &Value) -> bool {
 
 fn compare_values(lhs: &Value, op: &str, rhs: &Value) -> Result<bool, String> {
     match op {
-        "==" => Ok(lhs == rhs),
-        "!=" => Ok(lhs != rhs),
+        "==" | "!=" => {
+            // Normalize numeric comparisons to f64 to avoid serde_json Number representation mismatches
+            if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
+                return Ok(if op == "==" { l == r } else { l != r });
+            }
+            Ok(if op == "==" { lhs == rhs } else { lhs != rhs })
+        }
         ">" | ">=" | "<" | "<=" => {
             let Some(l) = lhs.as_f64() else {
                 return Err(format!("Left side is not numeric: {lhs}"));
@@ -235,16 +374,16 @@ fn compare_values(lhs: &Value, op: &str, rhs: &Value) -> Result<bool, String> {
     }
 }
 
-fn eval_must(expr: &str, env: &HashMap<String, Value>) -> Result<bool, String> {
+async fn eval_must(expr: &str, env: &HashMap<String, Value>) -> Result<bool, String> {
     for op in ["==", "!=", ">=", "<=", ">", "<"] {
         if let Some((left, right)) = expr.split_once(op) {
-            let lhs = eval_value_expr(left, env)?;
-            let rhs = eval_value_expr(right, env)?;
+            let lhs = eval_value_expr(left, env).await?;
+            let rhs = eval_value_expr(right, env).await?;
             return compare_values(&lhs, op, &rhs);
         }
     }
 
-    let value = eval_value_expr(expr, env)?;
+    let value = eval_value_expr(expr, env).await?;
     Ok(value_truthy(&value))
 }
 
@@ -271,7 +410,7 @@ async fn invoke_flow(
 
     let mut input_map = HashMap::new();
     for (idx, input) in program.flow.inputs.iter().enumerate() {
-        let value = eval_value_expr(&arg_exprs[idx], env)?;
+        let value = eval_value_expr(&arg_exprs[idx], env).await?;
         input_map.insert(input.name.clone(), value);
     }
 
@@ -339,6 +478,7 @@ async fn run_test_body(
             let name = caps.get(1).unwrap().as_str().to_string();
             let expr = caps.get(2).unwrap().as_str();
             let value = eval_value_expr(expr, &empty_env)
+                .await
                 .map_err(|e| format!("line {line_no}: mock value error: {e}"))?;
             mocks.insert(name, value);
         }
@@ -372,6 +512,7 @@ async fn run_test_body(
 
         if let Some(expr) = line.strip_prefix("must ") {
             let ok = eval_must(expr, &env)
+                .await
                 .map_err(|e| format!("line {line_no}: must evaluation error: {e}"))?;
             if !ok {
                 return Err(format!("line {line_no}: must failed: {expr}"));
@@ -425,11 +566,14 @@ async fn run_test_body(
 
             // Fallback: try as a runtime op (e.g. route.match, obj.get, etc.)
             if callee.contains('.') {
-                let args: Vec<Value> = arg_exprs
-                    .iter()
-                    .map(|a| eval_value_expr(a, &env))
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| format!("line {line_no}: op arg error: {e}"))?;
+                let mut args = Vec::with_capacity(arg_exprs.len());
+                for a in &arg_exprs {
+                    args.push(
+                        eval_value_expr(a, &env)
+                            .await
+                            .map_err(|e| format!("line {line_no}: op arg error: {e}"))?,
+                    );
+                }
                 let h = NativeHost::new();
                 let codecs = CodecRegistry::default_registry();
                 let result = runtime::execute_op(callee, &args, &h, &codecs)
@@ -444,6 +588,7 @@ async fn run_test_body(
             let var = caps.get(1).unwrap().as_str().to_string();
             let expr = caps.get(2).unwrap().as_str();
             let value = eval_value_expr(expr, &env)
+                .await
                 .map_err(|e| format!("line {line_no}: assignment error: {e}"))?;
             env.insert(var, value);
             continue;
@@ -457,11 +602,15 @@ async fn run_test_body(
                 let args: Vec<Value> = if args_raw.trim().is_empty() {
                     vec![]
                 } else {
-                    split_csv(args_raw)
-                        .into_iter()
-                        .map(|a| eval_value_expr(&a, &env))
-                        .collect::<Result<_, _>>()
-                        .map_err(|e| format!("line {line_no}: op arg error: {e}"))?
+                    let mut v = Vec::new();
+                    for a in split_csv(args_raw) {
+                        v.push(
+                            eval_value_expr(&a, &env)
+                                .await
+                                .map_err(|e| format!("line {line_no}: op arg error: {e}"))?,
+                        );
+                    }
+                    v
                 };
                 let h = NativeHost::new();
                 let codecs = CodecRegistry::default_registry();
@@ -513,6 +662,24 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
         return Err(format!("No .fa files found at {}", path.display()));
     }
 
+    // Resolve project dependencies once for all test files
+    let resolved_deps = {
+        let dir = if path.is_file() {
+            path.parent().unwrap_or(Path::new("."))
+        } else {
+            path
+        };
+        if let Ok((cfg, root)) = crate::config::find_config(dir) {
+            if !cfg.dependencies.is_empty() {
+                crate::deps::resolve_dependencies(&cfg, &root).unwrap_or_else(|_| crate::deps::ResolvedDeps::empty())
+            } else {
+                crate::deps::ResolvedDeps::empty()
+            }
+        } else {
+            crate::deps::ResolvedDeps::empty()
+        }
+    };
+
     let mut summary = TestSummary::default();
 
     for file in files {
@@ -543,7 +710,7 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
         let registry = TypeRegistry::from_module(&module)
             .map_err(|errors| format!("{}: type errors:\n{}", file.display(), errors.join("\n")))?;
 
-        let flow_registry = loader::build_flow_registry(&file, &module)?;
+        let flow_registry = loader::build_flow_registry(&file, &module, &resolved_deps)?;
 
         let mut docs_map = HashMap::<String, String>::new();
         let mut flows = HashMap::<String, FlowProgram>::new();
@@ -579,6 +746,7 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
                             !known.contains(op.as_str())
                                 && !codec_ops.contains(op.as_str())
                                 && !flow_registry.is_flow(op)
+                                && !op.starts_with("ffi.")
                         })
                         .collect();
                     if !unknown.is_empty() {
@@ -597,24 +765,23 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
                     let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
                         format!("{}: func `{}` lower error: {e}", file.display(), f.name)
                     })?;
-                    let emit_name =
-                        flow.outputs
-                            .first()
-                            .map(|p| p.name.clone())
-                            .ok_or_else(|| {
-                                format!("{}: func `{}` has no emit output", file.display(), f.name)
-                            })?;
-                    let fail_name =
-                        flow.outputs.get(1).map(|p| p.name.clone()).ok_or_else(|| {
-                            format!("{}: func `{}` has no fail output", file.display(), f.name)
-                        })?;
+                    let emit_name = if f.return_type.is_some() {
+                        Some("_return".to_string())
+                    } else {
+                        f.emits.first().map(|e| e.name.clone())
+                    };
+                    let fail_name = if f.fail_type.is_some() {
+                        Some("_fail".to_string())
+                    } else {
+                        f.fails.first().map(|fa| fa.name.clone())
+                    };
                     flows.insert(
                         f.name.clone(),
                         FlowProgram {
                             flow,
                             ir: ir_val,
-                            emit_name: Some(emit_name),
-                            fail_name: Some(fail_name),
+                            emit_name,
+                            fail_name,
                             registry: registry.clone(),
                             kind,
                         },
@@ -641,6 +808,7 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
                             !known.contains(op.as_str())
                                 && !codec_ops.contains(op.as_str())
                                 && !flow_registry.is_flow(op)
+                                && !op.starts_with("ffi.")
                         })
                         .collect();
                     if !unknown.is_empty() {
@@ -674,7 +842,7 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
                     );
                 }
                 TopDecl::Test(t) => tests.push(t.clone()),
-                TopDecl::Uses(_) | TopDecl::Type(_) | TopDecl::Enum(_) => {}
+                TopDecl::Uses(_) | TopDecl::Type(_) | TopDecl::Enum(_) | TopDecl::Extern(_) => {}
             }
         }
 
@@ -731,7 +899,7 @@ pub async fn run_tests_at_path_build(path: &Path) -> Result<TestSummary, String>
 
 #[cfg(test)]
 mod tests {
-    use super::run_tests_at_path_async;
+    use super::*;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -877,5 +1045,85 @@ done
         assert_eq!(summary.failed, 0, "summary={summary:?}");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn eval_json_array_literal() {
+        let env = HashMap::new();
+        let val = eval_value_expr(r#"[{"role": "user", "content": "Hi"}]"#, &env)
+            .await
+            .unwrap();
+        assert!(val.is_array());
+        assert_eq!(val.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn eval_json_object_literal() {
+        let env = HashMap::new();
+        let val = eval_value_expr(r#"{"key": "value"}"#, &env)
+            .await
+            .unwrap();
+        assert!(val.is_object());
+    }
+
+    #[tokio::test]
+    async fn eval_bare_key_object_literal() {
+        let env = HashMap::new();
+        let val = eval_value_expr(r#"{stop_reason: "end", count: 42}"#, &env)
+            .await
+            .unwrap();
+        let obj = val.as_object().unwrap();
+        assert_eq!(obj.get("stop_reason").unwrap(), "end");
+        assert_eq!(obj.get("count").unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn eval_nested_bare_key_object() {
+        let env = HashMap::new();
+        let val = eval_value_expr(r#"{outer: {inner: "val"}}"#, &env)
+            .await
+            .unwrap();
+        let outer = val.as_object().unwrap();
+        let inner = outer.get("outer").unwrap().as_object().unwrap();
+        assert_eq!(inner.get("inner").unwrap(), "val");
+    }
+
+    #[test]
+    fn split_csv_respects_brace_depth() {
+        let args = r#"{key: "val", other: "val2"}, "hello""#;
+        let parts = split_csv(args);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], r#"{key: "val", other: "val2"}"#);
+        assert_eq!(parts[1], r#""hello""#);
+    }
+
+    #[test]
+    fn split_csv_respects_bracket_depth() {
+        let args = r#"[1, 2, 3], "x""#;
+        let parts = split_csv(args);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "[1, 2, 3]");
+        assert_eq!(parts[1], r#""x""#);
+    }
+
+    #[test]
+    fn unescape_string_handles_quotes() {
+        assert_eq!(unescape_string(r#"hello \"world\""#), r#"hello "world""#);
+        assert_eq!(unescape_string(r#"a\\b"#), r#"a\b"#);
+        assert_eq!(unescape_string(r#"line1\nline2"#), "line1\nline2");
+    }
+
+    #[test]
+    fn compare_values_numeric_eq() {
+        let a = serde_json::json!(2i64);
+        let b = Value::from(2i64);
+        assert!(compare_values(&a, "==", &b).unwrap());
+    }
+
+    #[tokio::test]
+    async fn eval_must_inline_op() {
+        let mut env = HashMap::new();
+        env.insert("r".into(), serde_json::json!([1, 2, 3]));
+        assert!(eval_must("list.len(r) == 3", &env).await.unwrap());
     }
 }

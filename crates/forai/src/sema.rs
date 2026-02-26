@@ -1,4 +1,4 @@
-use crate::ast::{DocsDecl, ModuleAst, TakeDecl, TopDecl, TypeKind};
+use crate::ast::{DocsDecl, ExternBlock, ModuleAst, TakeDecl, TopDecl, TypeKind};
 use std::collections::{HashMap, HashSet};
 
 fn docs_hint(kind: &str, name: &str) -> String {
@@ -130,6 +130,33 @@ pub fn test_call_warnings(module: &ModuleAst) -> Vec<String> {
     }
 
     warnings
+}
+
+fn is_ffi_compatible_type(type_name: &str) -> bool {
+    matches!(type_name, "long" | "real" | "text" | "bool" | "ptr")
+}
+
+fn validate_extern_block(eb: &ExternBlock, errors: &mut Vec<String>) {
+    for f in &eb.fns {
+        for take in &f.takes {
+            if !is_ffi_compatible_type(&take.type_name) {
+                errors.push(format!(
+                    "{}:{} extern fn `{}` parameter `{}` has type `{}` which is not FFI-compatible; \
+                     only long, real, text, bool, and ptr are allowed",
+                    take.span.line, take.span.col, f.name, take.name, take.type_name
+                ));
+            }
+        }
+        if let Some(ref rt) = f.return_type {
+            if !is_ffi_compatible_type(rt) {
+                errors.push(format!(
+                    "{}:{} extern fn `{}` return type `{}` is not FFI-compatible; \
+                     only long, real, text, bool, and ptr are allowed",
+                    f.span.line, f.span.col, f.name, rt
+                ));
+            }
+        }
+    }
 }
 
 fn looks_like_cross_file_func_name(op: &str) -> bool {
@@ -271,36 +298,10 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
                             d.span.line, d.span.col, d.name
                         ));
                     }
-                } else {
-                    // v1 func: named emit/fail ports required
-                    if d.emits.is_empty() {
-                        errors.push(format!(
-                            "{}:{} func `{}` is missing `emit <name> as <Type>`",
-                            d.span.line, d.span.col, d.name
-                        ));
-                    }
-                    if d.fails.is_empty() {
-                        errors.push(format!(
-                            "{}:{} func `{}` is missing `fail <name> as <Type>`",
-                            d.span.line, d.span.col, d.name
-                        ));
-                    }
                 }
             }
             TopDecl::Sink(d) => {
                 symbol_names.insert(d.name.clone());
-                if d.emits.is_empty() {
-                    errors.push(format!(
-                        "{}:{} sink `{}` is missing `emit <name> as <Type>`",
-                        d.span.line, d.span.col, d.name
-                    ));
-                }
-                if d.fails.is_empty() {
-                    errors.push(format!(
-                        "{}:{} sink `{}` is missing `fail <name> as <Type>`",
-                        d.span.line, d.span.col, d.name
-                    ));
-                }
             }
             TopDecl::Source(d) => {
                 symbol_names.insert(d.name.clone());
@@ -314,19 +315,6 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
                     if d.fail_type.is_none() {
                         errors.push(format!(
                             "{}:{} source `{}` has `return` type but is missing `fail <Type>`",
-                            d.span.line, d.span.col, d.name
-                        ));
-                    }
-                } else {
-                    if d.emits.is_empty() {
-                        errors.push(format!(
-                            "{}:{} source `{}` is missing `emit <name> as <Type>`",
-                            d.span.line, d.span.col, d.name
-                        ));
-                    }
-                    if d.fails.is_empty() {
-                        errors.push(format!(
-                            "{}:{} source `{}` is missing `fail <name> as <Type>`",
                             d.span.line, d.span.col, d.name
                         ));
                     }
@@ -345,6 +333,9 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
                 *docs_targets.entry(d.name.clone()).or_insert(0) += 1;
             }
             TopDecl::Uses(_) => {}
+            TopDecl::Extern(eb) => {
+                validate_extern_block(eb, &mut errors);
+            }
         }
     }
 
@@ -430,7 +421,7 @@ pub fn validate_module(module: &ModuleAst, filename: Option<&str>) -> Result<(),
                     ));
                 }
             }
-            TopDecl::Docs(_) | TopDecl::Enum(_) | TopDecl::Uses(_) => {}
+            TopDecl::Docs(_) | TopDecl::Enum(_) | TopDecl::Uses(_) | TopDecl::Extern(_) => {}
         }
     }
 
