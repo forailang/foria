@@ -21,6 +21,13 @@ Scope: Compiler/runtime contract for `.fa` files in `/Users/bal/labs/forai/dataf
   - `use auth from "./auth"` (directory) → call as `auth.Login(...)`
   - `use Round from "./round.fa"` (file) → call as `Round(...)`
 - Paths are relative to the importing `.fa` file's own directory, not the project root.
+- External package imports use `use Name from "<dep-key>"` where `<dep-key>` matches a key in `forai.json` `dependencies`.
+- Project manifest (`forai.json`) fields:
+  - `name` (required): project name
+  - `version`: semver string (default `"0.0.0"`)
+  - `main` (required): entry point path
+  - `type`: `"app"` (default) or `"lib"` — only `lib` packages can be imported as dependencies
+  - `dependencies`: map of package name → version specifier
 
 ## 3. Keywords
 
@@ -392,6 +399,33 @@ branch_stmt      = "branch" [ "when" expr ] NEWLINE
 - Module directories contain `.fa` files; each file defines one `func`, `flow`, or `sink`.
 - Paths resolve relative to the importing file's directory, not the project root.
 - Circular dependencies are detected and rejected.
+- **External package imports**: `use Name from "<dep-key>"` where `<dep-key>` matches a key in the project's `forai.json` `dependencies` map. The compiler resolves the dependency to its cached path and loads the package's `main` entry point.
+
+### 7.7.1 Dependency sources
+Three formats are supported in the `dependencies` map:
+
+| Source | Key format | Value format | Example |
+|--------|-----------|--------------|---------|
+| GitHub | `@user/repo` | semver range | `"@user/tools": "^1.0.0"` |
+| File | any name | `file:<path>` | `"mylib": "file:../mylib/"` |
+| Git URL | any name | `git+<url>#<range>` | `"requests": "git+https://host/repo.git#^2.0.0"` |
+
+### 7.7.2 Version resolution
+- Semver ranges: `^` (caret/compatible), `~` (tilde/patch-level), `>=`, `>`, `<=`, `<`, exact.
+- Caret rules: `^1.2.3` = `>=1.2.3, <2.0.0`; `^0.2.3` = `>=0.2.3, <0.3.0`; `^0.0.3` = exact.
+- Resolution order: check lockfile → check cache → query remote (`git ls-remote --tags`) → fetch highest matching tag.
+- Lockfile (`forai.lock`) pins resolved versions and git SHAs. Locked versions are preferred if they satisfy the requirement.
+
+### 7.7.3 Package cache
+- Location: `$XDG_CONFIG_HOME/forai/cache/` (default `~/.config/forai/cache/`).
+- Layout: `<name>/v<version>/` containing the package source with `.git/` removed.
+- Validation: cached package must contain `forai.json` with `"type": "lib"`.
+
+### 7.7.4 Transitive dependencies
+- Libraries declare their own `dependencies` in their `forai.json`.
+- The resolver processes the full dependency tree via breadth-first expansion.
+- Version conflicts (two packages require incompatible versions of the same dependency) are rejected with an error.
+- Circular dependencies in the package graph are detected and rejected.
 
 ### 7.8 Handle sharing across calls
 - Stateful resource handles (database connections, HTTP servers, WebSocket connections)
@@ -988,9 +1022,11 @@ Arithmetic uses infix operators: `+` `-` `*` `/` `%` `**`.
 ### 15.10b `http.respond.*` — Response Convenience Ops
 | Op | Args | Returns | Description |
 |----|------|---------|-------------|
-| `http.respond.html` | http_conn, status, body | bool | Respond with `text/html; charset=utf-8` |
-| `http.respond.json` | http_conn, status, body | bool | Respond with `application/json` |
-| `http.respond.text` | http_conn, status, body | bool | Respond with `text/plain; charset=utf-8` |
+| `http.respond.html` | http_conn, status, body [, headers] | bool | Respond with `text/html; charset=utf-8` |
+| `http.respond.json` | http_conn, status, body [, headers] | bool | Respond with `application/json` |
+| `http.respond.text` | http_conn, status, body [, headers] | bool | Respond with `text/plain; charset=utf-8` |
+
+The optional `headers` argument is a dict of extra response headers (e.g., `Set-Cookie`, `Cache-Control`). The `content-type` header is always set by the op and cannot be overridden via this dict.
 
 ### 15.11 `ws.*` — WebSocket client
 | Op | Args | Returns | Description |

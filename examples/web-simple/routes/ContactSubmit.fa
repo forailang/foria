@@ -1,0 +1,29 @@
+docs ContactSubmit
+    Handles contact form submissions via POST.
+    Parses the JSON body and responds with the submitted data.
+done
+
+func ContactSubmit
+    take req as dict
+    emit result as bool
+    fail error as text
+body
+    conn_id = obj.get(req, "conn_id")
+    raw_body = obj.get(req, "body")
+    data = json.decode(raw_body)
+    name = obj.get(data, "name")
+    message = obj.get(data, "message")
+
+    response = {received: true, name: name, message: message}
+    body_text = json.encode(response)
+    _ = http.respond.json(conn_id, 200, body_text)
+    ok = true
+    emit ok
+done
+
+test ContactSubmit
+    mock http.respond.json => true
+    req = {conn_id: "test", body: "{\"name\":\"Alice\",\"message\":\"Hello\"}"}
+    result = ContactSubmit(req)
+    must result == true
+done

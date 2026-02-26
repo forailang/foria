@@ -1,6 +1,6 @@
 docs main
-    Simple web server with home, about, and blog pages.
-    Demonstrates route.match-based routing with parameterized URLs.
+    Simple web server with home, about, blog, and contact pages.
+    Demonstrates method-based routing with GET and POST handlers.
     Listens on port 3000.
 done
 
@@ -13,23 +13,27 @@ body
         next :req to req
     done
 
+    state method = obj.get(req, "method")
     state path = obj.get(req, "path")
     state conn_id = obj.get(req, "conn_id")
 
-    branch when route.match("/", path)
+    branch when method == "GET" && route.match("/", path)
         step routes.Home(conn_id to :conn_id) done
     done
-    branch when route.match("/about", path)
+    branch when method == "GET" && route.match("/about", path)
         step routes.About(conn_id to :conn_id) done
     done
-    branch when route.match("/blog", path)
+    branch when method == "GET" && route.match("/blog", path)
         step routes.BlogList(conn_id to :conn_id) done
     done
-    branch when route.match("/blog/:slug", path)
+    branch when method == "GET" && route.match("/blog/:slug", path)
         state blog_params = route.params("/blog/:slug", path)
         step routes.BlogPost(conn_id to :conn_id, blog_params to :params) done
     done
-    branch when !route.match("/", path) && !route.match("/about", path) && !route.match("/blog", path) && !route.match("/blog/:slug", path)
+    branch when method == "POST" && route.match("/contact", path)
+        step routes.ContactSubmit(req to :req) done
+    done
+    branch
         step routes.NotFound(conn_id to :conn_id) done
     done
 done

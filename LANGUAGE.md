@@ -421,6 +421,72 @@ Rules:
 - `server/Start.fa` with `use db from "./db"` looks for `server/db/`, not top-level `db/`
 - Directory imports register as `name.FuncName`; file imports register as `name` directly
 
+### Packages and Dependencies
+
+forai projects can depend on external libraries. Dependencies are declared in `forai.json` and imported using `use` with the dependency key as the path.
+
+**forai.json:**
+```json
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "main": "src/main.fa",
+  "dependencies": {
+    "@user/tools": "^1.0.0",
+    "mylib": "file:../mylib/",
+    "requests": "git+https://somesite.com/repo.git#^2.0.0"
+  }
+}
+```
+
+**Three dependency sources:**
+
+| Format | Example | Resolves to |
+|--------|---------|-------------|
+| GitHub shorthand | `"@user/repo": "^1.0.0"` | `https://github.com/user/repo.git` |
+| Local file path | `"mylib": "file:../mylib/"` | Filesystem path relative to project root |
+| Arbitrary git URL | `"requests": "git+https://host/repo.git#^1.0.0"` | Any git remote; version after `#` |
+
+**Version ranges** (npm-style semver):
+- `^1.2.3` — compatible: `>=1.2.3, <2.0.0` (caret)
+- `~1.2.3` — patch-level: `>=1.2.3, <1.3.0` (tilde)
+- `>=1.0.0`, `>1.0.0`, `<=2.0.0`, `<2.0.0` — comparison
+- `1.2.3` — exact version
+
+**Importing a dependency:**
+```
+use tools from "@user/tools"
+
+func Process
+  take input as text
+  return text
+  fail text
+body
+  result = tools.Transform(input)
+  return result
+done
+```
+
+The `from` path must match a key in the `dependencies` map. The compiler resolves the dependency to its cached location and loads the library's modules.
+
+**Library projects** declare `"type": "lib"` in their `forai.json`:
+```json
+{
+  "name": "@user/tools",
+  "version": "1.0.0",
+  "type": "lib",
+  "main": "src/"
+}
+```
+
+Only `lib` packages can be imported as dependencies. The `main` field points to the library's entry point (a directory for module imports or a `.fa` file for single-callable libraries).
+
+**Caching:** Dependencies are fetched to `~/.config/forai/cache/<name>/v<version>/` as shallow git clones with `.git/` removed. Subsequent builds use the cache.
+
+**Lockfile:** After resolving dependencies, the compiler writes `forai.lock` (JSON) to the project root. This pins exact versions and git SHAs for reproducible builds. Commit `forai.lock` to version control.
+
+**Transitive dependencies:** Libraries can declare their own dependencies. The compiler resolves the full dependency tree, detecting version conflicts and circular dependencies.
+
 ### Types
 
 **Scalar** (named wrapper with constraints):
@@ -562,9 +628,9 @@ The runtime provides 160+ ops across namespaces. All called as `namespace.op(arg
 | `to.*` | Type conversion | `text`, `long`, `real`, `bool` |
 | `type.*` | Introspection | `of` (returns `"text"`, `"long"`, etc.) |
 | `json.*` | JSON | `decode`, `encode`, `encode_pretty` |
-| `http.*` | HTTP client | `get`, `post`, `put`, `delete`, `response`, `error_response` |
+| `http.*` | HTTP client | `get`, `post`, `put`, `patch`, `delete`, `request`, `response`, `error_response`, `extract_path`, `extract_params` |
 | `http.server.*` | HTTP server | `listen`, `accept`, `respond`, `close` |
-| `http.respond.*` | HTTP response shortcuts | `html`, `json`, `text` (auto content-type) |
+| `http.respond.*` | HTTP response shortcuts | `html`, `json`, `text` (auto content-type, optional headers dict) |
 | `ws.*` | WebSocket | `connect`, `send`, `recv`, `close` |
 | `db.*` | SQLite (`db_conn` handles) | `open`, `exec`, `query`, `close` |
 | `file.*` | File I/O | `read`, `write`, `append`, `delete`, `exists`, `list`, `mkdir` |
@@ -609,9 +675,11 @@ source HTTPRequests
   take port as long
   emit req as dict
   fail error as text
-init
+body
   srv = http.server.listen(port)
-from http.server.accept(srv)
+  on :request from http.server.accept(srv) to req
+    emit req
+  done
 done
 ```
 
@@ -627,27 +695,75 @@ Fire-and-forget. The background task runs independently with its own scope.
 
 ### Request Routing
 
+Route by HTTP method and path using `obj.get` to extract fields from the request dict and `route.match` for URL pattern matching:
+
 ```
 flow HandleRequest
   take conn as db_conn
   take req as dict
 body
-  step router.Route(req to :req) then
-    next :result to handler
+  state method = obj.get(req, "method")
+  state path = obj.get(req, "path")
+  state conn_id = obj.get(req, "conn_id")
+
+  branch when method == "GET" && route.match("/", path)
+    step pages.Home(conn_id to :conn_id) done
   done
-  branch when handler == "home"
-    step pages.Home(conn to :conn, req to :req) done
+  branch when method == "GET" && route.match("/users", path)
+    step api.ListUsers(conn to :conn, conn_id to :conn_id) done
   done
-  branch when handler == "about"
-    step pages.About(req to :req) done
+  branch when method == "POST" && route.match("/users", path)
+    step api.CreateUser(conn to :conn, req to :req) done
   done
-  branch when handler == "not_found"
-    step pages.NotFound(req to :req) done
+  branch when method == "GET" && route.match("/users/:id", path)
+    state params = route.params("/users/:id", path)
+    step api.GetUser(conn to :conn, conn_id to :conn_id, params to :params) done
+  done
+  branch
+    step pages.NotFound(conn_id to :conn_id) done
   done
 done
 ```
 
-A router func classifies the request, then `branch when` blocks route to the right handler — like a flowchart diamond.
+Each `branch when` checks method + path — like a flowchart diamond. The final unguarded `branch` is the catch-all (404).
+
+### POST Body Handling
+
+Funcs that handle POST requests read the body from the request dict and parse it:
+
+```
+func CreateUser
+  take conn as db_conn
+  take req as dict
+  emit result as bool
+  fail error as text
+body
+  conn_id = obj.get(req, "conn_id")
+  raw_body = obj.get(req, "body")
+  data = json.decode(raw_body)
+  name = obj.get(data, "name")
+  email = obj.get(data, "email")
+
+  id = random.uuid()
+  params = [id, name, email]
+  ok = db.exec(conn, "INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)", params)
+
+  response = {id: id, name: name, email: email}
+  body_text = json.encode(response)
+  _ = http.respond.json(conn_id, 200, body_text)
+  ok2 = true
+  emit ok2
+done
+```
+
+The request dict from `http.server.accept` includes a `body` field containing the raw POST body as text. Use `json.decode` to parse JSON payloads.
+
+The `http.respond.*` ops accept an optional 4th argument — a dict of extra response headers. The `content-type` is always set by the op and cannot be overridden:
+
+```
+hdrs = {"Set-Cookie": "session=abc123; HttpOnly", "Cache-Control": "no-store"}
+_ = http.respond.json(conn_id, 200, body_text, hdrs)
+```
 
 ### Database Operations
 

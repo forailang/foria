@@ -65,7 +65,8 @@ The compiler pipeline is a linear chain through these modules:
 | **ir** | `src/ir.rs` | Lowers `Flow` → `Ir` (normalized nodes, edges, emits with guard conditions) |
 | **codec** | `src/codec.rs` | `Codec` trait and `CodecRegistry` for pluggable serialization formats. Built-in `JsonCodec`; auto-generates `<format>.decode`/`encode`/`encode_pretty` ops |
 | **runtime** | `src/runtime.rs` | Async execution engine (`tokio` current_thread). Executes IR against inputs, produces `RunReport` with trace events. All I/O ops (HTTP, file, WebSocket, process) are non-blocking. `sync` blocks run statements concurrently via `join_all`. Built-in ops across 16+ namespaces (see below). Sub-flow dispatch via `FlowRegistry` with value mock support |
-| **loader** | `src/loader.rs` | Module loader: resolves `uses` declarations, compiles funcs into `FlowProgram` entries, builds `FlowRegistry` for cross-module dispatch |
+| **deps** | `src/deps/` | External dependency system: `semver.rs` (version parsing/ranges), `source.rs` (dep source types: GitHub/File/Git), `fetch.rs` (git-based fetching/cache), `lockfile.rs` (forai.lock management), `resolve.rs` (dependency resolution orchestrator) |
+| **loader** | `src/loader.rs` | Module loader: resolves `uses` declarations and `@`-prefixed package imports, compiles funcs into `FlowProgram` entries, builds `FlowRegistry` for cross-module dispatch |
 | **tester** | `src/tester.rs` | Parses and runs `test` blocks from `.fa` files. Supports `must` assertions, `trap` for failure-path testing, `mock` for substituting sub-func calls, variable bindings |
 | **debugger** | `src/debugger.rs` | WebSocket-based interactive debugger for the `dev` command. Step/continue/breakpoint/restart protocol with embedded HTML UI |
 | **doc** | `src/doc.rs` | Extracts structured documentation from modules for the `doc` command |
@@ -85,7 +86,7 @@ Key design note: the parser has two layers. First it parses the full module stru
 | `to.*` | `text`, `long`, `real`, `bool` | Type conversion between scalars |
 | `json.*` | `decode`, `encode`, `encode_pretty` | JSON codec (via codec registry) |
 | `codec.*` | `decode`, `encode`, `encode_pretty` | Generic codec dispatch by format name |
-| `http.*` | `extract_path`, `extract_params`, `response`, `error_response`, `get`, `post`, `put`, `delete` | HTTP client and response helpers |
+| `http.*` | `extract_path`, `extract_params`, `response`, `error_response`, `get`, `post`, `put`, `patch`, `delete`, `request` | HTTP client and response helpers |
 | `http.server.*` | `listen`, `accept`, `respond`, `close` | HTTP server (uses `http_server`/`http_conn` handle types) |
 | `http.respond.*` | `html`, `json`, `text` | HTTP response convenience ops (auto content-type, uses `http_conn`) |
 | `ws.*` | `connect`, `send`, `recv`, `close` | WebSocket client (uses `ws_conn` handle type) |
@@ -125,7 +126,7 @@ Source files use `.fa` extension. Comments start with `#`. Key constructs:
 - **on**: `on :eventType from sourceExpr(args) to varName`...`done` — event handler block inside source bodies. Runs body once per event from the source expression. Event tag (`:request`, `:input`) is stored but cosmetic in v1
 - **sink**: `sink Name` — same syntax as `func`, declared as a side-effect-only endpoint
 - **flow**: `flow Name` with optional `take`/`emit`/`fail` header, `body`...`done` — step-based wiring of funcs/flows; body contains `step`, `branch`, `emit`/`fail` blocks. `branch when <expr>` is a conditional sub-pipeline; `branch` (unguarded) always runs. Flows may have zero ports (no take/emit/fail) — they are pure wiring
-- **uses**: `uses module` — imports a module directory; call as `module.FuncName(...)`
+- **uses**: `uses module` — imports a module directory; call as `module.FuncName(...)`. External package imports use `use Name from "@user/repo"` where the path matches a key in `forai.json` `dependencies`
 - **docs**: `docs Identifier`...`done` — required for every func, flow, sink, and test
 - **test**: `test Name`...`done` with `must` assertions, `trap` for failure paths, `mock` for substituting sub-func calls
 - **if/else if/else/done**: boolean conditional branching; condition is a full expression. Desugars to `case` at parse time
@@ -163,7 +164,7 @@ The project is following `language-migration-plan.md` through 10 phases. Phases 
 - Phase 4: Semantic rules (docs enforcement, output type validation)
 - Phase 5: Module system (`uses` resolution, cross-module calls), func/flow split, test mocking
 
-Additionally implemented: interactive debugger (`dev` command), doc generation (`doc` command), codec registry, type conversion ops, async runtime migration (all I/O non-blocking, sync blocks concurrent).
+Additionally implemented: interactive debugger (`dev` command), doc generation (`doc` command), codec registry, type conversion ops, async runtime migration (all I/O non-blocking, sync blocks concurrent), external dependency system (semver ranges, GitHub/file/git URL sources, caching, lockfile, transitive deps).
 
 Remaining: flow (step-based) runtime execution, generated docs artifacts.
 
