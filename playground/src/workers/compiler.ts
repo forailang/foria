@@ -38,6 +38,38 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     }
   }
 
+  if (msg.type === "execute") {
+    if (!wasmModule) {
+      post({ type: "execute-result", id: msg.id, error: "WASM not loaded" });
+      return;
+    }
+    const start = performance.now();
+    try {
+      const result = wasmModule.execute(JSON.stringify(msg.files), msg.entryPoint);
+      const elapsed = performance.now() - start;
+      const parsed = JSON.parse(result);
+      post({ type: "execute-result", id: msg.id, result: parsed, elapsed });
+    } catch (e: unknown) {
+      post({ type: "execute-result", id: msg.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (msg.type === "debug") {
+    if (!wasmModule) {
+      post({ type: "debug-result", id: msg.id, error: "WASM not loaded" });
+      return;
+    }
+    const start = performance.now();
+    try {
+      const result = wasmModule.execute_stepping(JSON.stringify(msg.files), msg.entryPoint);
+      const elapsed = performance.now() - start;
+      const parsed = JSON.parse(result);
+      post({ type: "debug-result", id: msg.id, result: parsed, elapsed });
+    } catch (e: unknown) {
+      post({ type: "debug-result", id: msg.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   if (msg.type === "format") {
     if (!wasmModule) {
       post({ type: "format-result", id: msg.id, error: "WASM not loaded" });

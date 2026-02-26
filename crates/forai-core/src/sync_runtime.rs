@@ -24,6 +24,186 @@ pub struct RunResult {
     pub outputs: Value,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StepSnapshot {
+    pub step: usize,
+    pub op: String,
+    pub bind: String,
+    pub bindings: HashMap<String, Value>,
+}
+
+/// Execute a flow and collect a snapshot after every Statement::Node execution.
+/// Returns the final result plus all collected snapshots.
+pub fn execute_flow_stepping(
+    flow: &Flow,
+    _ir: Ir,
+    inputs: HashMap<String, Value>,
+    _registry: &TypeRegistry,
+    flow_registry: Option<&FlowRegistry>,
+    codecs: &CodecRegistry,
+    host: &dyn SyncHost,
+) -> Result<(RunResult, Vec<StepSnapshot>), String> {
+    let mut vars = inputs;
+    let mut outputs = serde_json::Map::new();
+    let snapshots = std::cell::RefCell::new(Vec::new());
+    let step_counter = std::cell::Cell::new(0usize);
+
+    let on_step = |op: &str, bind: &str, bindings: &HashMap<String, Value>| {
+        let n = step_counter.get();
+        step_counter.set(n + 1);
+        snapshots.borrow_mut().push(StepSnapshot {
+            step: n,
+            op: op.to_string(),
+            bind: bind.to_string(),
+            bindings: bindings.clone(),
+        });
+    };
+
+    if let ExecSignal::Emit {
+        output,
+        value_var,
+        value,
+    } = execute_statements_stepping(&flow.body, &mut vars, flow_registry, host, codecs, &on_step)?
+    {
+        outputs.insert(output, value.clone());
+        if !value_var.contains(' ') && !value_var.contains('"') {
+            vars.insert(value_var, value);
+        }
+    }
+
+    Ok((
+        RunResult {
+            outputs: Value::Object(outputs),
+        },
+        snapshots.into_inner(),
+    ))
+}
+
+fn execute_statements_stepping(
+    statements: &[Statement],
+    vars: &mut HashMap<String, Value>,
+    flow_registry: Option<&FlowRegistry>,
+    host: &dyn SyncHost,
+    codecs: &CodecRegistry,
+    on_step: &dyn Fn(&str, &str, &HashMap<String, Value>),
+) -> Result<ExecSignal, String> {
+    for stmt in statements {
+        match stmt {
+            Statement::Node(node) => {
+                let mut args = Vec::new();
+                for arg in &node.args {
+                    match arg {
+                        Arg::Lit { lit } => args.push(lit.clone()),
+                        Arg::Var { var } => {
+                            if let Some(value) = resolve_var_path(vars, var) {
+                                args.push(value);
+                            } else {
+                                return Err(format!("Missing variable `{var}`"));
+                            }
+                        }
+                    }
+                }
+                let result = dispatch_op(&node.op, &args, flow_registry, host, codecs)?;
+                vars.insert(node.bind.clone(), result);
+                on_step(&node.op, &node.bind, vars);
+            }
+            Statement::ExprAssign(ea) => {
+                let value = eval_expr(&ea.expr, vars, flow_registry, host, codecs)?;
+                vars.insert(ea.bind.clone(), value);
+            }
+            Statement::Emit(emit) => {
+                let value = eval_expr(&emit.value_expr, vars, flow_registry, host, codecs)?;
+                let label = match &emit.value_expr {
+                    Expr::Var(name) => name.clone(),
+                    _ => format!("{:?}", emit.value_expr),
+                };
+                return Ok(ExecSignal::Emit {
+                    output: emit.output.clone(),
+                    value_var: label,
+                    value,
+                });
+            }
+            Statement::Case(case_block) => {
+                let subject = eval_expr(&case_block.expr, vars, flow_registry, host, codecs)?;
+                let mut matched = false;
+                for arm in &case_block.arms {
+                    if pattern_matches(&subject, &arm.pattern) {
+                        matched = true;
+                        match execute_statements_stepping(&arm.body, vars, flow_registry, host, codecs, on_step)? {
+                            ExecSignal::Continue => {}
+                            signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                            ExecSignal::Break => return Ok(ExecSignal::Break),
+                        }
+                        break;
+                    }
+                }
+                if !matched {
+                    match execute_statements_stepping(&case_block.else_body, vars, flow_registry, host, codecs, on_step)? {
+                        ExecSignal::Continue => {}
+                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                        ExecSignal::Break => return Ok(ExecSignal::Break),
+                    }
+                }
+            }
+            Statement::Loop(loop_block) => {
+                let collection = eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)?;
+                let items = collection.as_array().ok_or_else(|| {
+                    format!("Loop collection must be an array, got `{}`", collection)
+                })?;
+                let items = items.clone();
+                let previous = vars.get(&loop_block.item).cloned();
+                for item in &items {
+                    vars.insert(loop_block.item.clone(), item.clone());
+                    match execute_statements_stepping(&loop_block.body, vars, flow_registry, host, codecs, on_step)? {
+                        ExecSignal::Continue => {}
+                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                        ExecSignal::Break => break,
+                    }
+                }
+                if let Some(prev) = previous {
+                    vars.insert(loop_block.item.clone(), prev);
+                } else {
+                    vars.remove(&loop_block.item);
+                }
+            }
+            Statement::BareLoop(block) => loop {
+                match execute_statements_stepping(&block.body, vars, flow_registry, host, codecs, on_step)? {
+                    ExecSignal::Continue => {}
+                    signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                    ExecSignal::Break => break,
+                }
+            },
+            Statement::Sync(sync_block) => {
+                for s in &sync_block.body {
+                    match execute_statements_stepping(&[s.clone()], vars, flow_registry, host, codecs, on_step)? {
+                        ExecSignal::Continue => {}
+                        signal @ ExecSignal::Emit { .. } => return Ok(signal),
+                        ExecSignal::Break => return Ok(ExecSignal::Break),
+                    }
+                }
+            }
+            Statement::SourceLoop(_) => {
+                return Err("SourceLoop not supported in WASM runtime".into());
+            }
+            Statement::On(_) => {
+                return Err("On block not supported in WASM runtime".into());
+            }
+            Statement::SendNowait(sn) => {
+                let mut resolved_args = Vec::new();
+                for arg_expr in &sn.args {
+                    let val = eval_expr(arg_expr, vars, flow_registry, host, codecs)?;
+                    resolved_args.push(val);
+                }
+                let _ = dispatch_op(&sn.target, &resolved_args, flow_registry, host, codecs);
+            }
+            Statement::Break => {
+                return Ok(ExecSignal::Break);
+            }
+        }
+    }
+    Ok(ExecSignal::Continue)
+}
+
 pub fn execute_flow(
     flow: &Flow,
     _ir: Ir,

@@ -293,6 +293,39 @@
       color: var(--text-muted);
     }
 
+    /* Graph node styles */
+    .graph-node.active { stroke: var(--yellow) !important; stroke-width: 2.5 !important; filter: url(#glow); }
+    .graph-node.source-active { stroke: var(--yellow) !important; stroke-width: 2 !important; }
+    .graph-node.executed { fill: rgba(63,185,80,.15) !important; }
+    .graph-node.failed { fill: rgba(248,81,73,.15) !important; }
+    .graph-node.inactive { opacity: .22 !important; }
+    .graph-node:hover { stroke: var(--text-muted) !important; }
+    .edge-path { fill: none; stroke-width: 1.5; opacity: .55; }
+    .edge-path.active-edge { opacity: 1; stroke-width: 2.5; }
+    .edge-path.inactive-edge { opacity: .1 !important; stroke-width: 1 !important; }
+    .edge-label { fill: var(--text-muted); font-size: 9px; pointer-events: none; }
+    .edge-label-bg { fill: var(--bg-secondary); }
+    .edge-value { fill: var(--text-muted); font-size: 8px; pointer-events: none; opacity: .8; }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-tertiary);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 12px;
+      z-index: 200;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    .toast.visible { opacity: 1; }
+
     /* Empty state */
     .empty-state {
       display: flex;
@@ -313,8 +346,14 @@
   <div class="toolbar">
     <span class="logo">forai</span>
     <button class="primary" id="btn-run">Run <kbd id="run-shortcut"></kbd></button>
+    <button id="btn-debug">Debug</button>
     <button id="btn-format">Format</button>
+    <select id="examples-select" style="background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:13px;cursor:pointer;">
+      <option value="">Examples...</option>
+    </select>
     <span class="spacer"></span>
+    <button id="btn-share">Share</button>
+    <button id="btn-clear">Clear</button>
     <span class="status" id="status">Initializing...</span>
   </div>
 
@@ -329,6 +368,7 @@
     <div class="panel-output">
       <div class="output-tabs">
         <div class="output-tab active" data-panel="output">Output</div>
+        <div class="output-tab" data-panel="ir-graph">IR Graph</div>
         <div class="output-tab" data-panel="ir-json">IR JSON</div>
         <div class="output-tab" data-panel="errors">Errors</div>
       </div>
