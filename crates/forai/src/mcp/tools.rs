@@ -547,7 +547,7 @@ async fn tool_run(args: &Value) -> CallToolResult {
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
-    let (flow, ir, registry, flow_registry) = match crate::compile_source(&source) {
+    let (flow, ir, registry, flow_registry, _ffi_registry) = match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
         Ok(v) => v,
         Err(e) => return CallToolResult::error(e),
     };
@@ -636,8 +636,8 @@ fn tool_flow_graph(args: &Value) -> CallToolResult {
     };
     let source = resolve_path(raw_source);
 
-    match crate::compile_source(&source) {
-        Ok((_flow, ir, _registry, _flow_registry)) => {
+    match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
+        Ok((_flow, ir, _registry, _flow_registry, _ffi_registry)) => {
             let result = serde_json::to_string_pretty(&ir).unwrap_or_else(|e| e.to_string());
             CallToolResult::text(result)
         }
@@ -661,7 +661,7 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
-    let (flow, ir, registry, flow_registry) = match crate::compile_source(&source) {
+    let (flow, ir, registry, flow_registry, _ffi_registry) = match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
         Ok(v) => v,
         Err(e) => return CallToolResult::error(e),
     };

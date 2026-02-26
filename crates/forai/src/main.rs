@@ -19,8 +19,10 @@ mod loader;
 // Compiler-only modules (not in core)
 mod cli;
 mod config;
+mod deps;
 mod debugger;
 mod doc;
+mod ffi_manager;
 mod formatter;
 mod host_native;
 mod lexer;
@@ -193,6 +195,25 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
     }
 }
 
+/// Try to resolve project dependencies from a source path.
+/// Walks up to find forai.json; if found and it has dependencies, resolves them.
+/// Returns empty deps if no config or no dependencies.
+fn resolve_deps_for_source(source_path: &Path) -> deps::ResolvedDeps {
+    let dir = if source_path.is_file() {
+        source_path.parent().unwrap_or(Path::new("."))
+    } else {
+        source_path
+    };
+    if let Ok((cfg, root)) = config::find_config(dir) {
+        if !cfg.dependencies.is_empty() {
+            if let Ok(rd) = deps::resolve_dependencies(&cfg, &root) {
+                return rd;
+            }
+        }
+    }
+    deps::ResolvedDeps::empty()
+}
+
 fn format_unknown_op(file: &Path, op: &str) -> String {
     let base = format!("{}: unknown op `{op}`", file.display());
     if let Some(hint) = sema::unknown_op_fix_hint(op) {
@@ -204,7 +225,8 @@ fn format_unknown_op(file: &Path, op: &str) -> String {
 
 pub(crate) fn compile_source(
     source_path: &PathBuf,
-) -> Result<(Flow, Ir, TypeRegistry, FlowRegistry), String> {
+    resolved_deps: &deps::ResolvedDeps,
+) -> Result<(Flow, Ir, TypeRegistry, FlowRegistry, ffi_manager::FfiRegistry), String> {
     if source_path.extension().and_then(|s| s.to_str()) != Some("fa") {
         return Err(format!(
             "Source must use the .fa extension, got `{}`",
@@ -246,7 +268,10 @@ pub(crate) fn compile_source(
             .join("\n")
     })?;
 
-    let flow_registry = loader::build_flow_registry(source_path, &module)?;
+    let flow_registry = loader::build_flow_registry(source_path, &module, resolved_deps)?;
+
+    let mut ffi_registry = ffi_manager::build_ffi_registry(&module);
+    ffi_registry.merge(loader::collect_imported_ffi(source_path, &module, resolved_deps));
 
     let flow = parser::parse_runtime_func_from_module_v1(&module)
         .map_err(|e| format!("{}:{e}", source_path.display()))?;
@@ -256,6 +281,11 @@ pub(crate) fn compile_source(
     let codec_ops = codec_registry.known_ops();
     for cop in &codec_ops {
         known.insert(cop.as_str());
+    }
+    // Add FFI ops to known set
+    let ffi_op_keys: Vec<String> = ffi_registry.op_keys().cloned().collect();
+    for ffi_op in &ffi_op_keys {
+        known.insert(ffi_op.as_str());
     }
     let mut ops = Vec::new();
     collect_ops(&flow.body, &mut ops);
@@ -284,7 +314,7 @@ pub(crate) fn compile_source(
     }
 
     let ir = ir::lower_to_ir(&flow)?;
-    Ok((flow, ir, registry, flow_registry))
+    Ok((flow, ir, registry, flow_registry, ffi_registry))
 }
 
 /// Embed a program bundle into a pre-built WASM runtime binary.
@@ -608,10 +638,32 @@ async fn run() -> Result<(), String> {
                 eprintln!("  fmt      ok ({} files)", fmt_total);
             }
 
+            // Step 0.5: Resolve dependencies
+            let resolved_deps = if config.dependencies.is_empty() {
+                deps::ResolvedDeps::empty()
+            } else {
+                config::validate_dependencies(&config)?;
+                eprintln!("  deps     resolving...");
+                let rd = deps::resolve_dependencies(&config, &project_root)?;
+                eprintln!("  deps     ok ({} packages)", rd.packages.len());
+                rd
+            };
+
             // Step 1: Compile and generate docs
-            let (flow, ir, registry, flow_registry) = compile_source(&source_path)?;
+            let (flow, ir, registry, flow_registry, ffi_registry) = compile_source(&source_path, &resolved_deps)?;
             generate_docs_for_source(&source_path, Some(&project_root));
             eprintln!("  docs     ok ({} files)", fmt_total);
+
+            // Reject WASM targets when FFI extern blocks are present
+            if !ffi_registry.is_empty() {
+                let has_wasm_target = config.build.targets.iter().any(|t| t == "wasm" || t == "bundle" || t == "browser");
+                if has_wasm_target {
+                    return Err(
+                        "project uses `extern` FFI blocks which are incompatible with WASM targets.\n\
+                         Remove WASM from build.targets in forai.json, or guard FFI calls with ffi.available().".to_string()
+                    );
+                }
+            }
 
             // Step 2: Write IR to output directory
             let out_dir = project_root.join(&config.build.out);
@@ -943,7 +995,7 @@ async fn run() -> Result<(), String> {
             out,
             compact,
         } => {
-            let (_flow, ir, _registry, _flow_registry) = compile_source(&source)?;
+            let (_flow, ir, _registry, _flow_registry, _ffi_registry) = compile_source(&source, &resolve_deps_for_source(&source))?;
             generate_docs_for_source(&source, None);
             let rendered = if compact {
                 serde_json::to_string(&ir).map_err(|e| e.to_string())?
@@ -976,7 +1028,7 @@ async fn run() -> Result<(), String> {
                     project_root.join(&config.main)
                 }
             };
-            let (flow, ir, registry, flow_registry) = compile_source(&source)?;
+            let (flow, ir, registry, flow_registry, ffi_registry) = compile_source(&source, &resolve_deps_for_source(&source))?;
             generate_docs_for_source(&source, None);
 
             if debug {
@@ -1023,6 +1075,9 @@ async fn run() -> Result<(), String> {
                     runtime::load_inputs(&flow, input.as_ref())?
                 };
                 let codecs = CodecRegistry::default_registry();
+                let native_host = host_native::NativeHost::new()
+                    .with_ffi_registry(ffi_registry);
+                let host: std::rc::Rc<dyn host::Host> = std::rc::Rc::new(native_host);
                 let report = runtime::execute_flow(
                     &flow,
                     ir,
@@ -1030,7 +1085,7 @@ async fn run() -> Result<(), String> {
                     &registry,
                     Some(&flow_registry),
                     &codecs,
-                    None,
+                    Some(host),
                 )
                 .await?;
 
@@ -1267,6 +1322,7 @@ fn write_scaffold(root: &Path, rel: &str, content: &str) -> Result<(), String> {
 mod tests {
     use super::compile_source;
     use crate::codec::CodecRegistry;
+    use crate::deps::ResolvedDeps;
     use crate::runtime;
     use std::fs;
     use std::path::PathBuf;
@@ -1287,7 +1343,7 @@ mod tests {
             if !main_fa.exists() {
                 continue;
             }
-            compile_source(&main_fa)
+            compile_source(&main_fa, &ResolvedDeps::empty())
                 .unwrap_or_else(|e| panic!("compile failed for {}: {e}", main_fa.display()));
         }
     }
@@ -1357,7 +1413,7 @@ done
 "#;
         fs::write(&path, src).expect("write temp source");
 
-        let err = match compile_source(&path) {
+        let err = match compile_source(&path, &ResolvedDeps::empty()) {
             Ok(_) => panic!("compile should fail"),
             Err(err) => err,
         };
@@ -1375,8 +1431,8 @@ done
             .run_until(async {
                 let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../examples/read-docs/app/router/Classify.fa");
-                let (flow, ir, registry, flow_registry) =
-                    compile_source(&path).unwrap_or_else(|e| panic!("compile failed: {e}"));
+                let (flow, ir, registry, flow_registry, _ffi_registry) =
+                    compile_source(&path, &ResolvedDeps::empty()).unwrap_or_else(|e| panic!("compile failed: {e}"));
 
                 let mut inputs = std::collections::HashMap::new();
                 inputs.insert("cmd".to_string(), serde_json::json!("help"));
