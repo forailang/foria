@@ -4,7 +4,7 @@ use crate::types::TypeRegistry;
 use std::collections::HashMap;
 
 /// Serializable program bundle for WASM distribution.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProgramBundle {
     pub entry_flow: Flow,
     pub entry_ir: Ir,
@@ -12,7 +12,7 @@ pub struct ProgramBundle {
     pub flow_registry: FlowRegistry,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FlowProgram {
     pub flow: crate::ast::Flow,
     pub ir: Ir,
@@ -22,7 +22,7 @@ pub struct FlowProgram {
     pub kind: DeclKind,
 }
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FlowRegistry {
     pub flows: HashMap<String, FlowProgram>,
     pub value_mocks: HashMap<String, serde_json::Value>,
