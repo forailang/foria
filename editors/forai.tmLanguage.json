@@ -5,21 +5,32 @@
   "fileTypes": ["fa"],
   "patterns": [
     { "include": "#comment" },
+    { "include": "#triple-string" },
     { "include": "#string" },
+    { "include": "#regex-literal" },
     { "include": "#number" },
     { "include": "#boolean" },
-    { "include": "#declaration" },
-    { "include": "#type-declaration" },
+    { "include": "#declaration-block" },
+    { "include": "#type-declaration-block" },
+    { "include": "#docs-block" },
+    { "include": "#test-block" },
+    { "include": "#import" },
+    { "include": "#else-if" },
+    { "include": "#case-block" },
+    { "include": "#if-block" },
+    { "include": "#loop-block" },
+    { "include": "#sync-block" },
+    { "include": "#step-block" },
+    { "include": "#branch-block" },
+    { "include": "#on-block" },
     { "include": "#interface" },
-    { "include": "#block-delimiters" },
-    { "include": "#control-flow" },
+    { "include": "#body-keyword" },
+    { "include": "#control-flow-keywords" },
     { "include": "#loop-keywords" },
-    { "include": "#concurrency" },
+    { "include": "#state-keyword" },
+    { "include": "#from-keyword" },
     { "include": "#flow-pipeline" },
     { "include": "#testing" },
-    { "include": "#import" },
-    { "include": "#docs-keyword" },
-    { "include": "#test-keyword" },
     { "include": "#open-modifier" },
     { "include": "#builtin-types" },
     { "include": "#constraint-keys" },
@@ -31,6 +42,24 @@
     "comment": {
       "match": "#.*$",
       "name": "comment.line.number-sign.forai"
+    },
+    "triple-string": {
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "name": "string.quoted.triple.forai",
+      "patterns": [
+        {
+          "begin": "#\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.forai",
+          "contentName": "source.forai.embedded",
+          "patterns": [
+            { "include": "#namespace-call" },
+            { "include": "#number" },
+            { "include": "#boolean" }
+          ]
+        }
+      ]
     },
     "string": {
       "begin": "\"",
@@ -54,6 +83,10 @@
         }
       ]
     },
+    "regex-literal": {
+      "match": "(?<==>\\s)/(?!\\/)[^/]*/",
+      "name": "string.regexp.forai"
+    },
     "number": {
       "match": "\\b\\d+(\\.\\d+)?\\b",
       "name": "constant.numeric.forai"
@@ -62,67 +95,198 @@
       "match": "\\b(true|false)\\b",
       "name": "constant.language.boolean.forai"
     },
-    "declaration": {
-      "match": "^\\s*(func|flow|sink|source)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.forai" },
+    "declaration-block": {
+      "begin": "^\\s*(func|flow|sink|source)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "storage.type.forai" },
         "2": { "name": "entity.name.function.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "storage.type.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "type-declaration-block": {
+      "begin": "^\\s*(type|data|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "storage.type.forai" },
+        "2": { "name": "entity.name.type.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "storage.type.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "docs-block": {
+      "begin": "^\\s*(docs)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "comment.block.documentation.forai" },
+        "2": { "name": "comment.block.documentation.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "comment.block.documentation.forai" }
+      },
+      "name": "comment.block.documentation.forai",
+      "patterns": [
+        { "include": "#docs-block" }
+      ]
+    },
+    "test-block": {
+      "begin": "^\\s*(test)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "storage.type.forai" },
+        "2": { "name": "entity.name.function.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "storage.type.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "else-if": {
+      "match": "\\b(else)\\s+(if)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.conditional.forai" },
+        "2": { "name": "keyword.control.conditional.forai" }
       }
     },
-    "type-declaration": {
-      "match": "^\\s*(type|data|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.type.forai" },
-        "2": { "name": "entity.name.type.forai" }
-      }
+    "case-block": {
+      "begin": "\\b(case)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "if-block": {
+      "begin": "\\b(if)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "loop-block": {
+      "begin": "\\b(loop)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.loop.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "keyword.control.loop.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "sync-block": {
+      "begin": "\\b(sync)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.forai" }
+      },
+      "end": "\\b(done)\\b",
+      "endCaptures": {
+        "1": { "name": "keyword.control.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "step-block": {
+      "begin": "\\b(step)\\b",
+      "beginCaptures": {
+        "1": { "name": "support.function.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "support.function.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "branch-block": {
+      "begin": "\\b(branch)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "keyword.control.conditional.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "on-block": {
+      "begin": "\\b(on)\\b",
+      "beginCaptures": {
+        "1": { "name": "support.function.forai" }
+      },
+      "end": "^\\s*(done)\\b",
+      "endCaptures": {
+        "1": { "name": "support.function.forai" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
     },
     "interface": {
       "match": "\\b(take|emit|fail|return)\\b",
-      "name": "keyword.other.interface.forai"
+      "name": "variable.language.forai"
     },
-    "block-delimiters": {
-      "match": "\\b(body|init|from|done)\\b",
-      "name": "keyword.control.block.forai"
+    "body-keyword": {
+      "match": "\\b(body)\\b",
+      "name": "storage.type.forai"
     },
-    "control-flow": {
-      "match": "\\b(case|when|else|if)\\b",
+    "from-keyword": {
+      "match": "\\b(from)\\b",
+      "name": "keyword.control.forai"
+    },
+    "control-flow-keywords": {
+      "match": "\\b(when|else)\\b",
       "name": "keyword.control.conditional.forai"
     },
     "loop-keywords": {
-      "match": "\\b(loop|as|break)\\b",
+      "match": "\\b(as|break)\\b",
       "name": "keyword.control.loop.forai"
     },
-    "concurrency": {
-      "match": "\\b(sync)\\b",
-      "name": "keyword.control.concurrent.forai"
-    },
     "flow-pipeline": {
-      "match": "\\b(step|next|state|send|nowait|branch|log|on)\\b",
-      "name": "keyword.control.flow.forai"
+      "match": "\\b(next|send|nowait|log|to|then)\\b",
+      "name": "support.function.forai"
+    },
+    "state-keyword": {
+      "match": "\\b(state)\\b",
+      "name": "storage.modifier.forai"
     },
     "testing": {
       "match": "\\b(must|trap|mock)\\b",
-      "name": "keyword.other.testing.forai"
+      "name": "keyword.other.forai"
     },
     "import": {
-      "match": "^\\s*(uses)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "match": "^\\s*(use)\\s+([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": { "name": "keyword.control.import.forai" },
         "2": { "name": "entity.name.module.forai" }
-      }
-    },
-    "docs-keyword": {
-      "match": "^\\s*(docs)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.docs.forai" },
-        "2": { "name": "entity.name.forai" }
-      }
-    },
-    "test-keyword": {
-      "match": "^\\s*(test)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.test.forai" },
-        "2": { "name": "entity.name.function.forai" }
       }
     },
     "open-modifier": {
