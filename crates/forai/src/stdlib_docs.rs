@@ -754,6 +754,19 @@ fn http_respond_docs() -> StdlibNamespaceDoc {
                 ret("bool", "True on success"),
                 "Fails on I/O error",
             ),
+            op_err(
+                "file",
+                "http.respond",
+                "Sends a file as the response body with the given content-type. Reads the file as raw bytes, supporting both text and binary files (e.g. WASM, images)",
+                vec![
+                    arg(0, "conn", "http_conn", "Connection handle from accept"),
+                    arg(1, "status", "long", "HTTP status code"),
+                    arg(2, "path", "text", "File path to read and send"),
+                    arg(3, "content_type", "text", "MIME content-type (e.g. application/wasm, application/javascript)"),
+                ],
+                ret("bool", "True on success"),
+                "Fails on I/O or file-not-found error",
+            ),
         ],
     )
 }

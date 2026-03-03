@@ -5,6 +5,53 @@ use std::collections::HashMap;
 use forai_core::sync_host::SyncHost;
 use serde_json::{Value, json};
 
+// --- JS bridge functions via inline_js ---
+
+#[wasm_bindgen(inline_js = "
+export function console_log_op(level, message, context) {
+    const fn_map = { debug: 'debug', info: 'log', warn: 'warn', error: 'error', trace: 'trace' };
+    const method = fn_map[level] || 'log';
+    if (context && context.length > 0) {
+        console[method](message, context);
+    } else {
+        console[method](message);
+    }
+}
+
+export function sync_http_request(method, url, headers_json, body) {
+    try {
+        const xhr = new XMLHttpRequest();
+        xhr.open(method.toUpperCase(), url, false);
+        if (headers_json && headers_json.length > 0) {
+            try {
+                const headers = JSON.parse(headers_json);
+                for (const [k, v] of Object.entries(headers)) {
+                    xhr.setRequestHeader(k, String(v));
+                }
+            } catch (_) {}
+        }
+        xhr.send(body || null);
+        const respHeaders = {};
+        const rawHeaders = xhr.getAllResponseHeaders();
+        if (rawHeaders) {
+            for (const line of rawHeaders.trim().split(/\\r?\\n/)) {
+                const idx = line.indexOf(':');
+                if (idx > 0) {
+                    respHeaders[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+                }
+            }
+        }
+        return JSON.stringify({ status: xhr.status, headers: respHeaders, body: xhr.responseText });
+    } catch (e) {
+        return JSON.stringify({ error: e.message || String(e) });
+    }
+}
+")]
+extern "C" {
+    fn console_log_op(level: &str, message: &str, context: &str);
+    fn sync_http_request(method: &str, url: &str, headers_json: &str, body: &str) -> String;
+}
+
 /// Compile a .fa project from JSON-encoded virtual files.
 ///
 /// `files_json`: JSON object mapping path → source text, e.g.
@@ -236,13 +283,20 @@ impl SyncHost for PlaygroundHost {
                 Ok(json!(""))
             }
 
-            // Logging — capture with level
+            // Logging — capture with level + forward to browser console
             "log.debug" | "log.info" | "log.warn" | "log.error" | "log.trace" => {
                 let level = op.strip_prefix("log.").unwrap_or("info");
                 let message = args.first()
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let context_str = args.get(1)
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default();
+                console_log_op(level, &message, &context_str);
                 self.logs.borrow_mut().push(json!({
                     "level": level,
                     "message": message,
@@ -269,8 +323,60 @@ impl SyncHost for PlaygroundHost {
             op if op.starts_with("http.server.") || op.starts_with("http.respond.") || op == "accept" => {
                 Err(format!("{op} is not available in the playground"))
             }
-            op if op.starts_with("http.") => {
-                Err(format!("{op} is not available in the playground (no network access)"))
+            // HTTP client ops — synchronous XHR in Web Worker
+            "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete" | "http.request" => {
+                let (method, url, body, options) = match op {
+                    "http.get" => {
+                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let options = args.get(1).cloned();
+                        ("GET".to_string(), url, None, options)
+                    }
+                    "http.post" | "http.put" | "http.patch" => {
+                        let m = op.strip_prefix("http.").unwrap().to_uppercase();
+                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let body = args.get(1).cloned();
+                        let options = args.get(2).cloned();
+                        (m, url, body, options)
+                    }
+                    "http.delete" => {
+                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let options = args.get(1).cloned();
+                        ("DELETE".to_string(), url, None, options)
+                    }
+                    "http.request" => {
+                        let m = args.first().and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+                        let url = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let options = args.get(2).cloned();
+                        let body = options.as_ref().and_then(|o| o.get("body").cloned());
+                        (m, url, body, options)
+                    }
+                    _ => unreachable!(),
+                };
+
+                // Extract headers JSON from options
+                let headers_json = options
+                    .as_ref()
+                    .and_then(|o| o.get("headers"))
+                    .map(|h| h.to_string())
+                    .unwrap_or_default();
+
+                // Serialize body
+                let body_str = match body {
+                    Some(Value::String(s)) => s,
+                    Some(v) if v.is_object() || v.is_array() => v.to_string(),
+                    Some(Value::Null) | None => String::new(),
+                    Some(v) => v.to_string(),
+                };
+
+                let result_json = sync_http_request(&method, &url, &headers_json, &body_str);
+                let parsed: Value = serde_json::from_str(&result_json)
+                    .map_err(|e| format!("http response parse error: {e}"))?;
+
+                if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+                    Err(format!("http transport error: {err}"))
+                } else {
+                    Ok(parsed)
+                }
             }
             op if op.starts_with("ws.") => {
                 Err(format!("{op} is not available in the playground (no network access)"))

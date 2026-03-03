@@ -38,7 +38,7 @@ static KNOWN_OPS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         "http.error_response", "http.response",
         "http.get", "http.post", "http.put", "http.patch", "http.delete", "http.request",
         "http.server.listen", "http.server.accept", "http.server.respond", "http.server.close",
-        "http.respond.html", "http.respond.json", "http.respond.text",
+        "http.respond.html", "http.respond.json", "http.respond.text", "http.respond.file",
         "accept",
         "ws.connect", "ws.send", "ws.recv", "ws.close",
         "headers.new", "headers.set", "headers.get", "headers.delete",

@@ -126,6 +126,29 @@ pub fn tool_definitions() -> Vec<ToolInfo> {
                 "required": ["path"]
             }),
         },
+        ToolInfo {
+            name: "forai_example_search".into(),
+            description: "Search curated forai example projects by keyword, category, or feature. Returns complete runnable examples with all source files. Queries the forailang.com API so examples stay up to date without CLI updates.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search term to match against title, description, keywords, and features (e.g. \"http server\", \"sqlite\", \"term.print\")"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["cli", "web", "browser", "ffi", "database", "library", "language"],
+                        "description": "Filter by example category"
+                    },
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["beginner", "intermediate", "advanced"],
+                        "description": "Filter by difficulty level"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -141,6 +164,7 @@ pub async fn call_tool(name: &str, args: &Value) -> CallToolResult {
         "forai_flow_graph" => tool_flow_graph(args),
         "forai_debug_snapshot" => tool_debug_snapshot(args).await,
         "forai_impact" => tool_impact(args),
+        "forai_example_search" => tool_example_search(args).await,
         _ => CallToolResult::error(format!("Unknown tool: {name}")),
     }
 }
@@ -868,3 +892,69 @@ fn collect_fa_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+async fn tool_example_search(args: &Value) -> CallToolResult {
+    let base_url = std::env::var("FORAI_API_URL")
+        .unwrap_or_else(|_| "https://forailang.com".to_string());
+
+    let mut params = Vec::new();
+    if let Some(q) = get_string_arg(args, "query") {
+        if !q.is_empty() {
+            params.push(format!("q={}", urlencoding(q)));
+        }
+    }
+    if let Some(cat) = get_string_arg(args, "category") {
+        if !cat.is_empty() {
+            params.push(format!("category={}", urlencoding(cat)));
+        }
+    }
+    if let Some(diff) = get_string_arg(args, "difficulty") {
+        if !diff.is_empty() {
+            params.push(format!("difficulty={}", urlencoding(diff)));
+        }
+    }
+
+    let url = if params.is_empty() {
+        format!("{base_url}/api/examples")
+    } else {
+        format!("{base_url}/api/examples?{}", params.join("&"))
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return CallToolResult::error(format!("Failed to create HTTP client: {e}")),
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(body) => CallToolResult::text(body),
+            Err(e) => CallToolResult::error(format!("Failed to read response body: {e}")),
+        },
+        Err(e) => CallToolResult::error(format!(
+            "Could not reach forailang.com examples API: {e}. Check network or set $FORAI_API_URL."
+        )),
+    }
+}
+
+/// Percent-encode a string for use in URL query parameters.
+fn urlencoding(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(b >> 4) as usize]));
+                out.push(char::from(HEX[(b & 0x0f) as usize]));
+            }
+        }
+    }
+    out
+}
+
+const HEX: [u8; 16] = *b"0123456789ABCDEF";

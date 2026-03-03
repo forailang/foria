@@ -610,6 +610,28 @@ impl Host for NativeHost {
                     send_http_response(&mut writer, op, status, &header_str, &body).await?;
                     Ok(json!(true))
                 }
+                "http.respond.file" => {
+                    let conn_id = read_string_arg(args, 0, op)?;
+                    let status = read_i64_arg(args, 1, op)?;
+                    let file_path = read_string_arg(args, 2, op)?;
+                    let content_type = read_string_arg(args, 3, op)?;
+
+                    let bytes = tokio::fs::read(&file_path)
+                        .await
+                        .map_err(|e| format!("Op `{op}` failed to read `{file_path}`: {e}"))?;
+
+                    let mut writer = {
+                        let mut h = handles.borrow_mut();
+                        let conn = h
+                            .connections
+                            .remove(&conn_id)
+                            .ok_or_else(|| format!("Op `{op}` unknown connection `{conn_id}`"))?;
+                        conn.writer
+                    };
+
+                    send_http_response_bytes(&mut writer, op, status, &content_type, &bytes).await?;
+                    Ok(json!(true))
+                }
                 "http.server.close" => {
                     let handle_id = read_string_arg(args, 0, op)?;
                     let mut h = handles.borrow_mut();
@@ -882,6 +904,34 @@ async fn send_http_response(
         .write_all(resp.as_bytes())
         .await
         .map_err(|e| format!("Op `{op}` write response: {e}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("Op `{op}` flush: {e}"))?;
+    Ok(())
+}
+
+async fn send_http_response_bytes(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    op: &str,
+    status: i64,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let header = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\ncontent-type: {content_type}\r\n\r\n",
+        http_reason_phrase(status),
+        body.len()
+    );
+    writer
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|e| format!("Op `{op}` write response header: {e}"))?;
+    writer
+        .write_all(body)
+        .await
+        .map_err(|e| format!("Op `{op}` write response body: {e}"))?;
     writer
         .flush()
         .await

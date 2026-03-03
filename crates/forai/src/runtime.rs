@@ -441,6 +441,7 @@ pub fn known_ops() -> &'static [&'static str] {
         "http.respond.html",
         "http.respond.json",
         "http.respond.text",
+        "http.respond.file",
         "accept",
         // WebSocket client
         "ws.connect",

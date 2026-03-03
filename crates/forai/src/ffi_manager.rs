@@ -292,16 +292,30 @@ fn load_library(lib_name: &str) -> Result<libloading::Library, String> {
         ]
     };
 
-    for candidate in &candidates {
+    // Try cwd-relative absolute paths first (dlopen doesn't search cwd on macOS),
+    // then fall back to bare names for system library paths / DYLD_LIBRARY_PATH.
+    let mut search = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        for c in &candidates {
+            search.push(cwd.join(c).to_string_lossy().into_owned());
+        }
+    }
+    search.extend(candidates.clone());
+
+    let mut errors = Vec::new();
+    for candidate in &search {
         match unsafe { libloading::Library::new(candidate) } {
             Ok(lib) => return Ok(lib),
-            Err(_) => continue,
+            Err(e) => {
+                errors.push(format!("{candidate}: {e}"));
+                continue;
+            }
         }
     }
 
     Err(format!(
-        "FFI library `{lib_name}` not found (tried: {})",
-        candidates.join(", ")
+        "FFI library `{lib_name}` not found:\n{}",
+        errors.join("\n")
     ))
 }
 
