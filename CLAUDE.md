@@ -178,3 +178,7 @@ The compiled IR JSON contains:
 - `nodes`: list of `{id, op, bind, args, when}` — each node is a computation step
 - `edges`: list of `{from: {kind, id, port?}, to: {kind, id, port?}, when}` — graph wiring with guard conditions
 - `emits`: list of `{output, value_var, when}` — output routing decisions with guards
+
+# Development Process
+
+Always use TDD red / green / refact process when writing code.

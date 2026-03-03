@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod codec;
 pub mod compile;
+pub mod eval;
 pub mod formatter;
 pub mod host;
 pub mod ir;

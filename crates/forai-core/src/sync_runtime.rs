@@ -1,5 +1,6 @@
-use crate::ast::{Arg, BinOp, Expr, Flow, InterpExpr, Pattern, Statement, UnaryOp};
+use crate::ast::{Arg, Expr, Flow, InterpExpr, Statement};
 use crate::codec::CodecRegistry;
+use crate::eval;
 use crate::host;
 use crate::ir::Ir;
 use crate::loader::FlowRegistry;
@@ -127,7 +128,7 @@ fn execute_statements_stepping(
                 let subject = eval_expr(&case_block.expr, vars, flow_registry, host, codecs)?;
                 let mut matched = false;
                 for arm in &case_block.arms {
-                    if pattern_matches(&subject, &arm.pattern) {
+                    if eval::pattern_matches(&subject, &arm.pattern) {
                         matched = true;
                         match execute_statements_stepping(&arm.body, vars, flow_registry, host, codecs, on_step)? {
                             ExecSignal::Continue => {}
@@ -305,7 +306,7 @@ fn execute_statements(
                 let subject = eval_expr(&case_block.expr, vars, flow_registry, host, codecs)?;
                 let mut matched = false;
                 for arm in &case_block.arms {
-                    if pattern_matches(&subject, &arm.pattern) {
+                    if eval::pattern_matches(&subject, &arm.pattern) {
                         matched = true;
                         match execute_statements(&arm.body, vars, flow_registry, host, codecs)? {
                             ExecSignal::Continue => {}
@@ -493,11 +494,11 @@ fn eval_expr(
         Expr::BinOp { op, lhs, rhs } => {
             let l = eval_expr(lhs, vars, flow_registry, host, codecs)?;
             let r = eval_expr(rhs, vars, flow_registry, host, codecs)?;
-            eval_binop(*op, &l, &r)
+            eval::eval_binop(*op, &l, &r)
         }
         Expr::UnaryOp { op, expr: inner } => {
             let v = eval_expr(inner, vars, flow_registry, host, codecs)?;
-            eval_unary(*op, &v)
+            eval::eval_unary(*op, &v)
         }
         Expr::Call { func, args } => {
             let mut evaluated = Vec::with_capacity(args.len());
@@ -531,14 +532,7 @@ fn eval_expr(
             else_expr,
         } => {
             let cond_val = eval_expr(cond, vars, flow_registry, host, codecs)?;
-            let is_truthy = match &cond_val {
-                Value::Bool(b) => *b,
-                Value::Null => false,
-                Value::String(s) => !s.is_empty(),
-                Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-                _ => true,
-            };
-            if is_truthy {
+            if eval::is_truthy(&cond_val) {
                 eval_expr(then_expr, vars, flow_registry, host, codecs)
             } else {
                 eval_expr(else_expr, vars, flow_registry, host, codecs)
@@ -564,9 +558,7 @@ fn eval_expr(
             let idx = eval_expr(index, vars, flow_registry, host, codecs)?;
             match &collection {
                 Value::Array(arr) => {
-                    let i = idx.as_i64().or_else(|| {
-                        idx.as_f64().and_then(|f| { let r = f as i64; if r as f64 == f { Some(r) } else { None } })
-                    }).ok_or_else(|| format!("Index must be an integer, got {idx}"))?;
+                    let i = eval::coerce_index(&idx)?;
                     let len = arr.len() as i64;
                     let resolved = if i < 0 { len + i } else { i };
                     if resolved < 0 || resolved >= len {
@@ -584,112 +576,6 @@ fn eval_expr(
     }
 }
 
-fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
-    match op {
-        BinOp::Add => {
-            if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
-                if l.is_i64() && r.is_i64() {
-                    return Ok(json!(l.as_i64().unwrap() + r.as_i64().unwrap()));
-                }
-                return Ok(json!(a + b));
-            }
-            if let (Some(a), Some(b)) = (l.as_str(), r.as_str()) {
-                return Ok(json!(format!("{a}{b}")));
-            }
-            // Coerce to string if one side is string
-            if let Some(s) = l.as_str() {
-                return Ok(json!(format!("{s}{}", value_to_string(r))));
-            }
-            if let Some(s) = r.as_str() {
-                return Ok(json!(format!("{}{s}", value_to_string(l))));
-            }
-            Err(format!("Cannot add {l} and {r}"))
-        }
-        BinOp::Sub => num_binop(l, r, |a, b| a - b, "subtract"),
-        BinOp::Mul => num_binop(l, r, |a, b| a * b, "multiply"),
-        BinOp::Div => {
-            let a = l.as_f64().ok_or("Division requires numbers")?;
-            let b = r.as_f64().ok_or("Division requires numbers")?;
-            if b == 0.0 {
-                return Err("Division by zero".to_string());
-            }
-            if l.is_i64() && r.is_i64() && l.as_i64().unwrap() % r.as_i64().unwrap() == 0 {
-                return Ok(json!(l.as_i64().unwrap() / r.as_i64().unwrap()));
-            }
-            Ok(json!(a / b))
-        }
-        BinOp::Mod => {
-            if let (Some(a), Some(b)) = (l.as_i64(), r.as_i64()) {
-                if b == 0 {
-                    return Err("Modulo by zero".to_string());
-                }
-                return Ok(json!(a % b));
-            }
-            let a = l.as_f64().ok_or("Mod requires numbers")?;
-            let b = r.as_f64().ok_or("Mod requires numbers")?;
-            if b == 0.0 {
-                return Err("Modulo by zero".to_string());
-            }
-            Ok(json!(a % b))
-        }
-        BinOp::Pow => {
-            let a = l.as_f64().ok_or("Power requires numbers")?;
-            let b = r.as_f64().ok_or("Power requires numbers")?;
-            Ok(json!(a.powf(b)))
-        }
-        BinOp::Eq => Ok(json!(values_equal(l, r))),
-        BinOp::Neq => Ok(json!(!values_equal(l, r))),
-        BinOp::Lt => compare_values(l, r, |ord| ord == std::cmp::Ordering::Less),
-        BinOp::Gt => compare_values(l, r, |ord| ord == std::cmp::Ordering::Greater),
-        BinOp::LtEq => compare_values(l, r, |ord| ord != std::cmp::Ordering::Greater),
-        BinOp::GtEq => compare_values(l, r, |ord| ord != std::cmp::Ordering::Less),
-        BinOp::And => {
-            let lb = is_truthy(l);
-            if !lb {
-                return Ok(json!(false));
-            }
-            Ok(json!(is_truthy(r)))
-        }
-        BinOp::Or => {
-            if is_truthy(l) {
-                return Ok(json!(true));
-            }
-            Ok(json!(is_truthy(r)))
-        }
-    }
-}
-
-fn eval_unary(op: UnaryOp, v: &Value) -> Result<Value, String> {
-    match op {
-        UnaryOp::Neg => {
-            if let Some(i) = v.as_i64() {
-                return Ok(json!(-i));
-            }
-            if let Some(f) = v.as_f64() {
-                return Ok(json!(-f));
-            }
-            Err(format!("Cannot negate {v}"))
-        }
-        UnaryOp::Not => Ok(json!(!is_truthy(v))),
-    }
-}
-
-fn pattern_matches(value: &Value, pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Lit(lit) => values_equal(value, lit),
-        Pattern::Ident(name) => {
-            if name == "_" {
-                return true;
-            }
-            if let Some(s) = value.as_str() {
-                s == name
-            } else {
-                false
-            }
-        }
-    }
-}
-
 fn resolve_var_path(vars: &HashMap<String, Value>, path: &str) -> Option<Value> {
     let mut parts = path.split('.');
     let first = parts.next()?;
@@ -699,72 +585,6 @@ fn resolve_var_path(vars: &HashMap<String, Value>, path: &str) -> Option<Value> 
         current = obj.get(part)?.clone();
     }
     Some(current)
-}
-
-fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
-        _ => a == b,
-    }
-}
-
-fn is_truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Null => false,
-        Value::String(s) => !s.is_empty(),
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        _ => true,
-    }
-}
-
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                i.to_string()
-            } else {
-                n.to_string()
-            }
-        }
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "null".to_string(),
-        other => serde_json::to_string(other).unwrap_or_default(),
-    }
-}
-
-fn num_binop(l: &Value, r: &Value, f: fn(f64, f64) -> f64, name: &str) -> Result<Value, String> {
-    let a = l
-        .as_f64()
-        .ok_or_else(|| format!("{name} requires numbers"))?;
-    let b = r
-        .as_f64()
-        .ok_or_else(|| format!("{name} requires numbers"))?;
-    let result = f(a, b);
-    if l.is_i64() && r.is_i64() {
-        let ri = result as i64;
-        if ri as f64 == result {
-            return Ok(json!(ri));
-        }
-    }
-    Ok(json!(result))
-}
-
-fn compare_values(
-    l: &Value,
-    r: &Value,
-    pred: fn(std::cmp::Ordering) -> bool,
-) -> Result<Value, String> {
-    if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
-        return Ok(json!(pred(
-            a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
-        )));
-    }
-    if let (Some(a), Some(b)) = (l.as_str(), r.as_str()) {
-        return Ok(json!(pred(a.cmp(b))));
-    }
-    Err(format!("Cannot compare {l} and {r}"))
 }
 
 #[cfg(test)]
@@ -1028,7 +848,8 @@ mod tests {
             assign("x", binop(BinOp::Pow, lit(json!(2)), lit(json!(10)))),
             emit("result", var("x")),
         ]);
-        assert_eq!(v, json!(1024.0));
+        assert_eq!(v, json!(1024));
+        assert!(v.is_i64());
     }
 
     #[test]
@@ -1066,12 +887,27 @@ mod tests {
     }
 
     #[test]
-    fn string_concat_with_number() {
-        let v = run_body(vec![emit(
-            "result",
-            binop(BinOp::Add, lit(json!("count: ")), lit(json!(42))),
-        )]);
-        assert_eq!(v, json!("count: 42"));
+    fn string_concat_with_number_errors() {
+        // No implicit string coercion — use to.text() or string interpolation instead
+        let flow = make_flow(
+            "Test",
+            vec![],
+            vec![("result", "Any")],
+            vec![emit(
+                "result",
+                binop(BinOp::Add, lit(json!("count: ")), lit(json!(42))),
+            )],
+        );
+        let result = execute_flow(
+            &flow,
+            dummy_ir(),
+            HashMap::new(),
+            &TypeRegistry::empty(),
+            None,
+            &CodecRegistry::default_registry(),
+            &NullHost,
+        );
+        assert!(result.is_err());
     }
 
     // =========================================================

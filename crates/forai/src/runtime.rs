@@ -1,4 +1,4 @@
-use crate::ast::{Arg, DeclKind, Expr, Flow, InterpExpr, Pattern, Statement};
+use crate::ast::{Arg, DeclKind, Expr, Flow, InterpExpr, Statement};
 use crate::codec::CodecRegistry;
 use crate::host::{self, Host};
 use crate::host_native::NativeHost;
@@ -62,57 +62,7 @@ pub struct RunReport {
     pub ir: Ir,
 }
 
-pub(crate) fn read_string_arg(args: &[Value], index: usize, op: &str) -> Result<String, String> {
-    let Some(value) = args.get(index) else {
-        return Err(format!("Op `{op}` missing arg{index}"));
-    };
-    let Some(text) = value.as_str() else {
-        return Err(format!("Op `{op}` expected string at arg{index}"));
-    };
-    Ok(text.to_string())
-}
-
-pub(crate) fn read_i64_arg(args: &[Value], index: usize, op: &str) -> Result<i64, String> {
-    let Some(value) = args.get(index) else {
-        return Err(format!("Op `{op}` missing arg{index}"));
-    };
-    value
-        .as_i64()
-        .ok_or_else(|| format!("Op `{op}` expected integer at arg{index}"))
-}
-
-pub(crate) fn read_object_arg(
-    args: &[Value],
-    index: usize,
-    op: &str,
-) -> Result<serde_json::Map<String, Value>, String> {
-    let Some(value) = args.get(index) else {
-        return Err(format!("Op `{op}` missing arg{index}"));
-    };
-    let Some(map) = value.as_object() else {
-        return Err(format!("Op `{op}` expected object at arg{index}"));
-    };
-    Ok(map.clone())
-}
-
-pub(crate) fn read_array_arg(args: &[Value], index: usize, op: &str) -> Result<Vec<Value>, String> {
-    let Some(value) = args.get(index) else {
-        return Err(format!("Op `{op}` missing arg{index}"));
-    };
-    let Some(arr) = value.as_array() else {
-        return Err(format!("Op `{op}` expected array at arg{index}"));
-    };
-    Ok(arr.clone())
-}
-
-pub(crate) fn read_f64_arg(args: &[Value], index: usize, op: &str) -> Result<f64, String> {
-    let Some(value) = args.get(index) else {
-        return Err(format!("Op `{op}` missing arg{index}"));
-    };
-    value
-        .as_f64()
-        .ok_or_else(|| format!("Op `{op}` expected number at arg{index}"))
-}
+use forai_core::pure_ops::{read_string_arg, read_i64_arg, read_object_arg, read_array_arg, read_f64_arg};
 
 fn extract_first_number(s: &str) -> Option<f64> {
     let re = Regex::new(r"-?\d+(\.\d+)?").unwrap();
@@ -2118,11 +2068,11 @@ fn eval_expr<'a>(
             Expr::BinOp { op, lhs, rhs } => {
                 let l = eval_expr(lhs, vars, flow_registry, host, codecs).await?;
                 let r = eval_expr(rhs, vars, flow_registry, host, codecs).await?;
-                eval_binop(*op, &l, &r)
+                forai_core::eval::eval_binop(*op, &l, &r)
             }
             Expr::UnaryOp { op, expr: inner } => {
                 let v = eval_expr(inner, vars, flow_registry, host, codecs).await?;
-                eval_unary(*op, &v)
+                forai_core::eval::eval_unary(*op, &v)
             }
             Expr::Call { func, args } => {
                 let mut evaluated = Vec::with_capacity(args.len());
@@ -2205,14 +2155,7 @@ fn eval_expr<'a>(
                 else_expr,
             } => {
                 let cond_val = eval_expr(cond, vars, flow_registry, host, codecs).await?;
-                let is_truthy = match &cond_val {
-                    Value::Bool(b) => *b,
-                    Value::Null => false,
-                    Value::String(s) => !s.is_empty(),
-                    Value::Number(n) => n.as_f64().map_or(false, |f| f != 0.0),
-                    _ => true,
-                };
-                if is_truthy {
+                if forai_core::eval::is_truthy(&cond_val) {
                     eval_expr(then_expr, vars, flow_registry, host, codecs).await
                 } else {
                     eval_expr(else_expr, vars, flow_registry, host, codecs).await
@@ -2238,9 +2181,7 @@ fn eval_expr<'a>(
                 let idx = eval_expr(index, vars, flow_registry, host, codecs).await?;
                 match &collection {
                     Value::Array(arr) => {
-                        let i = idx.as_i64().or_else(|| {
-                            idx.as_f64().and_then(|f| { let r = f as i64; if r as f64 == f { Some(r) } else { None } })
-                        }).ok_or_else(|| format!("Index must be an integer, got {idx}"))?;
+                        let i = forai_core::eval::coerce_index(&idx)?;
                         let len = arr.len() as i64;
                         let resolved = if i < 0 { len + i } else { i };
                         if resolved < 0 || resolved >= len {
@@ -2257,176 +2198,6 @@ fn eval_expr<'a>(
             }
         }
     })
-}
-
-fn eval_binop(op: crate::ast::BinOp, l: &Value, r: &Value) -> Result<Value, String> {
-    use crate::ast::BinOp;
-    match op {
-        BinOp::Add => {
-            // Numbers: add. Strings: concatenate.
-            if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
-                // Preserve integer output when both inputs are integers
-                if l.is_i64() && r.is_i64() {
-                    return Ok(json!(l.as_i64().unwrap() + r.as_i64().unwrap()));
-                }
-                return Ok(json!(a + b));
-            }
-            if let (Some(a), Some(b)) = (l.as_str(), r.as_str()) {
-                return Ok(json!(format!("{a}{b}")));
-            }
-            Err(format!("Cannot add {l} and {r}"))
-        }
-        BinOp::Sub => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot subtract: left operand {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot subtract: right operand {r} is not a number"))?;
-            if l.is_i64() && r.is_i64() {
-                return Ok(json!(l.as_i64().unwrap() - r.as_i64().unwrap()));
-            }
-            Ok(json!(a - b))
-        }
-        BinOp::Mul => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot multiply: left operand {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot multiply: right operand {r} is not a number"))?;
-            if l.is_i64() && r.is_i64() {
-                return Ok(json!(l.as_i64().unwrap() * r.as_i64().unwrap()));
-            }
-            Ok(json!(a * b))
-        }
-        BinOp::Div => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot divide: left operand {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot divide: right operand {r} is not a number"))?;
-            if b == 0.0 {
-                return Err("Division by zero".to_string());
-            }
-            Ok(json!(a / b))
-        }
-        BinOp::Mod => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot mod: left operand {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot mod: right operand {r} is not a number"))?;
-            if b == 0.0 {
-                return Err("Modulo by zero".to_string());
-            }
-            if l.is_i64() && r.is_i64() {
-                return Ok(json!(l.as_i64().unwrap() % r.as_i64().unwrap()));
-            }
-            Ok(json!(a % b))
-        }
-        BinOp::Pow => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot pow: left operand {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot pow: right operand {r} is not a number"))?;
-            Ok(json!(a.powf(b)))
-        }
-        BinOp::Eq => Ok(json!(l == r)),
-        BinOp::Neq => Ok(json!(l != r)),
-        BinOp::Lt => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
-            Ok(json!(a < b))
-        }
-        BinOp::Gt => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
-            Ok(json!(a > b))
-        }
-        BinOp::LtEq => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
-            Ok(json!(a <= b))
-        }
-        BinOp::GtEq => {
-            let a = l
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {l} is not a number"))?;
-            let b = r
-                .as_f64()
-                .ok_or_else(|| format!("Cannot compare: {r} is not a number"))?;
-            Ok(json!(a >= b))
-        }
-        BinOp::And => {
-            let a = l
-                .as_bool()
-                .ok_or_else(|| format!("Cannot AND: {l} is not a boolean"))?;
-            let b = r
-                .as_bool()
-                .ok_or_else(|| format!("Cannot AND: {r} is not a boolean"))?;
-            Ok(json!(a && b))
-        }
-        BinOp::Or => {
-            let a = l
-                .as_bool()
-                .ok_or_else(|| format!("Cannot OR: {l} is not a boolean"))?;
-            let b = r
-                .as_bool()
-                .ok_or_else(|| format!("Cannot OR: {r} is not a boolean"))?;
-            Ok(json!(a || b))
-        }
-    }
-}
-
-fn eval_unary(op: crate::ast::UnaryOp, v: &Value) -> Result<Value, String> {
-    use crate::ast::UnaryOp;
-    match op {
-        UnaryOp::Neg => {
-            if let Some(n) = v.as_i64() {
-                Ok(json!(-n))
-            } else if let Some(n) = v.as_f64() {
-                Ok(json!(-n))
-            } else {
-                Err(format!("Cannot negate {v}"))
-            }
-        }
-        UnaryOp::Not => {
-            let b = v
-                .as_bool()
-                .ok_or_else(|| format!("Cannot NOT: {v} is not a boolean"))?;
-            Ok(json!(!b))
-        }
-    }
-}
-
-fn pattern_matches(value: &Value, pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Lit(v) => value == v,
-        Pattern::Ident(name) => {
-            if let Some(s) = value.as_str() {
-                s == name
-            } else {
-                false
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -3019,7 +2790,7 @@ fn execute_statements<'a>(
                         eval_expr(&case_block.expr, vars, flow_registry, host, codecs).await?;
                     let mut matched = false;
                     for arm in &case_block.arms {
-                        if pattern_matches(&subject, &arm.pattern) {
+                        if forai_core::eval::pattern_matches(&subject, &arm.pattern) {
                             matched = true;
                             match execute_statements(
                                 &arm.body,

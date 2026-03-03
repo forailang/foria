@@ -1,8 +1,7 @@
 use crate::ffi_manager::{FfiManager, FfiRegistry};
 use crate::host::Host;
-use crate::runtime::{
-    civil_from_days, read_f64_arg, read_i64_arg, read_object_arg, read_string_arg,
-};
+use crate::runtime::civil_from_days;
+use forai_core::pure_ops::{read_f64_arg, read_i64_arg, read_object_arg, read_string_arg};
 use base64::Engine;
 use serde_json::{Value, json};
 use std::cell::RefCell;
