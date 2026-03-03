@@ -1,0 +1,23 @@
+docs Input
+    Prompts the user for unit conversion commands.
+    Emits trimmed input strings. Stops on "quit" or "exit".
+done
+
+source Input
+    emit cmd as text
+    fail error as text
+body
+    on :input from term.prompt("convert> ") to raw
+        trimmed = str.trim(raw)
+        if trimmed == "quit" || trimmed == "exit"
+            break
+        done
+        emit trimmed
+    done
+done
+
+test Input
+    # Source: reads from terminal — stub test
+    ok = true
+    must ok == true
+done

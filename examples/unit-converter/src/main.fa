@@ -1,0 +1,39 @@
+use sources from "./sources"
+use router from "./router"
+use convert from "./convert"
+use display from "./display"
+
+docs main
+    Interactive unit converter pipeline.
+    Reads conversion commands from the user, parses them,
+    routes to the appropriate converter, formats the result,
+    and prints it to the terminal.
+done
+
+flow main
+body
+    step sources.Input() then
+        next :cmd to cmd
+    done
+    step router.Parse(cmd to :input) then
+        next :result to request
+    done
+    step convert.Router(request to :request) then
+        next :result to result
+    done
+    step display.Format(result to :result) then
+        next :result to formatted
+    done
+    step display.Print(formatted to :text) done
+done
+
+test main
+    mock sources.Input => "100 km to mi"
+    mock router.Parse => {value: 100.0, from: "km", to: "mi"}
+    mock convert.Router => {input: 100.0, output: 62.1371, from: "km", to: "mi"}
+    mock display.Format => "100 km = 62.1371 mi"
+    mock display.Print => true
+    _ = main()
+    ok = true
+    must ok == true
+done

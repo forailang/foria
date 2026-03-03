@@ -1,0 +1,85 @@
+docs Distance
+    Converts between distance units: km, mi, m, ft, in.
+    Uses meters as the internal base unit for chained conversions.
+done
+
+func Distance
+    take value as real
+    take from as text
+    take to as text
+    emit result as dict
+    fail error as text
+body
+    # Convert input to meters (base unit)
+    base = 0.0
+    case from
+        when "m"
+            base = value
+        when "km"
+            base = value * 1000.0
+        when "mi"
+            base = value * 1609.344
+        when "ft"
+            base = value * 0.3048
+        when "in"
+            base = value * 0.0254
+        else
+            msg = "Unknown distance unit: #{from}"
+            fail msg
+    done
+
+    # Convert from meters to target unit
+    output = 0.0
+    case to
+        when "m"
+            output = base
+        when "km"
+            output = base / 1000.0
+        when "mi"
+            output = base / 1609.344
+        when "ft"
+            output = base / 0.3048
+        when "in"
+            output = base / 0.0254
+        else
+            msg = "Unknown distance unit: #{to}"
+            fail msg
+    done
+
+    r = {input: value, output: output, from: from, to: to}
+    emit r
+done
+
+test Distance
+    # km to mi
+    r1 = Distance(1.0, "km", "mi")
+    out1 = obj.get(r1, "output")
+    rounded1 = math.round(out1, 4)
+    must rounded1 == 0.6214
+
+    # mi to km
+    r2 = Distance(1.0, "mi", "km")
+    out2 = obj.get(r2, "output")
+    rounded2 = math.round(out2, 3)
+    must rounded2 == 1.609
+
+    # m to ft
+    r3 = Distance(1.0, "m", "ft")
+    out3 = obj.get(r3, "output")
+    rounded3 = math.round(out3, 4)
+    must rounded3 == 3.2808
+
+    # ft to in
+    r4 = Distance(1.0, "ft", "in")
+    out4 = obj.get(r4, "output")
+    rounded4 = math.round(out4, 1)
+    must rounded4 == 12.0
+
+    # km to m
+    r5 = Distance(5.0, "km", "m")
+    must obj.get(r5, "output") == 5000.0
+
+    # Unknown unit
+    err = trap Distance(1.0, "xyz", "km")
+    must str.contains(err, "Unknown distance unit")
+done

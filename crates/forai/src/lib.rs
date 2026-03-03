@@ -2,10 +2,6 @@
 // Only includes modules needed for fuzzing (parser, lexer, formatter).
 // The full application entry point is main.rs.
 
-mod ast {
-    pub use forai_core::ast::*;
-}
-
 pub mod lexer {
     pub use forai_core::lexer::*;
 }

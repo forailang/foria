@@ -1,0 +1,62 @@
+docs Format
+    Formats a conversion result into a human-readable string.
+    Shows integer display when the result is a whole number,
+    otherwise rounds to 4 decimal places.
+done
+
+func Format
+    take result as dict
+    emit result as text
+    fail error as text
+body
+    input = obj.get(result, "input")
+    output = obj.get(result, "output")
+    from = obj.get(result, "from")
+    to = obj.get(result, "to")
+
+    # Format input value
+    input_long = to.long(input)
+    input_back = to.real(input_long)
+    input_str = ""
+    if input_back == input
+        input_str = to.text(input_long)
+    else
+        input_str = to.text(input)
+    done
+
+    # Format output value - round to 4 decimal places
+    rounded = math.round(output, 4)
+    output_long = to.long(rounded)
+    output_back = to.real(output_long)
+    output_str = ""
+    if output_back == rounded
+        output_str = to.text(output_long)
+    else
+        output_str = to.text(rounded)
+    done
+
+    formatted = "#{input_str} #{from} = #{output_str} #{to}"
+    emit formatted
+done
+
+test Format
+    # Integer result
+    r1 = {input: 0.0, output: 32.0, from: "c", to: "f"}
+    f1 = Format(r1)
+    must f1 == "0 c = 32 f"
+
+    # Decimal result
+    r2 = {input: 1.0, output: 0.6214, from: "km", to: "mi"}
+    f2 = Format(r2)
+    must f2 == "1 km = 0.6214 mi"
+
+    # Large value
+    r3 = {input: 100.0, output: 212.0, from: "c", to: "f"}
+    f3 = Format(r3)
+    must f3 == "100 c = 212 f"
+
+    # Decimal input and output
+    r4 = {input: 2.5, output: 2500.0, from: "kg", to: "g"}
+    f4 = Format(r4)
+    must f4 == "2.5 kg = 2500 g"
+done

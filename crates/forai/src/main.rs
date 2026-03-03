@@ -25,14 +25,8 @@ mod doc;
 mod ffi_manager;
 mod formatter;
 mod host_native;
-mod lexer {
-    pub use forai_core::lexer::*;
-}
 mod lsp;
 mod mcp;
-mod op_types {
-    pub use forai_core::op_types::*;
-}
 mod parser {
     pub use forai_core::parser::*;
 }

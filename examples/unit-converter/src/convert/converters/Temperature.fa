@@ -1,0 +1,96 @@
+docs ConversionResult
+    The result of a unit conversion with input and output values.
+
+    docs input
+        The original numeric value.
+    done
+    docs output
+        The converted numeric value.
+    done
+    docs from
+        The source unit.
+    done
+    docs to
+        The target unit.
+    done
+done
+
+type ConversionResult
+    input real :required => true
+    output real :required => true
+    from text :required => true
+    to text :required => true
+done
+
+docs Temperature
+    Converts between Celsius, Fahrenheit, and Kelvin.
+    Supports all six pairwise conversions (C/F/K).
+done
+
+func Temperature
+    take value as real
+    take from as text
+    take to as text
+    emit result as ConversionResult
+    fail error as text
+body
+    key = from + "_to_" + to
+    output = 0.0
+    case key
+        when "c_to_f"
+            output = value * 9.0 / 5.0 + 32.0
+        when "f_to_c"
+            output = (value - 32.0) * 5.0 / 9.0
+        when "c_to_k"
+            output = value + 273.15
+        when "k_to_c"
+            output = value - 273.15
+        when "f_to_k"
+            c = (value - 32.0) * 5.0 / 9.0
+            output = c + 273.15
+        when "k_to_f"
+            c = value - 273.15
+            output = c * 9.0 / 5.0 + 32.0
+        else
+            msg = "Unknown temperature conversion: #{from} to #{to}"
+            fail msg
+    done
+    r = {input: value, output: output, from: from, to: to}
+    emit r
+done
+
+test Temperature
+    # C to F
+    r1 = Temperature(0.0, "c", "f")
+    must obj.get(r1, "output") == 32.0
+
+    r2 = Temperature(100.0, "c", "f")
+    must obj.get(r2, "output") == 212.0
+
+    # F to C
+    r3 = Temperature(32.0, "f", "c")
+    must obj.get(r3, "output") == 0.0
+
+    r4 = Temperature(212.0, "f", "c")
+    must obj.get(r4, "output") == 100.0
+
+    # C to K
+    r5 = Temperature(0.0, "c", "k")
+    must obj.get(r5, "output") == 273.15
+
+    # K to C
+    r6 = Temperature(273.15, "k", "c")
+    must obj.get(r6, "output") == 0.0
+
+    # F to K
+    r7 = Temperature(32.0, "f", "k")
+    must obj.get(r7, "output") == 273.15
+
+    # K to F
+    r8 = Temperature(273.15, "k", "f")
+    must obj.get(r8, "output") == 32.0
+
+    # Unknown
+    err = trap Temperature(100.0, "c", "x")
+    must str.contains(err, "Unknown temperature conversion")
+done

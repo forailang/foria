@@ -1,0 +1,72 @@
+docs ConversionRequest
+    A parsed conversion request with numeric value and unit pair.
+
+    docs value
+        The numeric value to convert.
+    done
+    docs from
+        The source unit (e.g. "km", "c", "kg").
+    done
+    docs to
+        The target unit (e.g. "mi", "f", "lb").
+    done
+done
+
+type ConversionRequest
+    value real :required => true
+    from text :required => true
+    to text :required => true
+done
+
+docs Parse
+    Parses a conversion command string like "100 km to mi" into
+    a structured ConversionRequest with value, from-unit, and to-unit.
+    Fails on malformed input with a descriptive error message.
+done
+
+func Parse
+    take input as text
+    emit result as ConversionRequest
+    fail error as text
+body
+    parts = str.split(input, " ")
+    count = list.len(parts)
+    if count != 4
+        msg = "Expected format: <value> <from> to <to>, got #{count} parts"
+        fail msg
+    done
+    raw_value = parts[0]
+    from_unit = str.lower(parts[1])
+    keyword = str.lower(parts[2])
+    to_unit = str.lower(parts[3])
+    if keyword != "to"
+        msg = "Expected 'to' keyword, got '#{keyword}'"
+        fail msg
+    done
+    value = to.real(raw_value)
+    request = {value: value, from: from_unit, to: to_unit}
+    emit request
+done
+
+test Parse
+    r = Parse("100 km to mi")
+    must obj.get(r, "value") == 100.0
+    must obj.get(r, "from") == "km"
+    must obj.get(r, "to") == "mi"
+
+    r2 = Parse("32 F to C")
+    must obj.get(r2, "value") == 32.0
+    must obj.get(r2, "from") == "f"
+    must obj.get(r2, "to") == "c"
+
+    r3 = Parse("0.5 kg to lb")
+    must obj.get(r3, "value") == 0.5
+    must obj.get(r3, "from") == "kg"
+    must obj.get(r3, "to") == "lb"
+
+    err1 = trap Parse("100 km")
+    must str.contains(err1, "Expected format")
+
+    err2 = trap Parse("100 km from mi")
+    must str.contains(err2, "Expected 'to' keyword")
+done

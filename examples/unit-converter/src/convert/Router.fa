@@ -1,0 +1,78 @@
+use converters from "./converters"
+
+docs Router
+    Dispatches a conversion request to the appropriate converter
+    based on the unit category (temperature, distance, or weight).
+    Fails if the units are unknown or from different categories.
+done
+
+func Router
+    take request as dict
+    emit result as dict
+    fail error as text
+body
+    value = obj.get(request, "value")
+    from = obj.get(request, "from")
+    to = obj.get(request, "to")
+
+    temp_units = ["c", "f", "k"]
+    dist_units = ["km", "mi", "m", "ft", "in"]
+    weight_units = ["kg", "lb", "oz", "g"]
+
+    from_is_temp = list.contains(temp_units, from)
+    from_is_dist = list.contains(dist_units, from)
+    from_is_weight = list.contains(weight_units, from)
+
+    to_is_temp = list.contains(temp_units, to)
+    to_is_dist = list.contains(dist_units, to)
+    to_is_weight = list.contains(weight_units, to)
+
+    if from_is_temp && to_is_temp
+        r = converters.Temperature(value, from, to)
+        emit r
+    else if from_is_dist && to_is_dist
+        r = converters.Distance(value, from, to)
+        emit r
+    else if from_is_weight && to_is_weight
+        r = converters.Weight(value, from, to)
+        emit r
+    else if from_is_temp || from_is_dist || from_is_weight
+        if to_is_temp || to_is_dist || to_is_weight
+            msg = "Cannot convert between different categories: #{from} and #{to}"
+            fail msg
+        else
+            msg = "Unknown unit: #{to}"
+            fail msg
+        done
+    else
+        msg = "Unknown unit: #{from}"
+        fail msg
+    done
+done
+
+test Router
+    # Temperature dispatch
+    req1 = {value: 100.0, from: "c", to: "f"}
+    r1 = Router(req1)
+    must obj.get(r1, "output") == 212.0
+
+    # Distance dispatch
+    req2 = {value: 5.0, from: "km", to: "m"}
+    r2 = Router(req2)
+    must obj.get(r2, "output") == 5000.0
+
+    # Weight dispatch
+    req3 = {value: 2.5, from: "kg", to: "g"}
+    r3 = Router(req3)
+    must obj.get(r3, "output") == 2500.0
+
+    # Mixed categories
+    req4 = {value: 1.0, from: "km", to: "kg"}
+    err1 = trap Router(req4)
+    must str.contains(err1, "Cannot convert between different categories")
+
+    # Unknown unit
+    req5 = {value: 1.0, from: "xyz", to: "km"}
+    err2 = trap Router(req5)
+    must str.contains(err2, "Unknown unit")
+done

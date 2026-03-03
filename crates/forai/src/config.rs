@@ -53,6 +53,7 @@ pub struct ProjectConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct FfiLibConfig {
     pub lib: String,
 }

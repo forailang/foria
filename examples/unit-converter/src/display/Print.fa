@@ -1,0 +1,19 @@
+docs Print
+    Terminal output sink for the unit converter.
+    Prints the formatted conversion result to the terminal.
+done
+
+sink Print
+    take text as text
+    emit result as bool
+    fail error as text
+body
+    _ = term.print(text)
+    ok = true
+    emit ok
+done
+
+test Print
+    r = Print("100 km = 62.1371 mi")
+    must r == true
+done

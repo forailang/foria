@@ -8,6 +8,7 @@ use super::source::DepSource;
 use crate::config::{self, ProjectType};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ResolvedDep {
     pub name: String,
     pub version: SemVer,
