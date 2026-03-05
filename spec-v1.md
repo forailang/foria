@@ -176,10 +176,15 @@ enum_decl        = [ "open" ] "enum" IDENT NEWLINE
 
 (* --- Tests --- *)
 test_decl        = "test" IDENT NEWLINE
-                   test_body
+                   test_setup
+                   { it_block }
                    "done" ;
 
-test_body        = { mock_decl } { test_stmt } ;
+test_setup       = { mock_decl | assign_stmt | comment } ;
+it_block         = "it" STRING_LIT NEWLINE
+                   it_body
+                   "done" ;
+it_body          = { mock_decl } { test_stmt } ;
 mock_decl        = "mock" dotted_ident "=>" expr NEWLINE ;
 test_stmt        = must_stmt | trap_stmt | assign_stmt | comment ;
 must_stmt        = "must" expr NEWLINE ;
@@ -188,7 +193,7 @@ trap_stmt        = IDENT "=" "trap" dotted_ident "(" expr_list ")" NEWLINE ;
 (* --- Expressions --- *)
 expr             = ternary_expr ;
 ternary_expr     = or_expr [ "?" or_expr ":" or_expr ] ;
-or_expr          = and_expr { "||" and_expr } ;
+or_expr          = and_expr { ( "||" | "??" ) and_expr } ;
 and_expr         = eq_expr { "&&" eq_expr } ;
 eq_expr          = cmp_expr { ( "==" | "!=" ) cmp_expr } ;
 cmp_expr         = add_expr { ( "<" | ">" | "<=" | ">=" ) add_expr } ;
@@ -220,22 +225,26 @@ stmt             = assign_stmt
                  | loop_stmt
                  | bare_loop_stmt
                  | break_stmt
+                 | continue_stmt
                  | sync_stmt
                  | send_stmt
                  | nowait_stmt ;
 
-assign_stmt      = IDENT "=" expr NEWLINE ;
+assign_stmt      = IDENT [ ":" type_ref ] "=" expr NEWLINE
+                 | IDENT compound_op expr NEWLINE ;
+compound_op      = "+=" | "-=" | "*=" | "/=" | "%=" ;
 emit_stmt        = "emit" IDENT NEWLINE ;
 return_stmt      = "return" IDENT NEWLINE ;
 fail_stmt        = "fail" IDENT NEWLINE ;
 break_stmt       = "break" NEWLINE ;
+continue_stmt    = "continue" NEWLINE ;
 
 case_stmt        = "case" expr NEWLINE
-                   { "when" pattern NEWLINE stmt_block }
+                   { "when" pattern [ "if" expr ] NEWLINE stmt_block }
                    [ "else" NEWLINE stmt_block ]
                    "done" ;
 
-loop_stmt        = "loop" expr "as" IDENT NEWLINE
+loop_stmt        = "loop" expr "as" IDENT [ "with" "index" IDENT ] NEWLINE
                    stmt_block
                    "done" ;
 
@@ -256,7 +265,11 @@ sync_opt         = ":timeout" "=>" duration
                  | ":safe"    "=>" BOOL ;
 
 ident_list       = IDENT { "," IDENT } ;
-pattern          = IDENT | STRING | INT | FLOAT | BOOL ;
+pattern          = pattern_atom { "|" pattern_atom } ;
+pattern_atom     = IDENT | STRING | INT | FLOAT | BOOL
+                 | INT ".." INT
+                 | ":" TYPE_NAME ;
+TYPE_NAME        = "text" | "bool" | "long" | "real" | "list" | "dict" | "void" ;
 type_ref         = IDENT ;
 
 (* --- Flow body statements --- *)
@@ -292,8 +305,8 @@ then_item        = "next" ":" IDENT "to" IDENT NEWLINE
 port_mappings    = [ port_mapping { "," port_mapping } ] ;
 port_mapping     = ( IDENT | STRING | NUMBER | BOOL ) "to" ":" IDENT ;
 
-(* State: resource initialization *)
-state_decl       = "state" IDENT "=" dotted_ident "(" arg_list ")" NEWLINE ;
+(* State: resource initialization or literal assignment *)
+state_decl       = "state" IDENT "=" ( dotted_ident "(" arg_list ")" | expr ) NEWLINE ;
 arg_list         = [ arg { "," arg } ] ;
 arg              = IDENT | STRING | NUMBER | BOOL ;
 
@@ -344,6 +357,11 @@ branch_stmt      = "branch" [ "when" expr ] NEWLINE
 
 ### 6.5 Variable reassignment
 - Variables may be reassigned in func bodies. Single-assignment is not enforced.
+- Compound assignment operators: `+=`, `-=`, `*=`, `/=`, `%=`.
+- `x += expr` desugars to `x = x + expr` (and likewise for other operators).
+- `+=` works for both numeric addition and string concatenation.
+- Type annotations are not allowed with compound assignment.
+- Only simple variable names are supported (no dotted paths like `obj.field += 1`).
 
 ### 6.6 v1 vs v2 func syntax
 - v1 uses named `emit`/`fail` ports: `emit result as text`, `fail error as text`.
@@ -486,7 +504,7 @@ done
 | Precedence | Operator | Description | Associativity |
 |------------|----------|-------------|---------------|
 | 0 | `? :` | Ternary conditional | — |
-| 1 | `\|\|` | Logical OR | Left |
+| 1 | `\|\|` `??` | Logical OR, null-coalescing | Left |
 | 2 | `&&` | Logical AND | Left |
 | 3 | `==` `!=` | Equality | Left |
 | 4 | `<` `>` `<=` `>=` | Comparison | Left |
@@ -503,15 +521,27 @@ result = condition ? "yes" : "no"
 - Short-circuit: only the chosen branch is evaluated.
 - Truthiness rules: `false`, `null`, empty string `""`, and `0` are falsy. Everything else (including empty arrays and objects) is truthy.
 
-### 8.3 Arithmetic
+### 8.3 Null-coalescing operator
+
+```fa
+timeout = obj.get(config, "timeout") ?? 30
+```
+
+- Returns LHS if it is **not** `null`/`void`; otherwise evaluates and returns RHS.
+- Missing (undefined) variables on the LHS are treated as `null`.
+- **Lazy**: RHS is only evaluated when LHS is null.
+- Falsy-but-non-null values (`false`, `0`, `""`) are **not** coalesced — only `null`/`void`.
+- Chainable: `a ?? b ?? c` (left-associative).
+
+### 8.4 Arithmetic
 - `+` `-` `*` `/` `%` `**` on numbers.
 - `+` on strings performs concatenation.
 - `/` errors on division by zero. `%` errors on modulo by zero.
-- **Integer preservation**: when both operands are integers, `+`, `-`, `*`, and `%` produce integer results. `/` and `**` always produce floats.
+- **Integer preservation**: when both operands are integers and the result is exact, all arithmetic operators (`+`, `-`, `*`, `/`, `%`, `**`) produce integer results. For `/`, this means `10 / 2` yields `5` (integer) while `7 / 2` yields `3.5` (float). For `**`, `2 ** 3` yields `8` (integer) while `2 ** -1` yields `0.5` (float).
 
 ### 8.4 Comparison
-- `==` `!=` use deep JSON structural equality. Works for all types.
-- `<` `>` `<=` `>=` require numeric operands.
+- `==` `!=` use **value-based numeric comparison**: numbers are compared as `f64` values regardless of whether they are stored as integer or float internally. `42 == 42.0` is `true`. Non-numeric types use structural equality.
+- `<` `>` `<=` `>=` compare numbers by `f64` value (int/float operands may be mixed) and strings lexicographically. Mixed number/string operands are a runtime error.
 
 ### 8.5 Logical
 - `&&` `||` require boolean operands. Non-short-circuit (both sides evaluated).
@@ -569,8 +599,12 @@ case expr
 done
 ```
 - Pattern matching on the subject expression.
-- Patterns: string literals, integer literals, float literals, boolean literals, identifiers (matched as strings).
-- First matching arm executes. `else` is the default fallback.
+- Patterns: string literals, integer literals, float literals, boolean literals, identifiers (matched as strings). Numeric patterns use value-based comparison (`42.0` matches pattern `42`).
+- **OR patterns**: `when "yes" | "y" | "true"` — matches any alternative. Each alternative is a pattern atom.
+- **Range patterns**: `when 80..90` — inclusive lower bound, exclusive upper bound `[lo, hi)`. Integer bounds only. Works with integer and float subject values. Negative bounds supported: `when -10..0`.
+- **Type patterns**: `when :text`, `when :long | :real` — matches the runtime type of the value. Valid types: `text`, `bool`, `long`, `real`, `list`, `dict`, `void`.
+- **Guard clauses**: `when _ if score >= 70` — after the pattern matches, the guard expression is evaluated. If the guard is falsy, the arm is skipped and matching continues with the next arm.
+- First matching arm (with passing guard) executes. `else` is the default fallback.
 - At runtime, variable assignments inside case arms persist in the caller's scope.
 - In the IR lowerer, case arm scopes are discarded — emit from each arm instead of setting a variable.
 
@@ -600,7 +634,14 @@ done
 - Propagates through `case` blocks: a `break` inside a case arm inside a loop exits the loop.
 - Inside `sync` blocks, `break` is swallowed (treated as continue).
 
-### 9.5 `sync` — Concurrent execution
+### 9.5 `continue`
+- Skips the rest of the current iteration and moves to the next one.
+- Works in both collection loops (`loop items as item`) and bare loops (`loop`).
+- Applies to the innermost enclosing loop.
+- Propagates through `case` blocks: a `continue` inside a case arm inside a loop skips to the next iteration.
+- Inside `sync` blocks, `continue` is swallowed.
+
+### 9.6 `sync` — Concurrent execution
 ```fa
 [out1, out2] = sync :timeout => 5s, :retry => 2, :safe => true
   a = TaskA(...)
@@ -615,7 +656,7 @@ done [a, b]
   - `:retry => <int>` — retry count on failure (default 0).
   - `:safe => <bool>` — if `true`, converts branch failure to `null` exports instead of propagating.
 
-### 9.6 `nowait` and `send nowait`
+### 9.7 `nowait` and `send nowait`
 - Fire-and-forget async call. The target starts immediately but the caller continues without waiting.
 - `nowait op(args)` — fire-and-forget for built-in ops.
 - `send nowait FuncName(args)` — fire-and-forget for user funcs/flows.
@@ -649,13 +690,18 @@ done
 - `fail wire to :port` sends a wire value to a declared flow fail port.
 - Conditional routing uses `branch when <expr>` at the flow level, not inside step blocks.
 
-### 10.2 `state` — Resource initialization
+### 10.2 `state` — Resource initialization or literal assignment
 ```fa
 state conn = db.open(":memory:")
 state srv = http.server.listen(8080)
+state name = "bob"
+state count = 42
+state users = ["alice", "bob", "charlie"]
+state cfg = {host: "localhost", port: 8080}
 ```
-- Creates a shared resource handle available to subsequent steps.
-- Arguments can be identifiers, string literals, numeric literals, or booleans.
+- Creates a shared variable available to subsequent steps.
+- Right-hand side can be an op call (resource initialization) or a literal expression (string, number, boolean, list, dict).
+- Arguments to op calls can be identifiers, string literals, numeric literals, or booleans.
 
 ### 10.3 `on` — Event handler
 
@@ -777,6 +823,8 @@ done
 - Both `type` and `data` keywords produce struct types.
 - Fields reference known types (primitives, scalars, other structs, enums).
 - Nested struct fields trigger recursive validation.
+- **Open structs**: `open type Config ... done` allows extra fields beyond declared schema during validation. Closed structs (default, no `open`) reject undeclared fields.
+- All built-in struct types (`HttpRequest`, `Date`, `Stamp`, `TimeRange`, `HttpResponse`, `ProcessOutput`, `WebSocketMessage`, `ErrorObject`, `URLParts`) are open.
 
 ### 11.4 Enums
 ```fa
@@ -787,7 +835,8 @@ enum Role
 done
 ```
 - String enumeration with a fixed set of variant names.
-- `open` modifier for extensible enums.
+- **Closed enums** (default): only accept declared variant strings during validation.
+- **Open enums**: `open enum Name ... done` accepts any string value. Declared variants serve as documentation of known values.
 
 ### 11.5 Constraints
 | Key | Applies to | Value | Description |
@@ -804,7 +853,26 @@ Constraint syntax: `:key` (boolean flag, defaults to true) or `:key => value`.
 - `take` values are validated before entering `body`.
 - Validation failure is reported on the failure track.
 - `emit`/`fail` values are validated against their declared types after `body` execution.
-- Output validation failure is a hard error (bug in the flow, not bad input).
+- Output validation failure routes to the `fail` port if one is declared, with a structured error: `{kind: "output_validation_error", port: "<name>", errors: [{path, constraint, message}]}`. Without a `fail` port, output validation failure is a hard error.
+
+### 11.7 Type annotations on assignments
+```fa
+count: long = str.len(name)
+label: text = "hello"
+```
+- Optional type annotation on assignment statements: `IDENT ":" type_ref "=" expr`.
+- The compiler checks the annotation against the inferred type at compile time.
+- Mismatch between annotation and inferred type is a compile error.
+- When the inferred type is unknown, the annotation is accepted and used as the declared type.
+- Annotations are purely for documentation and compile-time validation — no runtime effect.
+
+### 11.8 Compile-time type checking
+- The compiler performs forward type inference over func bodies, tracking variable types through assignments, ops, and control flow.
+- Built-in ops have registered input/output type signatures. The compiler validates argument types against expected types and infers result types.
+- Struct field access via dotted paths (e.g., `out.stderr`) infers the field's type from the struct definition in the type registry.
+- Handle types (`db_conn`, `http_server`, `http_conn`, `ws_conn`) are validated at compile time — handle-consuming ops must receive the correct handle type.
+- `Struct` and `Dict` types are compatible (structs are backed by dicts at runtime).
+- Flow-level type checking validates step input port types against wired values and step output types against subsequent steps.
 
 ## 12. Documentation Rules
 
@@ -850,22 +918,39 @@ done
 ## 13. Testing Rules
 
 ### 13.1 Syntax
+Test blocks require `it` sub-cases. Each `it` block is an independent test case with a double-quoted description. Shared setup (mocks, assignments) before the first `it` is cloned into each case's scope.
+
 ```fa
-docs LoginHappy
-  Verifies success path.
+docs LoginFlow
+  Verifies login flow behavior.
 done
 
-test LoginHappy
-  res = LoginFlow(req)
-  must res.status == 200
+test LoginFlow
+  mock auth.Verify => true
+
+  it "succeeds for valid credentials"
+    res = LoginFlow(req)
+    must res.status == 200
+  done
+
+  it "fails for bad credentials"
+    err = trap LoginFlow(bad_req)
+    must err.code == "INVALID_CREDENTIALS"
+  done
 done
 ```
 
+- One `docs` block per `test` block (not per `it`).
+- Each `it` runs independently — failure in one doesn't stop others.
+- Output: `PASS file.Test > description (Xms)`.
+
 ### 13.2 Failure testing
 ```fa
-test LoginBadCreds
-  err = trap LoginFlow(bad_req)
-  must err.code == "INVALID_CREDENTIALS"
+test LoginFlow
+  it "rejects bad credentials"
+    err = trap LoginFlow(bad_req)
+    must err.code == "INVALID_CREDENTIALS"
+  done
 done
 ```
 - `trap` expects the call to fail. Captures the failure value.
@@ -873,15 +958,19 @@ done
 
 ### 13.3 Mocking
 ```fa
-test NumberCrunchMocked
+test NumberCrunch
   mock calc.AddTwo => obj("value", 99.0)
   mock calc.MultiplyFive => obj("value", 99.0)
-  inp = obj("value", 1.0)
-  res = NumberCrunch(inp)
-  must res.value == 99.0
+
+  it "uses mocked values"
+    inp = obj("value", 1.0)
+    res = NumberCrunch(inp)
+    must res.value == 99.0
+  done
 done
 ```
-- `mock` lines must appear at the top of the test block, before any statements.
+- Shared `mock` lines before the first `it` apply to all cases.
+- Per-`it` `mock` lines override/extend shared mocks for that case only.
 - Mock values bypass the real func/flow execution entirely.
 - Mock value expressions are evaluated in an empty environment (only literal values).
 
@@ -889,7 +978,7 @@ done
 - `must expr` accepts any boolean expression.
 - Comparison operators: `==`, `!=`, `>`, `>=`, `<`, `<=`.
 - Truthiness check (no operator): null, false, 0, empty string, empty array, empty object are falsy.
-- First failed `must` fails the test immediately.
+- First failed `must` fails the `it` case immediately.
 
 ### 13.5 Test value expressions
 - String literals: `"text"` or `'text'`.

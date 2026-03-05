@@ -49,24 +49,26 @@ body
 done
 
 test Parse
-    r = Parse("100 km to mi")
-    must obj.get(r, "value") == 100.0
-    must obj.get(r, "from") == "km"
-    must obj.get(r, "to") == "mi"
+    it "works"
+        r = Parse("100 km to mi")
+        must obj.get(r, "value") == 100.0
+        must obj.get(r, "from") == "km"
+        must obj.get(r, "to") == "mi"
 
-    r2 = Parse("32 F to C")
-    must obj.get(r2, "value") == 32.0
-    must obj.get(r2, "from") == "f"
-    must obj.get(r2, "to") == "c"
+        r2 = Parse("32 F to C")
+        must obj.get(r2, "value") == 32.0
+        must obj.get(r2, "from") == "f"
+        must obj.get(r2, "to") == "c"
 
-    r3 = Parse("0.5 kg to lb")
-    must obj.get(r3, "value") == 0.5
-    must obj.get(r3, "from") == "kg"
-    must obj.get(r3, "to") == "lb"
+        r3 = Parse("0.5 kg to lb")
+        must obj.get(r3, "value") == 0.5
+        must obj.get(r3, "from") == "kg"
+        must obj.get(r3, "to") == "lb"
 
-    err1 = trap Parse("100 km")
-    must str.contains(err1, "Expected format")
+        err1 = trap Parse("100 km")
+        must str.contains(err1, "Expected format")
 
-    err2 = trap Parse("100 km from mi")
-    must str.contains(err2, "Expected 'to' keyword")
+        err2 = trap Parse("100 km from mi")
+        must str.contains(err2, "Expected 'to' keyword")
+    done
 done

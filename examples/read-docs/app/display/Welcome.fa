@@ -3,19 +3,16 @@ docs Welcome
 done
 
 sink Welcome
-    emit result as bool
-    fail error as text
 body
-    _ = term.print("")
-    _ = term.print("=== Dataflow Language Reference ===")
-    _ = term.print("Type 'help' for commands, or a namespace to explore.")
-    _ = term.print("")
-    ok = true
-    emit ok
+    term.print("")
+    term.print("=== Dataflow Language Reference ===")
+    term.print("Type 'help' for commands, or a namespace to explore.")
+    term.print("")
 done
 
 test Welcome
-    # Sink: outputs welcome banner, verify it succeeds
-    r = Welcome()
-    must r == true
+    it "works"
+        Welcome()
+        must true
+    done
 done

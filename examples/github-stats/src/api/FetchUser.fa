@@ -1,0 +1,86 @@
+docs Profile
+    A GitHub user profile.
+
+    docs login
+        GitHub username.
+    done
+    docs name
+        Display name.
+    done
+    docs bio
+        Profile bio text.
+    done
+    docs public_repos
+        Number of public repositories.
+    done
+    docs followers
+        Number of followers.
+    done
+done
+
+type Profile
+    login text :required => true
+    name text
+    bio text
+    public_repos long
+    followers long
+done
+
+docs FetchUser
+    Fetches a GitHub user profile by username.
+    Returns a Profile or fails with the HTTP status.
+done
+
+func FetchUser
+    take username as text
+    emit result as Profile
+    fail error as text
+body
+    url = "https://api.github.com/users/#{username}"
+    resp = http.get(url)
+    status = obj.get(resp, "status")
+
+    if status != 200
+        msg = "GitHub API error: status #{status} for #{username}"
+        fail msg
+    done
+
+    raw = obj.get(resp, "body")
+    data = json.decode(raw)
+
+    login = obj.get(data, "login")
+    uname = obj.get(data, "name") ?? "unknown"
+    bio = obj.get(data, "bio") ?? ""
+    repos = obj.get(data, "public_repos") ?? 0
+    followers = obj.get(data, "followers") ?? 0
+    user = {login: login, name: uname, bio: bio, public_repos: repos, followers: followers}
+    emit user
+done
+
+test FetchUser
+    it "fetches profile with all fields"
+        mock http.get => {status: 200, body: "{\"login\":\"octocat\",\"name\":\"The Octocat\",\"bio\":\"GitHub mascot\",\"public_repos\":8,\"followers\":1000}"}
+        r = FetchUser("octocat")
+        must obj.get(r, "login") == "octocat"
+        must obj.get(r, "name") == "The Octocat"
+        must obj.get(r, "bio") == "GitHub mascot"
+        must obj.get(r, "public_repos") == 8
+        must obj.get(r, "followers") == 1000
+    done
+
+    it "falls back to defaults for null fields"
+        mock http.get => {status: 200, body: "{\"login\":\"ghost\",\"name\":null,\"bio\":null,\"public_repos\":null,\"followers\":null}"}
+        r = FetchUser("ghost")
+        must obj.get(r, "login") == "ghost"
+        must obj.get(r, "name") == "unknown"
+        must obj.get(r, "bio") == ""
+        must obj.get(r, "public_repos") == 0
+        must obj.get(r, "followers") == 0
+    done
+
+    it "fails on non-200 status"
+        mock http.get => {status: 404, body: ""}
+        e = trap FetchUser("doesnotexist999")
+        must str.contains(e, "status 404")
+    done
+done

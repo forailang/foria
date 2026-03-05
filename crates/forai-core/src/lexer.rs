@@ -21,7 +21,14 @@ pub enum TokenKind {
     LtEq,     // <=
     AmpAmp,   // &&
     PipePipe, // ||
-    StarStar, // **
+    StarStar,   // **
+    DotDot,     // ..
+    PlusEq,           // +=
+    MinusEq,          // -=
+    StarEq,           // *=
+    SlashEq,          // /=
+    PercentEq,        // %=
+    QuestionQuestion, // ??
     Newline,
     Eof,
 }
@@ -481,7 +488,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             while i < bytes.len() {
                 let c = bytes[i] as char;
-                if c.is_ascii_digit() || c == '.' {
+                if c.is_ascii_digit() || (c == '.' && i + 1 < bytes.len() && bytes[i + 1] != b'.') {
                     i += 1;
                     col += 1;
                 } else {
@@ -729,7 +736,38 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             continue;
         }
 
-        if matches!(ch, ':' | ',' | '(' | ')' | '[' | ']' | '.') {
+        if ch == '.' {
+            let start = i;
+            let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] == b'.' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::DotDot,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
+            i += 1;
+            col += 1;
+            tokens.push(Token {
+                kind: TokenKind::Symbol('.'),
+                span: Span {
+                    line,
+                    col: start_col,
+                },
+                start,
+                end: i,
+            });
+            continue;
+        }
+
+        if matches!(ch, ':' | ',' | '(' | ')' | '[' | ']') {
             let start = i;
             let start_col = col;
             i += 1;
@@ -749,6 +787,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
         if ch == '*' {
             let start = i;
             let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '=' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::StarEq,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
             if i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
                 i += 2;
                 col += 2;
@@ -778,6 +830,22 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
         }
 
         if ch == '/' {
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '=' {
+                let start = i;
+                let start_col = col;
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::SlashEq,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
             if i + 1 < bytes.len() {
                 let next = bytes[i + 1] as char;
                 if !next.is_ascii_whitespace() && next != '\n' {
@@ -844,6 +912,130 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             col += 1;
             tokens.push(Token {
                 kind: TokenKind::Symbol('/'),
+                span: Span {
+                    line,
+                    col: start_col,
+                },
+                start,
+                end: i,
+            });
+            continue;
+        }
+
+        if ch == '+' {
+            let start = i;
+            let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '=' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::PlusEq,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
+            i += 1;
+            col += 1;
+            tokens.push(Token {
+                kind: TokenKind::Symbol('+'),
+                span: Span {
+                    line,
+                    col: start_col,
+                },
+                start,
+                end: i,
+            });
+            continue;
+        }
+
+        if ch == '-' {
+            let start = i;
+            let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '=' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::MinusEq,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
+            i += 1;
+            col += 1;
+            tokens.push(Token {
+                kind: TokenKind::Symbol('-'),
+                span: Span {
+                    line,
+                    col: start_col,
+                },
+                start,
+                end: i,
+            });
+            continue;
+        }
+
+        if ch == '%' {
+            let start = i;
+            let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '=' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::PercentEq,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
+            i += 1;
+            col += 1;
+            tokens.push(Token {
+                kind: TokenKind::Symbol('%'),
+                span: Span {
+                    line,
+                    col: start_col,
+                },
+                start,
+                end: i,
+            });
+            continue;
+        }
+
+        if ch == '?' {
+            let start = i;
+            let start_col = col;
+            if i + 1 < bytes.len() && bytes[i + 1] as char == '?' {
+                i += 2;
+                col += 2;
+                tokens.push(Token {
+                    kind: TokenKind::QuestionQuestion,
+                    span: Span {
+                        line,
+                        col: start_col,
+                    },
+                    start,
+                    end: i,
+                });
+                continue;
+            }
+            i += 1;
+            col += 1;
+            tokens.push(Token {
+                kind: TokenKind::Symbol('?'),
                 span: Span {
                     line,
                     col: start_col,
@@ -1123,5 +1315,76 @@ mod tests {
         let src = "x = \"\"\"hello\n\"\"\"";
         let tokens = lex(src).expect("should lex");
         assert_eq!(tokens[2].kind, TokenKind::StringLit("hello".to_string()));
+    }
+
+    #[test]
+    fn lexes_dot_dot() {
+        let tokens = lex("1..10").expect("should lex");
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(*kinds[0], TokenKind::Number("1".to_string()));
+        assert_eq!(*kinds[1], TokenKind::DotDot);
+        assert_eq!(*kinds[2], TokenKind::Number("10".to_string()));
+    }
+
+    #[test]
+    fn lexes_compound_assignment_operators() {
+        let tokens = lex("x += 1").expect("should lex");
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert!(matches!(kinds[0], TokenKind::Ident(s) if s == "x"));
+        assert_eq!(*kinds[1], TokenKind::PlusEq);
+        assert!(matches!(kinds[2], TokenKind::Number(s) if s == "1"));
+
+        let tokens = lex("x -= 2").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::MinusEq);
+
+        let tokens = lex("x *= 3").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::StarEq);
+
+        let tokens = lex("x /= 4").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::SlashEq);
+
+        let tokens = lex("x %= 5").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::PercentEq);
+    }
+
+    #[test]
+    fn lexes_plus_alone_still_works() {
+        let tokens = lex("a + b").expect("should lex");
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(*kinds[1], TokenKind::Symbol('+'));
+    }
+
+    #[test]
+    fn lexes_minus_alone_still_works() {
+        let tokens = lex("a - b").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::Symbol('-'));
+    }
+
+    #[test]
+    fn lexes_percent_alone_still_works() {
+        let tokens = lex("a % b").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::Symbol('%'));
+    }
+
+    #[test]
+    fn lexes_single_dot_unchanged() {
+        let tokens = lex("a.b").expect("should lex");
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(*kinds[1], TokenKind::Symbol('.'));
+    }
+
+    #[test]
+    fn lexes_question_question() {
+        let tokens = lex("a ?? b").expect("should lex");
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert!(matches!(kinds[0], TokenKind::Ident(s) if s == "a"));
+        assert_eq!(*kinds[1], TokenKind::QuestionQuestion);
+        assert!(matches!(kinds[2], TokenKind::Ident(s) if s == "b"));
+    }
+
+    #[test]
+    fn lexes_single_question_still_works() {
+        let tokens = lex("a ? b : c").expect("should lex");
+        assert_eq!(tokens[1].kind, TokenKind::Symbol('?'));
     }
 }

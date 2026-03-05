@@ -20,6 +20,8 @@ body
 done
 
 test Namespaces
-    r = Namespaces()
-    must str.contains(r, "obj")
+    it "works"
+        r = Namespaces()
+        must str.contains(r, "obj")
+    done
 done

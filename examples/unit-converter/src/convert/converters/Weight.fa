@@ -11,35 +11,21 @@ func Weight
     fail error as text
 body
     # Convert input to grams (base unit)
-    base = 0.0
-    case from
-        when "g"
-            base = value
-        when "kg"
-            base = value * 1000.0
-        when "lb"
-            base = value * 453.592
-        when "oz"
-            base = value * 28.3495
-        else
-            msg = "Unknown weight unit: #{from}"
-            fail msg
+    base = case from
+        when "g" then value
+        when "kg" then value * 1000.0
+        when "lb" then value * 453.592
+        when "oz" then value * 28.3495
+        else then fail "Unknown weight unit: #{from}"
     done
 
     # Convert from grams to target unit
-    output = 0.0
-    case to
-        when "g"
-            output = base
-        when "kg"
-            output = base / 1000.0
-        when "lb"
-            output = base / 453.592
-        when "oz"
-            output = base / 28.3495
-        else
-            msg = "Unknown weight unit: #{to}"
-            fail msg
+    output = case to
+        when "g" then base
+        when "kg" then base / 1000.0
+        when "lb" then base / 453.592
+        when "oz" then base / 28.3495
+        else then fail "Unknown weight unit: #{to}"
     done
 
     r = {input: value, output: output, from: from, to: to}
@@ -47,29 +33,31 @@ body
 done
 
 test Weight
-    # kg to lb
-    r1 = Weight(1.0, "kg", "lb")
-    out1 = obj.get(r1, "output")
-    rounded1 = math.round(out1, 4)
-    must rounded1 == 2.2046
+    it "works"
+        # kg to lb
+        r1 = Weight(1.0, "kg", "lb")
+        out1 = obj.get(r1, "output")
+        rounded1 = math.round(out1, 4)
+        must rounded1 == 2.2046
 
-    # lb to kg
-    r2 = Weight(1.0, "lb", "kg")
-    out2 = obj.get(r2, "output")
-    rounded2 = math.round(out2, 4)
-    must rounded2 == 0.4536
+        # lb to kg
+        r2 = Weight(1.0, "lb", "kg")
+        out2 = obj.get(r2, "output")
+        rounded2 = math.round(out2, 4)
+        must rounded2 == 0.4536
 
-    # oz to g
-    r3 = Weight(1.0, "oz", "g")
-    out3 = obj.get(r3, "output")
-    rounded3 = math.round(out3, 4)
-    must rounded3 == 28.3495
+        # oz to g
+        r3 = Weight(1.0, "oz", "g")
+        out3 = obj.get(r3, "output")
+        rounded3 = math.round(out3, 4)
+        must rounded3 == 28.3495
 
-    # kg to g
-    r4 = Weight(2.5, "kg", "g")
-    must obj.get(r4, "output") == 2500.0
+        # kg to g
+        r4 = Weight(2.5, "kg", "g")
+        must obj.get(r4, "output") == 2500.0
 
-    # Unknown unit
-    err = trap Weight(1.0, "xyz", "kg")
-    must str.contains(err, "Unknown weight unit")
+        # Unknown unit
+        err = trap Weight(1.0, "xyz", "kg")
+        must str.contains(err, "Unknown weight unit")
+    done
 done

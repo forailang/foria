@@ -16,6 +16,8 @@ done
 
 test main
     mock app.Compute => "mocked"
-    r = main()
-    must r == "mocked"
+    it "works"
+        r = main()
+        must r == "mocked"
+    done
 done

@@ -20,7 +20,9 @@ body
 done
 
 test Commands
-    # Source: reads from terminal — stub test, integration tested separately
-    ok = true
-    must ok == true
+    it "works"
+        # Source: reads from terminal — stub test, integration tested separately
+        ok = true
+        must ok == true
+    done
 done

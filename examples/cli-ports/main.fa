@@ -18,5 +18,7 @@ done
 test main
     mock Scan => true
     mock Display => true
-    _ = main()
+    it "works"
+        _ = main()
+    done
 done

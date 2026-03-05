@@ -39,7 +39,9 @@ body
 done
 
 test main
-    # Flow: runs HTTP server — stub test
-    ok = true
-    must ok == true
+    it "works"
+        # Flow: runs HTTP server — stub test
+        ok = true
+        must ok == true
+    done
 done

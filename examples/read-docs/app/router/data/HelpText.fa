@@ -17,6 +17,8 @@ body
 done
 
 test HelpText
-    r = HelpText()
-    must str.contains(r, "help")
+    it "works"
+        r = HelpText()
+        must str.contains(r, "help")
+    done
 done

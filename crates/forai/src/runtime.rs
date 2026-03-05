@@ -7,7 +7,7 @@ use crate::loader::FlowRegistry;
 use crate::types::TypeRegistry;
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rand::Rng;
+use rand::RngExt;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -1323,11 +1323,11 @@ pub(crate) async fn execute_op(
             if min > max {
                 return Err(format!("Op `{op}` min ({min}) > max ({max})"));
             }
-            let val = rand::thread_rng().gen_range(min..=max);
+            let val = rand::rng().random_range(min..=max);
             Ok(json!(val))
         }
         "random.float" => {
-            let val: f64 = rand::thread_rng().r#gen();
+            let val: f64 = rand::rng().random();
             Ok(json!(val))
         }
         "random.uuid" => Ok(json!(Uuid::new_v4().to_string())),
@@ -1336,15 +1336,15 @@ pub(crate) async fn execute_op(
             if arr.is_empty() {
                 return Err(format!("Op `{op}` cannot choose from empty list"));
             }
-            let idx = rand::thread_rng().gen_range(0..arr.len());
+            let idx = rand::rng().random_range(0..arr.len());
             Ok(arr[idx].clone())
         }
         "random.shuffle" => {
             let arr = read_array_arg(args, 0, op)?;
             let mut shuffled = arr.clone();
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             for i in (1..shuffled.len()).rev() {
-                let j = rng.gen_range(0..=i);
+                let j = rng.random_range(0..=i);
                 shuffled.swap(i, j);
             }
             Ok(Value::Array(shuffled))
@@ -1800,7 +1800,7 @@ pub(crate) async fn execute_op(
                 return Err(format!("Op `{op}` count must be 1–1024, got {count}"));
             }
             let mut buf = vec![0u8; count as usize];
-            rand::thread_rng().fill(&mut buf[..]);
+            rand::rng().fill(&mut buf[..]);
             let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
             Ok(json!(hex))
         }
@@ -2196,6 +2196,17 @@ fn eval_expr<'a>(
                     _ => Err(format!("Cannot index into {}", collection)),
                 }
             }
+            Expr::Coalesce { lhs, rhs } => {
+                let lhs_val = match lhs.as_ref() {
+                    Expr::Var(name) => resolve_var_path(vars, name).unwrap_or(serde_json::Value::Null),
+                    _ => eval_expr(lhs, vars, flow_registry, host, codecs).await?,
+                };
+                if lhs_val == serde_json::Value::Null {
+                    eval_expr(rhs, vars, flow_registry, host, codecs).await
+                } else {
+                    Ok(lhs_val)
+                }
+            }
         }
     })
 }
@@ -2209,6 +2220,7 @@ enum ExecSignal {
         value: Value,
     },
     Break,
+    LoopContinue,
 }
 
 fn to_json_object(map: &HashMap<String, Value>) -> Value {
@@ -2791,6 +2803,12 @@ fn execute_statements<'a>(
                     let mut matched = false;
                     for arm in &case_block.arms {
                         if forai_core::eval::pattern_matches(&subject, &arm.pattern) {
+                            if let Some(guard_expr) = &arm.guard {
+                                let guard_val = eval_expr(guard_expr, vars, flow_registry, host, codecs).await?;
+                                if !guard_val.as_bool().unwrap_or(false) {
+                                    continue;
+                                }
+                            }
                             matched = true;
                             match execute_statements(
                                 &arm.body,
@@ -2811,6 +2829,7 @@ fn execute_statements<'a>(
                                 ExecSignal::Continue => {}
                                 signal @ ExecSignal::Emit { .. } => return Ok(signal),
                                 ExecSignal::Break => return Ok(ExecSignal::Break),
+                                ExecSignal::LoopContinue => return Ok(ExecSignal::LoopContinue),
                             }
                             break;
                         }
@@ -2835,6 +2854,7 @@ fn execute_statements<'a>(
                             ExecSignal::Continue => {}
                             signal @ ExecSignal::Emit { .. } => return Ok(signal),
                             ExecSignal::Break => return Ok(ExecSignal::Break),
+                            ExecSignal::LoopContinue => return Ok(ExecSignal::LoopContinue),
                         }
                     }
                 }
@@ -2847,8 +2867,12 @@ fn execute_statements<'a>(
                     })?;
                     let items = items.clone();
                     let previous = vars.get(&loop_block.item).cloned();
-                    for item in &items {
+                    let prev_index = loop_block.index.as_ref().and_then(|idx| vars.get(idx).cloned());
+                    for (i, item) in items.iter().enumerate() {
                         vars.insert(loop_block.item.clone(), item.clone());
+                        if let Some(idx) = &loop_block.index {
+                            vars.insert(idx.clone(), serde_json::json!(i as i64));
+                        }
                         match execute_statements(
                             &loop_block.body,
                             vars,
@@ -2865,7 +2889,7 @@ fn execute_statements<'a>(
                         )
                         .await?
                         {
-                            ExecSignal::Continue => {}
+                            ExecSignal::Continue | ExecSignal::LoopContinue => {}
                             signal @ ExecSignal::Emit { .. } => return Ok(signal),
                             ExecSignal::Break => break,
                         }
@@ -2874,6 +2898,13 @@ fn execute_statements<'a>(
                         vars.insert(loop_block.item.clone(), prev);
                     } else {
                         vars.remove(&loop_block.item);
+                    }
+                    if let Some(idx) = &loop_block.index {
+                        if let Some(prev) = prev_index {
+                            vars.insert(idx.clone(), prev);
+                        } else {
+                            vars.remove(idx);
+                        }
                     }
                 }
                 Statement::Sync(sync_block) => {
@@ -2990,8 +3021,8 @@ fn execute_statements<'a>(
                                 Ok(signal @ ExecSignal::Emit { .. }) => {
                                     emit_signal = Some(signal);
                                 }
-                                Ok(ExecSignal::Break) => {
-                                    // Break inside sync statement — treat as continue
+                                Ok(ExecSignal::Break) | Ok(ExecSignal::LoopContinue) => {
+                                    // Break/continue inside sync statement — swallowed
                                 }
                                 Err(e) => {
                                     last_error = Some(e);
@@ -3095,6 +3126,9 @@ fn execute_statements<'a>(
                 Statement::Break => {
                     return Ok(ExecSignal::Break);
                 }
+                Statement::Continue => {
+                    return Ok(ExecSignal::LoopContinue);
+                }
                 Statement::BareLoop(block) => loop {
                     match execute_statements(
                         &block.body,
@@ -3112,7 +3146,7 @@ fn execute_statements<'a>(
                     )
                     .await?
                     {
-                        ExecSignal::Continue => {}
+                        ExecSignal::Continue | ExecSignal::LoopContinue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => break,
                     }
@@ -3158,7 +3192,7 @@ fn execute_statements<'a>(
                         )
                         .await?
                         {
-                            ExecSignal::Continue => {}
+                            ExecSignal::Continue | ExecSignal::LoopContinue => {}
                             signal @ ExecSignal::Emit { .. } => return Ok(signal),
                             ExecSignal::Break => break,
                         }
@@ -3207,7 +3241,7 @@ fn execute_statements<'a>(
                         )
                         .await?
                         {
-                            ExecSignal::Continue => {}
+                            ExecSignal::Continue | ExecSignal::LoopContinue => {}
                             signal @ ExecSignal::Emit { .. } => {
                                 if let Some(tx) = source_tx {
                                     if let ExecSignal::Emit { value, .. } = &signal {
@@ -3322,16 +3356,44 @@ async fn execute_flow_inner(
         if let Some(port) = flow.outputs.iter().find(|p| p.name == output) {
             let type_errors = registry.validate(&value, &port.type_name, &output);
             if !type_errors.is_empty() {
-                let msgs: Vec<_> = type_errors
-                    .iter()
-                    .map(|e| format!("{}: {}", e.path, e.message))
-                    .collect();
-                return Err(format!(
-                    "output `{}` does not conform to type `{}`: {}",
-                    output,
-                    port.type_name,
-                    msgs.join(", ")
-                ));
+                // Check if a fail port exists (second output by convention)
+                if let Some(fail_port) = flow.outputs.get(1).map(|p| p.name.clone()) {
+                    let error_details: Vec<Value> = type_errors
+                        .iter()
+                        .map(|e| {
+                            json!({
+                                "path": e.path,
+                                "constraint": e.constraint,
+                                "message": e.message
+                            })
+                        })
+                        .collect();
+                    let error_value = json!({
+                        "kind": "output_validation_error",
+                        "port": output,
+                        "errors": error_details
+                    });
+                    outputs.insert(fail_port, error_value);
+                    return Ok(RunReport {
+                        flow: flow.name.clone(),
+                        inputs: to_json_object(&inputs),
+                        outputs: Value::Object(outputs),
+                        trace,
+                        emits: emit_trace,
+                        ir,
+                    });
+                } else {
+                    let msgs: Vec<_> = type_errors
+                        .iter()
+                        .map(|e| format!("{}: {}", e.path, e.message))
+                        .collect();
+                    return Err(format!(
+                        "output `{}` does not conform to type `{}`: {}",
+                        output,
+                        port.type_name,
+                        msgs.join(", ")
+                    ));
+                }
             }
         }
         outputs.insert(output.clone(), value.clone());
@@ -3497,10 +3559,53 @@ done
             None,
             &CodecRegistry::default_registry(),
         );
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("should fail output validation"),
-        };
+        // With a fail port, output validation routes to fail instead of crashing
+        let report = result.expect("should route to fail port, not crash");
+        let outputs = report.outputs.as_object().unwrap();
+        assert!(outputs.contains_key("error"), "fail port should be populated: {outputs:?}");
+        let error_val = &outputs["error"];
+        assert_eq!(error_val["kind"], "output_validation_error");
+    }
+
+    #[test]
+    fn output_validation_crashes_without_fail_port() {
+        let src = r#"
+type StrictOut
+  status long :required => true
+  body text :required => true
+done
+
+docs NoFailFunc
+  Func without fail port emitting invalid output.
+done
+
+func NoFailFunc
+  take input as dict
+  emit response as StrictOut
+body
+  params = http.extract_params(input)
+  emit params
+done
+"#;
+        let module = parser::parse_module_v1(src).unwrap();
+        let registry = TypeRegistry::from_module(&module).unwrap();
+        let flow = parser::parse_runtime_func_from_module_v1(&module).unwrap();
+        let flow_ir = ir::lower_to_ir(&flow).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "input".to_string(),
+            serde_json::json!({"path": "/test", "params": {"a": "b"}}),
+        );
+        let result = test_execute_flow(
+            &flow,
+            flow_ir,
+            inputs,
+            &registry,
+            None,
+            &CodecRegistry::default_registry(),
+        );
+        // Without a fail port, output validation should hard crash
+        let err = result.unwrap_err();
         assert!(
             err.contains("does not conform to type"),
             "error should mention type conformance, got: {err}"
@@ -3627,16 +3732,16 @@ done
     fn build_sync_flow(sync_opts: &str) -> (Flow, Ir, TypeRegistry) {
         let src = format!(
             r#"
-type Req
+open type Req
   path text
   params dict
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -3704,15 +3809,15 @@ done
         // We use division by zero to trigger a failure in the sync body,
         // causing the bind variable to not be set, so the export is missing.
         let src = r#"
-type Req
+open type Req
   path text
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -3780,15 +3885,15 @@ done
     #[test]
     fn sync_timeout_enforced() {
         let src = r#"
-type Req
+open type Req
   path text
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -3836,16 +3941,16 @@ done
     #[test]
     fn stepping_pauses_after_each_node() {
         let src = r#"
-type Req
+open type Req
   path text
   params dict
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -3915,16 +4020,16 @@ done
     #[test]
     fn stepping_continue_runs_to_completion() {
         let src = r#"
-type Req
+open type Req
   path text
   params dict
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -3977,16 +4082,16 @@ done
     #[test]
     fn stepping_breakpoint_pauses_at_target() {
         let src = r#"
-type Req
+open type Req
   path text
   params dict
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -4080,16 +4185,16 @@ done
     #[test]
     fn stepping_set_breakpoints_updates() {
         let src = r#"
-type Req
+open type Req
   path text
   params dict
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -4515,6 +4620,32 @@ done
         assert_eq!(run_expr_value("_r = 5 > 3").unwrap(), json!(true));
     }
 
+    // --- S3: Numeric equality ---
+
+    #[test]
+    fn expr_int_float_equality() {
+        // 42 == 42.0 must be true (value-based, not structural)
+        assert_eq!(run_expr_value("_r = 42 == 42.0").unwrap(), json!(true));
+    }
+
+    #[test]
+    fn expr_zero_int_float_equality() {
+        assert_eq!(run_expr_value("_r = 0 == 0.0").unwrap(), json!(true));
+    }
+
+    #[test]
+    fn expr_int_float_inequality() {
+        // 42 != 42.0 must be false
+        assert_eq!(run_expr_value("_r = 42 != 42.0").unwrap(), json!(false));
+    }
+
+    #[test]
+    fn expr_cross_type_ordering() {
+        assert_eq!(run_expr_value("_r = 5 <= 5.0").unwrap(), json!(true));
+        assert_eq!(run_expr_value("_r = 5 >= 5.0").unwrap(), json!(true));
+        assert_eq!(run_expr_value("_r = 1 < 2.5").unwrap(), json!(true));
+    }
+
     #[test]
     fn expr_variable_path_in_expression() {
         assert_eq!(
@@ -4533,6 +4664,48 @@ done
     #[test]
     fn expr_power_operator() {
         assert_eq!(run_expr_value("_r = 2.0 ** 10.0").unwrap(), json!(1024.0));
+    }
+
+    // --- S2: Integer division preservation ---
+
+    #[test]
+    fn expr_integer_div_exact_preserves() {
+        let v = run_expr_value("_r = 10 / 2").unwrap();
+        assert_eq!(v, json!(5));
+        assert!(v.is_i64(), "10 / 2 should stay integer, got {v}");
+    }
+
+    #[test]
+    fn expr_integer_div_inexact_returns_float() {
+        let v = run_expr_value("_r = 7 / 2").unwrap();
+        assert_eq!(v, json!(3.5));
+    }
+
+    #[test]
+    fn expr_integer_div_then_equality() {
+        // The classic footgun: 10 / 2 == 5 must be true
+        let v = run_expr_value("_r = 10 / 2 == 5").unwrap();
+        assert_eq!(v, json!(true));
+    }
+
+    #[test]
+    fn expr_integer_pow_preserves() {
+        let v = run_expr_value("_r = 2 ** 10").unwrap();
+        assert_eq!(v, json!(1024));
+        assert!(v.is_i64(), "2 ** 10 should stay integer, got {v}");
+    }
+
+    #[test]
+    fn expr_negative_div_exact_preserves() {
+        let v = run_expr_value("_r = -10 / 2").unwrap();
+        assert_eq!(v, json!(-5));
+        assert!(v.is_i64());
+    }
+
+    #[test]
+    fn expr_negative_div_inexact_returns_float() {
+        let v = run_expr_value("_r = -7 / 2").unwrap();
+        assert_eq!(v, json!(-3.5));
     }
 
     #[test]
@@ -6189,15 +6362,15 @@ done
     #[test]
     fn send_nowait_continues_immediately() {
         let src = r#"
-type Req
+open type Req
   path text
 done
 
-type Resp
+open type Resp
   status long
 done
 
-type Err
+open type Err
   status long
 done
 
@@ -6246,15 +6419,15 @@ done
     #[test]
     fn send_nowait_with_expression_args() {
         let src = r#"
-type Req
+open type Req
   name text
 done
 
-type Resp
+open type Resp
   greeting text
 done
 
-type Err
+open type Err
   status long
 done
 

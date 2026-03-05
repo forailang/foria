@@ -11,5 +11,7 @@ done
 
 test main
     mock app.Hello => true
-    _ = main()
+    it "works"
+        _ = main()
+    done
 done

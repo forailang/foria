@@ -51,28 +51,30 @@ body
 done
 
 test Router
-    # Temperature dispatch
-    req1 = {value: 100.0, from: "c", to: "f"}
-    r1 = Router(req1)
-    must obj.get(r1, "output") == 212.0
+    it "works"
+        # Temperature dispatch
+        req1 = {value: 100.0, from: "c", to: "f"}
+        r1 = Router(req1)
+        must obj.get(r1, "output") == 212.0
 
-    # Distance dispatch
-    req2 = {value: 5.0, from: "km", to: "m"}
-    r2 = Router(req2)
-    must obj.get(r2, "output") == 5000.0
+        # Distance dispatch
+        req2 = {value: 5.0, from: "km", to: "m"}
+        r2 = Router(req2)
+        must obj.get(r2, "output") == 5000.0
 
-    # Weight dispatch
-    req3 = {value: 2.5, from: "kg", to: "g"}
-    r3 = Router(req3)
-    must obj.get(r3, "output") == 2500.0
+        # Weight dispatch
+        req3 = {value: 2.5, from: "kg", to: "g"}
+        r3 = Router(req3)
+        must obj.get(r3, "output") == 2500.0
 
-    # Mixed categories
-    req4 = {value: 1.0, from: "km", to: "kg"}
-    err1 = trap Router(req4)
-    must str.contains(err1, "Cannot convert between different categories")
+        # Mixed categories
+        req4 = {value: 1.0, from: "km", to: "kg"}
+        err1 = trap Router(req4)
+        must str.contains(err1, "Cannot convert between different categories")
 
-    # Unknown unit
-    req5 = {value: 1.0, from: "xyz", to: "km"}
-    err2 = trap Router(req5)
-    must str.contains(err2, "Unknown unit")
+        # Unknown unit
+        req5 = {value: 1.0, from: "xyz", to: "km"}
+        err2 = trap Router(req5)
+        must str.contains(err2, "Unknown unit")
+    done
 done

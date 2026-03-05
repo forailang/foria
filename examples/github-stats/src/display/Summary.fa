@@ -1,0 +1,88 @@
+docs Summary
+    Builds a text summary of fetched GitHub profiles.
+    Shows each user with index, name, repos, and followers,
+    plus totals at the end.
+done
+
+func Summary
+    take data as dict
+    emit result as text
+    fail error as text
+body
+    profiles = obj.get(data, "profiles")
+    errors = obj.get(data, "errors")
+    count = list.len(profiles)
+
+    if count == 0
+        msg = "No profiles fetched."
+        emit msg
+    done
+
+    lines = []
+    total_repos = 0
+    total_followers = 0
+
+    lines = list.append(lines, "=== GitHub Stats ===")
+    lines = list.append(lines, "")
+
+    loop profiles as p with index i
+        login = obj.get(p, "login")
+        name = obj.get(p, "name")
+        repos = obj.get(p, "public_repos")
+        followers = obj.get(p, "followers")
+        bio = obj.get(p, "bio")
+
+        num = i + 1
+        header = "#{num}. #{login} (#{name})"
+        lines = list.append(lines, header)
+
+        if str.len(bio) > 0
+            bio_line = "   Bio: #{bio}"
+            lines = list.append(lines, bio_line)
+        done
+
+        detail = "   Repos: #{repos} | Followers: #{followers}"
+        lines = list.append(lines, detail)
+        lines = list.append(lines, "")
+
+        total_repos += repos
+        total_followers += followers
+    done
+
+    lines = list.append(lines, "--- Totals ---")
+    totals = "#{count} users | #{total_repos} repos | #{total_followers} followers"
+    lines = list.append(lines, totals)
+
+    err_count = list.len(errors)
+    if err_count > 0
+        err_line = "(#{err_count} lookups failed)"
+        lines = list.append(lines, err_line)
+    done
+
+    out = str.join(lines, "\n")
+    emit out
+done
+
+test Summary
+    it "builds summary with multiple profiles"
+        data = {"profiles": [{"login": "alice", "name": "Alice A", "bio": "hacker", "public_repos": 10, "followers": 50}, {"login": "bob", "name": "Bob B", "bio": "", "public_repos": 20, "followers": 100}], "errors": []}
+        r = Summary(data)
+        must str.contains(r, "GitHub Stats")
+        must str.contains(r, "1. alice (Alice A)")
+        must str.contains(r, "Bio: hacker")
+        must str.contains(r, "2. bob (Bob B)")
+        must str.contains(r, "2 users | 30 repos | 150 followers")
+    done
+
+    it "handles empty profiles"
+        data = {"profiles": [], "errors": []}
+        r = Summary(data)
+        must r == "No profiles fetched."
+    done
+
+    it "shows error count"
+        data = {"profiles": [{"login": "alice", "name": "Alice", "bio": "", "public_repos": 5, "followers": 10}], "errors": [{"pos": 1, "username": "bad", "msg": "404"}]}
+        r = Summary(data)
+        must str.contains(r, "1 lookups failed")
+    done
+done

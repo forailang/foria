@@ -5,17 +5,14 @@ done
 
 sink Print
     take text as text
-    emit result as bool
-    fail error as text
 body
-    _ = term.print("")
-    _ = term.print(text)
-    ok = true
-    emit ok
+    term.print("")
+    term.print(text)
 done
 
 test Print
-    # Sink: outputs to terminal, verify it succeeds
-    r = Print("hello test")
-    must r == true
+    it "works"
+        Print("hello test")
+        must true
+    done
 done

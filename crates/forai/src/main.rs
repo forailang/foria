@@ -185,7 +185,7 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
             Statement::Sync(s) => collect_ops(&s.body, out),
             Statement::Emit(_) => {}
             Statement::SendNowait(sn) => out.push(sn.target.clone()),
-            Statement::Break => {}
+            Statement::Break | Statement::Continue => {}
             Statement::BareLoop(b) => collect_ops(&b.body, out),
             Statement::SourceLoop(sl) => {
                 out.push(sl.source_op.clone());
@@ -870,12 +870,15 @@ async fn run() -> Result<(), String> {
                     warnings.push(format!("{}:{w}", file.display()));
                 }
 
-                if let Err(errs) = types::TypeRegistry::from_module(&module) {
-                    for e in errs {
-                        errors.push(format!("{}:{e}", file.display()));
+                let type_registry = match types::TypeRegistry::from_module(&module) {
+                    Ok(r) => r,
+                    Err(errs) => {
+                        for e in errs {
+                            errors.push(format!("{}:{e}", file.display()));
+                        }
+                        continue;
                     }
-                    continue;
-                }
+                };
 
                 let mut file_ok = true;
                 for decl in &module.decls {
@@ -892,7 +895,7 @@ async fn run() -> Result<(), String> {
                                 }
                                 Ok(flow) => {
                                     if let Err(e) =
-                                        typecheck::typecheck_func(&f.name, &f.takes, &flow.body)
+                                        typecheck::typecheck_func(&f.name, &f.takes, &flow.body, &f.emits, &f.fails, &type_registry)
                                     {
                                         errors.push(format!("{}:{e}", file.display()));
                                         file_ok = false;
@@ -1299,7 +1302,7 @@ fn scaffold_new_project(name: &str) -> Result<(), String> {
     write_scaffold(&root, "lib/Greet.fa", greet_fa)?;
 
     // sinks/Print.fa
-    let print_fa = "docs Print\n    Prints a line of text to the terminal.\n\n    docs line\n        The text line to print.\n    done\ndone\n\nsink Print\n    take line as text\n    emit done as bool\n    fail error as text\nbody\n    _ = term.print(line)\n    ok = true\n    emit ok\ndone\n\ntest Print\n    r = Print(\"hello\")\n    must r == true\ndone\n";
+    let print_fa = "docs Print\n    Prints a line of text to the terminal.\n\n    docs line\n        The text line to print.\n    done\ndone\n\nsink Print\n    take line as text\nbody\n    term.print(line)\ndone\n\ntest Print\n    it \"works\"\n        Print(\"hello\")\n        must true\n    done\ndone\n";
     write_scaffold(&root, "sinks/Print.fa", print_fa)?;
 
     // sources/Events.fa

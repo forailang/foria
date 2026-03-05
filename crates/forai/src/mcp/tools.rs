@@ -283,12 +283,15 @@ async fn tool_check(args: &Value) -> CallToolResult {
         }
 
         // Type registry
-        if let Err(errors) = crate::types::TypeRegistry::from_module(&module) {
-            for e in errors {
-                diagnostics.push(format!("{}:{e}", file.display()));
+        let type_registry = match crate::types::TypeRegistry::from_module(&module) {
+            Ok(r) => r,
+            Err(errors) => {
+                for e in errors {
+                    diagnostics.push(format!("{}:{e}", file.display()));
+                }
+                continue;
             }
-            continue;
-        }
+        };
 
         // Per-file compilation: IR lowering + typecheck for each callable
         let mut file_ok = true;
@@ -308,7 +311,7 @@ async fn tool_check(args: &Value) -> CallToolResult {
                         }
                         Ok(flow) => {
                             if let Err(e) =
-                                crate::typecheck::typecheck_func(&f.name, &f.takes, &flow.body)
+                                crate::typecheck::typecheck_func(&f.name, &f.takes, &flow.body, &f.emits, &f.fails, &type_registry)
                             {
                                 diagnostics.push(format!("{}:{e}", file.display()));
                                 file_ok = false;

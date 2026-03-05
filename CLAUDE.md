@@ -67,7 +67,7 @@ The compiler pipeline is a linear chain through these modules:
 | **runtime** | `src/runtime.rs` | Async execution engine (`tokio` current_thread). Executes IR against inputs, produces `RunReport` with trace events. All I/O ops (HTTP, file, WebSocket, process) are non-blocking. `sync` blocks run statements concurrently via `join_all`. Built-in ops across 16+ namespaces (see below). Sub-flow dispatch via `FlowRegistry` with value mock support |
 | **deps** | `src/deps/` | External dependency system: `semver.rs` (version parsing/ranges), `source.rs` (dep source types: GitHub/File/Git), `fetch.rs` (git-based fetching/cache), `lockfile.rs` (forai.lock management), `resolve.rs` (dependency resolution orchestrator) |
 | **loader** | `src/loader.rs` | Module loader: resolves `uses` declarations and `@`-prefixed package imports, compiles funcs into `FlowProgram` entries, builds `FlowRegistry` for cross-module dispatch |
-| **tester** | `src/tester.rs` | Parses and runs `test` blocks from `.fa` files. Supports `must` assertions, `trap` for failure-path testing, `mock` for substituting sub-func calls, variable bindings |
+| **tester** | `src/tester.rs` | Parses and runs `test` blocks from `.fa` files. Each test requires `it` sub-cases for independent test scenarios. Supports shared setup (mocks/assignments before first `it`), per-`it` mock overrides, `must` assertions, `trap` for failure-path testing, variable bindings |
 | **debugger** | `src/debugger.rs` | WebSocket-based interactive debugger for the `dev` command. Step/continue/breakpoint/restart protocol with embedded HTML UI |
 | **doc** | `src/doc.rs` | Extracts structured documentation from modules for the `doc` command |
 | **cli** | `src/cli.rs` | Argument parsing for `compile`, `run`, `test`, `doc`, `dev` subcommands |
@@ -115,7 +115,7 @@ Key design note: the parser has two layers. First it parses the full module stru
 | `html.*` | `escape`, `unescape` | HTML entity escaping and unescaping |
 | `tmpl.*` | `render` | Mustache-style template rendering |
 
-Expressions in func bodies also support infix operators: `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` and unary `!` `-`. String concatenation uses `+`. Bracket indexing: `items[0]`, `items[-1]`, `row["key"]`.
+Expressions in func bodies also support infix operators: `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` `??` and unary `!` `-`. String concatenation uses `+`. Null-coalescing: `x ?? default` (returns LHS unless null/missing, then lazily evaluates RHS). Bracket indexing: `items[0]`, `items[-1]`, `row["key"]`.
 
 ## The `.fa` Language (v1 Syntax)
 
@@ -128,14 +128,14 @@ Source files use `.fa` extension. Comments start with `#`. Key constructs:
 - **flow**: `flow Name` with optional `take`/`emit`/`fail` header, `body`...`done` — step-based wiring of funcs/flows; body contains `step`, `branch`, `emit`/`fail` blocks. `branch when <expr>` is a conditional sub-pipeline; `branch` (unguarded) always runs. Flows may have zero ports (no take/emit/fail) — they are pure wiring
 - **uses**: `uses module` — imports a module directory; call as `module.FuncName(...)`. External package imports use `use Name from "@user/repo"` where the path matches a key in `forai.json` `dependencies`
 - **docs**: `docs Identifier`...`done` — required for every func, flow, sink, and test
-- **test**: `test Name`...`done` with `must` assertions, `trap` for failure paths, `mock` for substituting sub-func calls
+- **test**: `test Name`...`done` with `it "description"`...`done` sub-cases. Shared setup (mocks, assignments) before first `it` is cloned into each case. Per-`it` mocks override shared mocks. `must` assertions, `trap` for failure paths
 - **if/else if/else/done**: boolean conditional branching; condition is a full expression. Desugars to `case` at parse time
 - **case/when/else/done**: pattern matching; `when` accepts literals (`"text"`, `42`, `true`) and idents
 - **loop expr as item**...`done`: iteration over lists
 - **sync**: `[vars] = sync [:opts]`...`done [exports]` — runs body statements concurrently (`join_all`); each statement gets its own scope, so statements inside a sync block must be independent (no cross-references). Exports merge results back. Options: `:timeout`, `:retry`, `:safe`
 - **nowait / send nowait**: `nowait op(args)` for built-in ops, `send nowait Step(args)` for triggering a step (func/flow) — fire-and-forget async call. Starts the target as a background task and continues immediately. No result is captured. Errors are logged to stderr, not propagated
 - **type/data/enum**: type declarations with validation options (`:matches`, `:min`, `:required`); `open` modifier for extensible types
-- **mock**: `mock module.Func => expr` inside test blocks — substitutes sub-func calls with fixed values
+- **mock**: `mock module.Func => expr` in test shared setup or inside `it` blocks — substitutes sub-func calls with fixed values
 - **string interpolation**: `"Hello #{name}!"` — expressions in `#{}` are evaluated; `\n` `\t` `\\` `\"` `\#` escapes supported. Bare `{` `}` are literal (safe for regex quantifiers like `{4}`)
 
 ### IR lowerer scoping rules

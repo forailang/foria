@@ -1,0 +1,71 @@
+docs FetchAll
+    Fetches profiles for a list of usernames.
+    Skips blank entries. Returns a list of profiles
+    and a list of errors for any that failed.
+done
+
+func FetchAll
+    take usernames as list
+    emit result as dict
+    fail error as text
+body
+    profiles = []
+    errors = []
+
+    loop usernames as name with index i
+        trimmed = str.trim(name)
+
+        # skip blank entries
+        if str.len(trimmed) == 0
+            continue
+        done
+
+        url = "https://api.github.com/users/#{trimmed}"
+        resp = http.get(url)
+        status = obj.get(resp, "status")
+
+        if status != 200
+            entry = {pos: i, username: trimmed, msg: "status #{status}"}
+            errors = list.append(errors, entry)
+            continue
+        done
+
+        raw = obj.get(resp, "body")
+        data = json.decode(raw)
+
+        login = obj.get(data, "login")
+        pname = obj.get(data, "name") ?? "unknown"
+        bio = obj.get(data, "bio") ?? ""
+        repos = obj.get(data, "public_repos") ?? 0
+        fol = obj.get(data, "followers") ?? 0
+        profile = {login: login, name: pname, bio: bio, public_repos: repos, followers: fol}
+        profiles = list.append(profiles, profile)
+    done
+
+    out = {profiles: profiles, errors: errors}
+    emit out
+done
+
+test FetchAll
+    it "fetches profiles for valid usernames"
+        mock http.get => {status: 200, body: "{\"login\":\"alice\",\"name\":\"Alice\",\"bio\":\"dev\",\"public_repos\":10,\"followers\":50}"}
+        names = ["alice", "", "bob"]
+        r = FetchAll(names)
+        p = obj.get(r, "profiles")
+        # "alice" succeeds; "" skipped via continue; "bob" also succeeds (same mock)
+        must list.len(p) == 2
+        # blank was skipped
+        errs = obj.get(r, "errors")
+        must list.len(errs) == 0
+    done
+
+    it "records errors for failed fetches"
+        mock http.get => {status: 404, body: ""}
+        names = ["missing"]
+        r = FetchAll(names)
+        p = obj.get(r, "profiles")
+        must list.len(p) == 0
+        errs = obj.get(r, "errors")
+        must list.len(errs) == 1
+    done
+done

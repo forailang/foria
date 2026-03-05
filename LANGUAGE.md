@@ -88,7 +88,7 @@ body
     count = list.len(rows)
     case count
       when 0
-        _ = time.sleep(3)
+        time.sleep(3)
       else
         job = rows[0]
         result = {type: "queued", job: job}
@@ -148,8 +148,8 @@ sink Print
   emit result as bool
   fail error as text
 body
-  _ = term.print("")
-  _ = term.print(text)
+  term.print("")
+  term.print(text)
   ok = true
   emit ok
 done
@@ -196,7 +196,7 @@ done
 - `next :output_port to wire_name` — bind a callee's output to a local wire
 - `emit wire to :flow_output` — send a wire's value to the flow's output port
 - `fail wire to :flow_output` — send a wire's value to the flow's failure port
-- `state x = op(...)` — initialize a shared resource (runs once)
+- `state x = op(...)` or `state x = <literal>` — initialize a shared variable (runs once)
 - `send nowait Module.Func()` — fire-and-forget a background task
 - `branch when <expr> ... done` — conditional sub-pipeline (runs body only if true)
 - `branch ... done` — unguarded sub-pipeline (always runs)
@@ -211,21 +211,24 @@ done
 **Rule of thumb**: if all inputs to the call are literals or other `state` vars, use `state`. If any input is a runtime wire, use `step`.
 
 ```
-# WRONG — literals are not valid as state RHS directly:
+# Literals are valid as state RHS:
 state label = "jobs"
+state count = 0
+state users = ["alice", "bob"]
+state cfg = {host: "localhost", port: 8080}
 
-# RIGHT — literals go inside op calls:
-state parts0 = list.new()
-state parts1 = list.append(parts0, "/jobs/")   # depends only on state vars → state
+# Op calls work too:
+state conn = db.open(":memory:")
+state parts = list.new()
 ```
 
 **Building a path from a runtime value** (e.g., a redirect URL including a job ID):
 
 ```
 # The static prefix is state; the part that uses a runtime wire is step
-state parts0 = list.new()
-state parts1 = list.append(parts0, "/jobs/")
-step list.append(parts1 to :l, job_id to :item) then   # job_id is a runtime wire
+state prefix = "/jobs/"
+state parts = [prefix]
+step list.append(parts to :l, job_id to :item) then   # job_id is a runtime wire
   next :result to parts2
 done
 step str.join(parts2 to :l, "" to :sep) then
@@ -241,6 +244,7 @@ This pattern appears in every HTTP route that needs a redirect or a constructed 
 
 There are no bare expressions. Every line is one of:
 - `var = expression` — assignment
+- `var: TypeName = expression` — assignment with type annotation
 - `emit var` / `return var` — success output
 - `fail var` — failure output
 - `if`/`case`/`loop`/`sync`/`break` — control flow
@@ -253,6 +257,39 @@ There are no bare expressions. Every line is one of:
 # RIGHT - assign it:
 _ = 0
 ```
+
+### Compound Assignment
+
+Compound assignment operators update a variable in-place:
+
+```
+count = 0
+count += 1       # count = count + 1
+count -= 1       # count = count - 1
+count *= 2       # count = count * 2
+count /= 3       # count = count / 3
+count %= 4       # count = count % 4
+```
+
+`+=` works for string concatenation too:
+
+```
+msg = "hello"
+msg += " world"  # "hello world"
+```
+
+Only simple variable names are supported — dotted paths (`obj.field += 1`) are not.
+
+### Type Annotations on Assignments
+
+You can optionally annotate assignments with an explicit type. The compiler checks the annotation against the inferred type and reports mismatches at compile time:
+
+```
+count: long = str.len(name)
+label: text = "hello"
+```
+
+Type annotations are purely for documentation and compile-time validation — they don't change runtime behavior. If the inferred type doesn't match the annotation, the compiler reports an error.
 
 ### emit/fail/return Require Variables
 
@@ -269,9 +306,17 @@ emit ok
 
 **Operators** (standard precedence): `+` `-` `*` `/` `%` `**` `==` `!=` `<` `>` `<=` `>=` `&&` `||` `!`
 
-All arithmetic uses infix operators — there are no `math.add`, `math.divide`, etc. ops. Use `math.floor` and `math.round` for rounding.
+All arithmetic uses infix operators — there are no `math.add`, `math.divide`, etc. ops. Use `math.floor` and `math.round` for rounding. Integer preservation: when both operands are integers and the result is exact, the result stays integer (`10 / 2` → `5`, `2 ** 3` → `8`). Inexact results become float (`7 / 2` → `3.5`).
 
 **Ternary**: `result = condition ? "yes" : "no"`
+
+**Null-coalescing** (`??`): returns LHS unless it's null/missing, then evaluates RHS:
+```
+timeout = obj.get(config, "timeout") ?? 30
+name = obj.get(row, "display_name") ?? obj.get(row, "username") ?? "anonymous"
+```
+
+Only `null`/void triggers the fallback — `false`, `0`, `""` are kept. RHS is lazy (not evaluated if LHS is non-null).
 
 **String interpolation**: `msg = "Hello #{name}, you have #{count} items"`
 
@@ -354,6 +399,54 @@ case method
 done
 ```
 
+**OR patterns** — match multiple values:
+```
+case answer
+  when "yes" | "y" | "true"
+    confirmed = true
+  when "no" | "n" | "false"
+    confirmed = false
+done
+```
+
+**Range patterns** — `lo..hi` (inclusive lo, exclusive hi):
+```
+case score
+  when 90..101
+    grade = "A"
+  when 80..90
+    grade = "B"
+  when 70..80
+    grade = "C"
+  else
+    grade = "F"
+done
+```
+
+**Type patterns** — match by runtime type:
+```
+case value
+  when :text
+    kind = "string"
+  when :long | :real
+    kind = "number"
+  when :list
+    kind = "collection"
+done
+```
+
+**Guard clauses** — `if` after pattern adds a condition:
+```
+case score
+  when _ if score >= 90
+    grade = "A"
+  when _ if score >= 70
+    grade = "C"
+  else
+    grade = "F"
+done
+```
+
 `break` is valid inside a `when` arm and exits the enclosing loop:
 ```
 loop
@@ -362,7 +455,7 @@ loop
     when "done"
       break
     when "continue"
-      _ = term.print("keep going")
+      term.print("keep going")
   done
 done
 ```
@@ -371,11 +464,34 @@ done
 ```
 items = list.range(0, 10)
 loop items as i
-  _ = term.print("Item #{i}")
+  term.print("Item #{i}")
 done
 ```
 
 The collection must be a variable — `loop list.range(0,10) as i` is invalid. Assign it first.
+
+**loop with index** — access the 0-based iteration index:
+```
+items = list.range(10, 13)
+loop items as val with index i
+  term.print("#{i}: #{val}")
+done
+# prints: 0: 10, 1: 11, 2: 12
+```
+
+The index variable is scoped to the loop body and does not leak outside.
+
+**continue** — skip to next iteration:
+```
+loop items as item
+  if item == "skip"
+    continue
+  done
+  term.print("Processing #{item}")
+done
+```
+
+Works in both collection and bare loops. Applies to the innermost loop.
 
 **loop** (bare/infinite):
 ```
@@ -503,6 +619,16 @@ type User
 done
 ```
 
+**Open struct** (allows extra fields beyond the declared schema):
+```
+open type Config
+  host text
+  port long
+done
+```
+
+Closed structs (the default) reject any field not in the schema during validation. Open structs accept extra fields — useful for extensible data like HTTP requests or configuration objects. All built-in struct types (`HttpRequest`, `Date`, `ProcessOutput`, etc.) are open.
+
 **Enum:**
 ```
 enum Role
@@ -511,6 +637,18 @@ enum Role
   Guest
 done
 ```
+
+**Open enum** (accepts any string, not just declared variants):
+```
+open enum LogLevel
+  Debug
+  Info
+  Warn
+  Error
+done
+```
+
+Closed enums (the default) only accept declared variant strings. Open enums accept any string value — the declared variants serve as documentation of known values.
 
 Primitive types: `text`, `bool`, `long` (i64), `real` (f64), `uuid`, `time`, `list`, `dict`, `void`, `db_conn`, `http_server`, `http_conn`, `ws_conn`.
 
@@ -569,31 +707,60 @@ done
 
 ### Tests
 
+Test blocks use `it` sub-cases. Shared setup (mocks, assignments) before the first `it` is cloned into each case's scope. Each `it` runs independently.
+
 ```
-docs TestClassify
+docs Classify
   Verifies command classification.
 done
 
-test TestClassify
-  must Classify("help") == "help"
-  must Classify("quit") == "quit"
+test Classify
+  it "recognizes help command"
+    must Classify("help") == "help"
+  done
+
+  it "recognizes quit command"
+    must Classify("quit") == "quit"
+  done
 done
 ```
 
 **Failure testing** with `trap`:
 ```
-test BadInput
-  err = trap Validate(bad_data)
-  must err == "invalid"
+test Validate
+  it "rejects bad input"
+    err = trap Validate(bad_data)
+    must err == "invalid"
+  done
 done
 ```
 
-**Mocking** sub-calls:
+**Mocking** sub-calls (shared mocks apply to all `it` blocks):
 ```
-test Mocked
+test Process
   mock api.Fetch => {status: 200}
-  result = Process(input)
-  must result.ok == true
+
+  it "processes input"
+    result = Process(input)
+    must result.ok == true
+  done
+done
+```
+
+Per-`it` mocks override shared mocks for that case only:
+```
+test FetchAll
+  it "fetches profiles"
+    mock http.get => {status: 200, body: "..."}
+    r = FetchAll(["alice"])
+    must list.len(obj.get(r, "profiles")) == 1
+  done
+
+  it "records errors"
+    mock http.get => {status: 404, body: ""}
+    r = FetchAll(["missing"])
+    must list.len(obj.get(r, "errors")) == 1
+  done
 done
 ```
 
@@ -602,7 +769,9 @@ done
 ```
 # WRONG — checker silently rejects this test and reports the flow as untested:
 test CreateJob
-  ...
+  it "works"
+    ...
+  done
 done
 
 # RIGHT — explicit docs block disambiguates:
@@ -611,7 +780,9 @@ docs CreateJob
 done
 
 test CreateJob
-  ...
+  it "works"
+    ...
+  done
 done
 ```
 
@@ -750,7 +921,7 @@ body
 
   response = {id: id, name: name, email: email}
   body_text = json.encode(response)
-  _ = http.respond.json(conn_id, 200, body_text)
+  http.respond.json(conn_id, 200, body_text)
   ok2 = true
   emit ok2
 done
@@ -762,7 +933,7 @@ The `http.respond.*` ops accept an optional 4th argument — a dict of extra res
 
 ```
 hdrs = {"Set-Cookie": "session=abc123; HttpOnly", "Cache-Control": "no-store"}
-_ = http.respond.json(conn_id, 200, body_text, hdrs)
+http.respond.json(conn_id, 200, body_text, hdrs)
 ```
 
 ### Database Operations

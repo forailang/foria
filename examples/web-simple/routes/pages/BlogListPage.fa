@@ -18,12 +18,14 @@ body
 done
 
 test BlogListPage
-    p1 = obj("slug", "a", "title", "A")
-    p2 = obj("slug", "b", "title", "B")
-    posts = pair(p1, p2)
-    r = BlogListPage(posts)
-    must str.contains(r, "/blog/a")
-    must str.contains(r, "/blog/b")
-    must str.contains(r, "A")
-    must str.contains(r, "B")
+    it "works"
+        p1 = obj("slug", "a", "title", "A")
+        p2 = obj("slug", "b", "title", "B")
+        posts = pair(p1, p2)
+        r = BlogListPage(posts)
+        must str.contains(r, "/blog/a")
+        must str.contains(r, "/blog/b")
+        must str.contains(r, "A")
+        must str.contains(r, "B")
+    done
 done

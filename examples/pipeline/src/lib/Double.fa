@@ -16,6 +16,8 @@ body
 done
 
 test Double
-    r = Double(1.5)
-    must r == 3.0
+    it "works"
+        r = Double(1.5)
+        must r == 3.0
+    done
 done

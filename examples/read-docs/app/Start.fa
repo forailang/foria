@@ -77,6 +77,8 @@ done
 done
 
 test Start
-    ok = true
-    must ok == true
+    it "works"
+        ok = true
+        must ok == true
+    done
 done

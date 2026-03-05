@@ -16,7 +16,9 @@ body
 done
 
 test SevenLess
-    r = SevenLess(1.0)
-    must r > 0.29
-    must r < 0.31
+    it "works"
+        r = SevenLess(1.0)
+        must r > 0.29
+        must r < 0.31
+    done
 done

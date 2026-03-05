@@ -34,9 +34,11 @@ body
 done
 
 test BlogPostPage
-    post = obj("title", "Test", "content", "Content here")
-    r = BlogPostPage(post)
-    must str.contains(r, "Test")
-    must str.contains(r, "Content here")
-    must str.contains(r, "/blog")
+    it "works"
+        post = obj("title", "Test", "content", "Content here")
+        r = BlogPostPage(post)
+        must str.contains(r, "Test")
+        must str.contains(r, "Content here")
+        must str.contains(r, "/blog")
+    done
 done

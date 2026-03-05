@@ -196,6 +196,8 @@ pub enum Expr {
     Ternary { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
     ListLit(Vec<Expr>),
     DictLit(Vec<(String, Expr)>),
+    Index { expr: Box<Expr>, index: Box<Expr> },
+    Coalesce { lhs: Box<Expr>, rhs: Box<Expr> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +210,9 @@ pub struct ExprAssign {
 pub enum Pattern {
     Ident(String),
     Lit(Value),
+    Or(Vec<Pattern>),
+    Range { lo: i64, hi: i64 },
+    Type(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +232,7 @@ pub struct Emit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseArm {
     pub pattern: Pattern,
+    pub guard: Option<Expr>,
     pub body: Vec<Statement>,
 }
 
@@ -241,6 +247,7 @@ pub struct CaseBlock {
 pub struct LoopBlock {
     pub collection: Expr,
     pub item: String,
+    pub index: Option<String>,
     pub body: Vec<Statement>,
 }
 
@@ -288,6 +295,7 @@ pub enum Statement {
     Sync(SyncBlock),
     SendNowait(SendNowait),
     Break,
+    Continue,
     BareLoop(BareLoopBlock),
     SourceLoop(SourceLoopBlock),
 }
@@ -300,6 +308,7 @@ pub struct FlowStateDecl {
     pub bind: String,
     pub callee: String,
     pub args: Vec<Arg>,
+    pub value: Option<Expr>,
     pub span: Span,
 }
 

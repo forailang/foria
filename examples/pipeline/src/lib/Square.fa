@@ -16,8 +16,10 @@ body
 done
 
 test Square
-    r = Square(5.0)
-    must r == 25.0
-    s = Square(0.0)
-    must s == 0.0
+    it "works"
+        r = Square(5.0)
+        must r == 25.0
+        s = Square(0.0)
+        must s == 0.0
+    done
 done

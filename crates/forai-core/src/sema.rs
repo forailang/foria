@@ -60,20 +60,20 @@ fn test_hint(kind: &str, name: &str, takes: &[TakeDecl]) -> String {
         return format!(
             "{kind} `{name}` has no test block. Add a test block after the {kind}:\n\n\
              \x20\x20\x20\x20test {name}\n\
-             \x20\x20\x20\x20    # mock dependencies if needed\n\
-             \x20\x20\x20\x20    # mock module.Func => value\n\
-             \x20\x20\x20\x20    r = {call}\n\
-             \x20\x20\x20\x20    must r == true\n\
+             \x20\x20\x20\x20    it \"works correctly\"\n\
+             \x20\x20\x20\x20        {call}\n\
+             \x20\x20\x20\x20        must true\n\
+             \x20\x20\x20\x20    done\n\
              \x20\x20\x20\x20done"
         );
     }
     format!(
         "{kind} `{name}` has no test block. Add a test block after the {kind}:\n\n\
          \x20\x20\x20\x20test {name}\n\
-         \x20\x20\x20\x20    # mock dependencies if needed\n\
-         \x20\x20\x20\x20    # mock module.Func => value\n\
-         \x20\x20\x20\x20    result = {call}\n\
-         \x20\x20\x20\x20    must result == <expected>\n\
+         \x20\x20\x20\x20    it \"works correctly\"\n\
+         \x20\x20\x20\x20        result = {call}\n\
+         \x20\x20\x20\x20        must result == <expected>\n\
+         \x20\x20\x20\x20    done\n\
          \x20\x20\x20\x20done"
     )
 }
@@ -542,7 +542,9 @@ body
 done
 
 test LoginFunc
-  result = LoginFunc(request)
+  it "works"
+    result = LoginFunc(request)
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -637,7 +639,9 @@ body
 done
 
 test Foo
-  r = Foo(x)
+  it "works"
+    r = Foo(x)
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -649,10 +653,8 @@ done
         let src = r#"
 sink Greet
   take name as Text
-  emit greeting as Text
-  fail error as Error
 body
-  emit name
+  term.print(name)
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -696,10 +698,8 @@ done
 
 sink main
   take input as Foo
-  emit y as HttpResponse
-  fail e as AuthError
 body
-  emit y
+  term.print(input)
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -731,7 +731,9 @@ body
 done
 
 test main
-  _ = main(x)
+  it "works"
+    _ = main(x)
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -747,14 +749,15 @@ done
 
 sink Greet
   take name as Text
-  emit greeting as Text
-  fail error as Error
 body
-  emit name
+  term.print(name)
 done
 
 test Greet
-  r = Greet(name)
+  it "works"
+    Greet(name)
+    must true
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -884,7 +887,9 @@ body
 done
 
 test Compute
-  r = Compute(42)
+  it "works"
+    r = Compute(42)
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -1001,7 +1006,9 @@ body
 done
 
 test HTTPRequests
-  r = HTTPRequests(8080)
+  it "works"
+    r = HTTPRequests(8080)
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -1099,7 +1106,9 @@ done
 
 test main
   mock app.Start => true
-  _ = main()
+  it "works"
+    _ = main()
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -1126,8 +1135,10 @@ docs Start
 done
 
 test Start
-  ok = true
-  must ok == true
+  it "works"
+    ok = true
+    must ok == true
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
@@ -1160,8 +1171,10 @@ docs Start
 done
 
 test Start
-  result = Start()
-  must result == "ok"
+  it "works"
+    result = Start()
+    must result == "ok"
+  done
 done
 "#;
         let module = parse_module_v1(src).expect("parse");

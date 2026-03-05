@@ -39,7 +39,7 @@ fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
             Statement::Sync(s) => collect_ops(&s.body, out),
             Statement::Emit(_) => {}
             Statement::SendNowait(sn) => out.push(sn.target.clone()),
-            Statement::Break => {}
+            Statement::Break | Statement::Continue => {}
             Statement::BareLoop(b) => collect_ops(&b.body, out),
             Statement::SourceLoop(sl) => {
                 out.push(sl.source_op.clone());
@@ -66,6 +66,92 @@ pub struct TestSummary {
     pub failed: usize,
     pub failures: Vec<TestFailure>,
     pub warnings: Vec<String>,
+}
+
+struct ItBlock {
+    description: String,
+    body: String,
+    #[allow(dead_code)]
+    line_offset: usize,
+}
+
+struct ItResult {
+    description: String,
+    elapsed_ms: u128,
+    result: Result<(), String>,
+}
+
+fn extract_it_blocks(body: &str) -> Result<(String, Vec<ItBlock>), String> {
+    let it_re = Regex::new(r#"^it\s+"([^"]+)"\s*$"#).unwrap();
+    let mut setup_lines = Vec::new();
+    let mut blocks = Vec::new();
+    let mut current_desc: Option<String> = None;
+    let mut current_body: Vec<String> = Vec::new();
+    let mut current_offset = 0usize;
+    let mut found_first_it = false;
+
+    for (idx, raw) in body.lines().enumerate() {
+        let line = raw.trim();
+
+        if let Some(caps) = it_re.captures(line) {
+            if let Some(desc) = current_desc.take() {
+                // Strip trailing blank lines, then remove closing "done"
+                while current_body.last().is_some_and(|l| l.trim().is_empty()) {
+                    current_body.pop();
+                }
+                if current_body.last().is_some_and(|l| l.trim() == "done") {
+                    current_body.pop();
+                }
+                blocks.push(ItBlock {
+                    description: desc,
+                    body: current_body.join("\n"),
+                    line_offset: current_offset,
+                });
+                current_body.clear();
+            }
+            current_desc = Some(caps.get(1).unwrap().as_str().to_string());
+            current_offset = idx;
+            found_first_it = true;
+            continue;
+        }
+
+        if !found_first_it {
+            // Before first `it` — this is shared setup
+            setup_lines.push(raw.to_string());
+        } else if current_desc.is_some() {
+            // Inside an `it` block
+            current_body.push(raw.to_string());
+        } else {
+            // Between `it` blocks — only allow comments/blanks
+            if !line.is_empty() && !line.starts_with('#') {
+                return Err(format!(
+                    "line {}: content outside `it` block: `{line}`",
+                    idx + 1
+                ));
+            }
+        }
+    }
+
+    // Close last it block
+    if let Some(desc) = current_desc.take() {
+        while current_body.last().is_some_and(|l| l.trim().is_empty()) {
+            current_body.pop();
+        }
+        if current_body.last().is_some_and(|l| l.trim() == "done") {
+            current_body.pop();
+        }
+        blocks.push(ItBlock {
+            description: desc,
+            body: current_body.join("\n"),
+            line_offset: current_offset,
+        });
+    }
+
+    if blocks.is_empty() {
+        return Err("test block has no `it` sub-cases".to_string());
+    }
+
+    Ok((setup_lines.join("\n"), blocks))
 }
 
 enum FlowCallResult {
@@ -451,8 +537,10 @@ async fn invoke_flow(
     }
 }
 
-async fn run_test_body(
+async fn execute_lines(
     body: &str,
+    env: &mut HashMap<String, Value>,
+    mocks: &HashMap<String, serde_json::Value>,
     flows: &HashMap<String, FlowProgram>,
     flow_registry: Option<&FlowRegistry>,
     quiet: bool,
@@ -465,28 +553,9 @@ async fn run_test_body(
         Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\((.*)\)$").unwrap();
     let assign_re = Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$").unwrap();
 
-    // First pass: collect mock declarations
-    let empty_env = HashMap::new();
-    let mut mocks = HashMap::<String, serde_json::Value>::new();
-    for (idx, raw) in body.lines().enumerate() {
-        let line_no = idx + 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(caps) = mock_re.captures(line) {
-            let name = caps.get(1).unwrap().as_str().to_string();
-            let expr = caps.get(2).unwrap().as_str();
-            let value = eval_value_expr(expr, &empty_env)
-                .await
-                .map_err(|e| format!("line {line_no}: mock value error: {e}"))?;
-            mocks.insert(name, value);
-        }
-    }
-
     // Build effective registry with mocks overlaid
     let mocked_registry = if !mocks.is_empty() {
-        flow_registry.map(|fr| fr.with_value_mocks(mocks))
+        flow_registry.map(|fr| fr.with_value_mocks(mocks.clone()))
     } else {
         None
     };
@@ -495,9 +564,6 @@ async fn run_test_body(
         None => flow_registry,
     };
 
-    // Second pass: execute non-mock lines
-    let mut env = HashMap::<String, Value>::new();
-
     for (idx, raw) in body.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw.trim();
@@ -505,13 +571,13 @@ async fn run_test_body(
             continue;
         }
 
-        // Skip mock lines (already processed in first pass)
+        // Skip mock lines (collected separately)
         if mock_re.is_match(line) {
             continue;
         }
 
         if let Some(expr) = line.strip_prefix("must ") {
-            let ok = eval_must(expr, &env)
+            let ok = eval_must(expr, env)
                 .await
                 .map_err(|e| format!("line {line_no}: must evaluation error: {e}"))?;
             if !ok {
@@ -525,7 +591,7 @@ async fn run_test_body(
             let flow_name = caps.get(2).unwrap().as_str();
             let args_raw = caps.get(3).unwrap().as_str();
             let arg_exprs = split_csv(args_raw);
-            match invoke_flow(flow_name, &arg_exprs, &env, flows, effective_registry, quiet)
+            match invoke_flow(flow_name, &arg_exprs, env, flows, effective_registry, quiet)
                 .await
                 .map_err(|e| format!("line {line_no}: {e}"))?
             {
@@ -548,7 +614,7 @@ async fn run_test_body(
             let arg_exprs = split_csv(args_raw);
 
             if flows.contains_key(callee) {
-                match invoke_flow(callee, &arg_exprs, &env, flows, effective_registry, quiet)
+                match invoke_flow(callee, &arg_exprs, env, flows, effective_registry, quiet)
                     .await
                     .map_err(|e| format!("line {line_no}: {e}"))?
                 {
@@ -569,7 +635,7 @@ async fn run_test_body(
                 let mut args = Vec::with_capacity(arg_exprs.len());
                 for a in &arg_exprs {
                     args.push(
-                        eval_value_expr(a, &env)
+                        eval_value_expr(a, env)
                             .await
                             .map_err(|e| format!("line {line_no}: op arg error: {e}"))?,
                     );
@@ -587,7 +653,7 @@ async fn run_test_body(
         if let Some(caps) = assign_re.captures(line) {
             let var = caps.get(1).unwrap().as_str().to_string();
             let expr = caps.get(2).unwrap().as_str();
-            let value = eval_value_expr(expr, &env)
+            let value = eval_value_expr(expr, env)
                 .await
                 .map_err(|e| format!("line {line_no}: assignment error: {e}"))?;
             env.insert(var, value);
@@ -597,27 +663,48 @@ async fn run_test_body(
         // Bare op call (no assignment): e.g. log.info("message")
         if let Some((op_name, rest)) = line.split_once('(') {
             let op_name = op_name.trim();
-            if rest.ends_with(')') && op_name.contains('.') {
+            if rest.ends_with(')') {
                 let args_raw = &rest[..rest.len() - 1];
-                let args: Vec<Value> = if args_raw.trim().is_empty() {
-                    vec![]
-                } else {
-                    let mut v = Vec::new();
-                    for a in split_csv(args_raw) {
-                        v.push(
-                            eval_value_expr(&a, &env)
-                                .await
-                                .map_err(|e| format!("line {line_no}: op arg error: {e}"))?,
-                        );
+
+                // Bare flow/func call (void): e.g. Print("hello")
+                if !op_name.contains('.') && flows.contains_key(op_name) {
+                    let arg_exprs = split_csv(args_raw);
+                    match invoke_flow(op_name, &arg_exprs, env, flows, effective_registry, quiet)
+                        .await
+                        .map_err(|e| format!("line {line_no}: {e}"))?
+                    {
+                        FlowCallResult::Success(_) => {}
+                        FlowCallResult::Failure(err) => {
+                            return Err(format!(
+                                "line {line_no}: flow `{op_name}` failed unexpectedly: {err}"
+                            ));
+                        }
                     }
-                    v
-                };
-                let h = NativeHost::new();
-                let codecs = CodecRegistry::default_registry();
-                runtime::execute_op(op_name, &args, &h, &codecs)
-                    .await
-                    .map_err(|e| format!("line {line_no}: op `{op_name}` failed: {e}"))?;
-                continue;
+                    continue;
+                }
+
+                // Bare built-in op call: e.g. log.info("message")
+                if op_name.contains('.') {
+                    let args: Vec<Value> = if args_raw.trim().is_empty() {
+                        vec![]
+                    } else {
+                        let mut v = Vec::new();
+                        for a in split_csv(args_raw) {
+                            v.push(
+                                eval_value_expr(&a, env)
+                                    .await
+                                    .map_err(|e| format!("line {line_no}: op arg error: {e}"))?,
+                            );
+                        }
+                        v
+                    };
+                    let h = NativeHost::new();
+                    let codecs = CodecRegistry::default_registry();
+                    runtime::execute_op(op_name, &args, &h, &codecs)
+                        .await
+                        .map_err(|e| format!("line {line_no}: op `{op_name}` failed: {e}"))?;
+                    continue;
+                }
             }
         }
 
@@ -625,6 +712,72 @@ async fn run_test_body(
     }
 
     Ok(())
+}
+
+async fn collect_mocks_from_lines_async(
+    body: &str,
+) -> Result<HashMap<String, serde_json::Value>, String> {
+    let mock_re = Regex::new(r"^mock\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=>\s*(.+)$").unwrap();
+    let empty_env = HashMap::new();
+    let mut mocks = HashMap::new();
+
+    for (idx, raw) in body.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(caps) = mock_re.captures(line) {
+            let name = caps.get(1).unwrap().as_str().to_string();
+            let expr = caps.get(2).unwrap().as_str();
+            let value = eval_value_expr(expr, &empty_env)
+                .await
+                .map_err(|e| format!("line {line_no}: mock value error: {e}"))?;
+            mocks.insert(name, value);
+        }
+    }
+    Ok(mocks)
+}
+
+async fn run_test_body(
+    body: &str,
+    flows: &HashMap<String, FlowProgram>,
+    flow_registry: Option<&FlowRegistry>,
+    quiet: bool,
+) -> Result<Vec<ItResult>, String> {
+    let (setup, it_blocks) = extract_it_blocks(body)?;
+
+    // Execute shared setup to collect env and mocks
+    let shared_mocks = collect_mocks_from_lines_async(&setup).await?;
+    let mut shared_env = HashMap::<String, Value>::new();
+    execute_lines(&setup, &mut shared_env, &shared_mocks, flows, flow_registry, quiet).await?;
+
+    let mut results = Vec::with_capacity(it_blocks.len());
+
+    for it in &it_blocks {
+        let start = Instant::now();
+
+        // Clone shared state for this it block
+        let mut env = shared_env.clone();
+        let mut mocks = shared_mocks.clone();
+
+        // Collect per-it mocks and merge (override shared)
+        let it_mocks = collect_mocks_from_lines_async(&it.body).await?;
+        for (k, v) in it_mocks {
+            mocks.insert(k, v);
+        }
+
+        let result =
+            execute_lines(&it.body, &mut env, &mocks, flows, flow_registry, quiet).await;
+
+        results.push(ItResult {
+            description: it.description.clone(),
+            elapsed_ms: start.elapsed().as_millis(),
+            result,
+        });
+    }
+
+    Ok(results)
 }
 
 fn collect_fa_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -852,30 +1005,52 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
             .unwrap_or("unknown");
 
         for test in tests {
-            summary.total += 1;
-            let start = Instant::now();
             match run_test_body(&test.body_text, &flows, Some(&flow_registry), quiet).await {
-                Ok(()) => {
-                    summary.passed += 1;
-                    if !quiet {
-                        println!(
-                            "PASS  {}.{}   ({}ms)",
-                            file_label,
-                            test.name,
-                            start.elapsed().as_millis()
-                        );
+                Ok(it_results) => {
+                    for it in &it_results {
+                        summary.total += 1;
+                        match &it.result {
+                            Ok(()) => {
+                                summary.passed += 1;
+                                if !quiet {
+                                    println!(
+                                        "PASS  {}.{} > {}   ({}ms)",
+                                        file_label, test.name, it.description, it.elapsed_ms
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                summary.failed += 1;
+                                if !quiet {
+                                    let doc_hint = docs_map
+                                        .get(&test.name)
+                                        .and_then(|s| s.lines().next())
+                                        .unwrap_or("(no docs)");
+                                    println!(
+                                        "FAIL  {}.{} > {}",
+                                        file_label, test.name, it.description
+                                    );
+                                    println!("      > {}", err);
+                                    println!("      > {}", doc_hint);
+                                }
+                                summary.failures.push(TestFailure {
+                                    name: format!(
+                                        "{}.{} > {}",
+                                        file_label, test.name, it.description
+                                    ),
+                                    error: err.clone(),
+                                });
+                            }
+                        }
                     }
                 }
                 Err(err) => {
+                    // Structural error (e.g. no `it` blocks found)
+                    summary.total += 1;
                     summary.failed += 1;
                     if !quiet {
-                        let doc_hint = docs_map
-                            .get(&test.name)
-                            .and_then(|s| s.lines().next())
-                            .unwrap_or("(no docs)");
                         println!("FAIL  {}.{}", file_label, test.name);
                         println!("      > {}", err);
-                        println!("      > {}", doc_hint);
                     }
                     summary.failures.push(TestFailure {
                         name: format!("{}.{}", file_label, test.name),
@@ -952,8 +1127,10 @@ body
 done
 
 test Top
-  result = Top()
-  must result == true
+  it "works"
+    result = Top()
+    must result == true
+  done
 done
 "#;
         let child = r#"
@@ -970,8 +1147,10 @@ body
 done
 
 test Child
-  result = Child()
-  must result == true
+  it "works"
+    result = Child()
+    must result == true
+  done
 done
 "#;
 
@@ -1011,8 +1190,10 @@ body
 done
 
 test TopLevel
-  result = TopLevel()
-  must result == true
+  it "works"
+    result = TopLevel()
+    must result == true
+  done
 done
 "#;
         let deep_file = r#"
@@ -1029,8 +1210,10 @@ body
 done
 
 test Deep
-  result = Deep()
-  must result == true
+  it "works"
+    result = Deep()
+    must result == true
+  done
 done
 "#;
 

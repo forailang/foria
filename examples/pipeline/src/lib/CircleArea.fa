@@ -22,9 +22,11 @@ body
 done
 
 test CircleArea
-    r = CircleArea(1.0)
-    must r > 3.14
-    must r < 3.15
-    err = trap CircleArea(-1.0)
-    must err == "radius must be non-negative"
+    it "works"
+        r = CircleArea(1.0)
+        must r > 3.14
+        must r < 3.15
+        err = trap CircleArea(-1.0)
+        must err == "radius must be non-negative"
+    done
 done

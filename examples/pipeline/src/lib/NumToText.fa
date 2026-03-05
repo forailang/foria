@@ -16,6 +16,8 @@ body
 done
 
 test NumToText
-    r = NumToText(3.14)
-    must r == "Number: 3.14"
+    it "works"
+        r = NumToText(3.14)
+        must r == "Number: 3.14"
+    done
 done

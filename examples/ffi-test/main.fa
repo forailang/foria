@@ -16,5 +16,7 @@ done
 test main
     mock CheckFfi => "done"
     mock Output => true
-    _ = main()
+    it "works"
+        _ = main()
+    done
 done

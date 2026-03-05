@@ -18,7 +18,7 @@ body
         len = ffi.c.strlen("hello world")
         emit "strlen of 'hello world': #{len}"
     else
-        _ = term.print("libc available: #{available}")
+        term.print("libc available: #{available}")
         emit "libc not available"
     done
 done
@@ -27,6 +27,8 @@ test CheckFfi
     mock ffi.available => true
     mock ffi.c.strlen => 11
     mock term.print => true
-    r = CheckFfi()
-    must r == "strlen of 'hello world': 11"
+    it "works"
+        r = CheckFfi()
+        must r == "strlen of 'hello world': 11"
+    done
 done

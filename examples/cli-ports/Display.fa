@@ -6,94 +6,84 @@ done
 
 sink Display
     take ports as list
-    emit result as bool
-    fail error as text
 body
     count = list.len(ports)
     if count == 0
-        _ = term.print("No listening ports found.")
-        ok = true
-        emit ok
+        term.print("No listening ports found.")
+    else
+        # Measure column widths
+        pw = 4
+        pidw = 3
+        loop ports as entry
+            pl = str.len(obj.get(entry, "port"))
+            if pl > pw
+                pw = pl
+            done
+            pidl = str.len(obj.get(entry, "pid"))
+            if pidl > pidw
+                pidw = pidl
+            done
+        done
+
+        # Add gutter
+        pw = pw + 2
+        pidw = pidw + 2
+
+        total = pw + pidw + 7
+        rule = str.repeat("─", total)
+
+        term.print("")
+        term.color("  Listening Ports", "white")
+        term.print("  #{rule}")
+
+        port_hdr_pad = str.repeat(" ", pw - 4)
+        pid_hdr_pad = str.repeat(" ", pidw - 3)
+        header = "  PORT#{port_hdr_pad}PID#{pid_hdr_pad}COMMAND"
+        term.print(header)
+        term.print("  #{rule}")
+
+        loop ports as entry
+            port = obj.get(entry, "port")
+            pid = obj.get(entry, "pid")
+            command = obj.get(entry, "command")
+
+            port_gap = pw - str.len(port)
+            if port_gap < 1
+                port_gap = 1
+            done
+            port_pad = str.repeat(" ", port_gap)
+
+            pid_gap = pidw - str.len(pid)
+            if pid_gap < 1
+                pid_gap = 1
+            done
+            pid_pad = str.repeat(" ", pid_gap)
+
+            row = "  #{port}#{port_pad}#{pid}#{pid_pad}#{command}"
+            term.color(row, "cyan")
+        done
+
+        term.print("  #{rule}")
+        term.print("  #{to.text(count)} port(s) listening")
+        term.print("")
     done
-
-    # Measure column widths
-    pw = 4
-    pidw = 3
-    loop ports as entry
-        pl = str.len(obj.get(entry, "port"))
-        if pl > pw
-            pw = pl
-        done
-        pidl = str.len(obj.get(entry, "pid"))
-        if pidl > pidw
-            pidw = pidl
-        done
-    done
-
-    # Add gutter
-    pw = pw + 2
-    pidw = pidw + 2
-
-    total = pw + pidw + 7
-    rule = str.repeat("─", total)
-
-    _ = term.print("")
-    _ = term.color("  Listening Ports", "white")
-    _ = term.print("  #{rule}")
-
-    port_hdr_pad = str.repeat(" ", pw - 4)
-    pid_hdr_pad = str.repeat(" ", pidw - 3)
-    header = "  PORT#{port_hdr_pad}PID#{pid_hdr_pad}COMMAND"
-    _ = term.print(header)
-    _ = term.print("  #{rule}")
-
-    loop ports as entry
-        port = obj.get(entry, "port")
-        pid = obj.get(entry, "pid")
-        command = obj.get(entry, "command")
-
-        port_gap = pw - str.len(port)
-        if port_gap < 1
-            port_gap = 1
-        done
-        port_pad = str.repeat(" ", port_gap)
-
-        pid_gap = pidw - str.len(pid)
-        if pid_gap < 1
-            pid_gap = 1
-        done
-        pid_pad = str.repeat(" ", pid_gap)
-
-        row = "  #{port}#{port_pad}#{pid}#{pid_pad}#{command}"
-        _ = term.color(row, "cyan")
-    done
-
-    _ = term.print("  #{rule}")
-    _ = term.print("  #{to.text(count)} port(s) listening")
-    _ = term.print("")
-
-    ok = true
-    emit ok
 done
 
 test Display
     mock term.print => true
     mock term.color => true
-    e1 = obj("port", "3000", "command", "node", "pid", "1234")
-    e2 = obj("port", "80", "command", "nginx", "pid", "5678")
-    entries = pair(e1, e2)
-    ok = Display(entries)
-    must ok == true
-done
 
-docs Display_empty
-    Verifies that Display handles an empty port list gracefully.
-done
+    it "formats port table"
+        e1 = obj("port", "3000", "command", "node", "pid", "1234")
+        e2 = obj("port", "80", "command", "nginx", "pid", "5678")
+        entries = pair(e1, e2)
+        Display(entries)
+        must true
+    done
 
-test Display_empty
-    mock term.print => true
-    mock term.color => true
-    entries = list()
-    ok = Display(entries)
-    must ok == true
+    it "handles empty port list"
+        entries = list()
+        Display(entries)
+        must true
+    done
 done

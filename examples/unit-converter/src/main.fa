@@ -33,7 +33,9 @@ test main
     mock convert.Router => {input: 100.0, output: 62.1371, from: "km", to: "mi"}
     mock display.Format => "100 km = 62.1371 mi"
     mock display.Print => true
-    _ = main()
-    ok = true
-    must ok == true
+    it "works"
+        _ = main()
+        ok = true
+        must ok == true
+    done
 done

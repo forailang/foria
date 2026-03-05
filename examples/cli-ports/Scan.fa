@@ -51,7 +51,9 @@ body
 done
 
 test Scan
-    # Scan calls exec.run("lsof") which requires system access — stub test
-    ok = true
-    must ok == true
+    it "works"
+        # Scan calls exec.run("lsof") which requires system access — stub test
+        ok = true
+        must ok == true
+    done
 done

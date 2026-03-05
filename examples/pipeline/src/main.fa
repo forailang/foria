@@ -53,5 +53,7 @@ test main
     mock lib.Square => 5625.0
     mock lib.NumToText => "5625"
     mock sinks.Print => true
-    _ = main()
+    it "works"
+        _ = main()
+    done
 done

@@ -139,6 +139,9 @@ fn expr_to_text(expr: &Expr) -> String {
         Expr::Index { expr, index } => {
             format!("{}[{}]", expr_to_text(expr), expr_to_text(index))
         }
+        Expr::Coalesce { lhs, rhs } => {
+            format!("({} ?? {})", expr_to_text(lhs), expr_to_text(rhs))
+        }
     }
 }
 
@@ -146,6 +149,9 @@ fn pattern_to_text(pattern: &Pattern) -> String {
     match pattern {
         Pattern::Ident(v) => v.clone(),
         Pattern::Lit(v) => v.to_string(),
+        Pattern::Or(alts) => alts.iter().map(pattern_to_text).collect::<Vec<_>>().join(" | "),
+        Pattern::Range { lo, hi } => format!("{lo}..{hi}"),
+        Pattern::Type(t) => format!(":{t}"),
     }
 }
 
@@ -190,6 +196,10 @@ fn collect_expr_vars(expr: &Expr, out: &mut Vec<String>) {
         Expr::Index { expr, index } => {
             collect_expr_vars(expr, out);
             collect_expr_vars(index, out);
+        }
+        Expr::Coalesce { lhs, rhs } => {
+            collect_expr_vars(lhs, out);
+            collect_expr_vars(rhs, out);
         }
     }
 }
@@ -388,10 +398,11 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                 Statement::Case(case_block) => {
                     let expr_text = expr_to_text(&case_block.expr);
                     for arm in &case_block.arms {
-                        let cond = combine_cond(
-                            condition,
-                            &format!("case({expr_text} == {})", pattern_to_text(&arm.pattern)),
-                        );
+                        let mut arm_cond = format!("case({expr_text} == {})", pattern_to_text(&arm.pattern));
+                        if let Some(guard) = &arm.guard {
+                            arm_cond = format!("{arm_cond} && {}", expr_to_text(guard));
+                        }
+                        let cond = combine_cond(condition, &arm_cond);
                         walk(
                             &arm.body,
                             Some(&cond),
@@ -416,12 +427,18 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                     }
                 }
                 Statement::Loop(loop_block) => {
+                    let index_suffix = if let Some(idx) = &loop_block.index {
+                        format!(" with index {}", idx)
+                    } else {
+                        String::new()
+                    };
                     let cond = combine_cond(
                         condition,
                         &format!(
-                            "loop({} as {})",
+                            "loop({} as {}{})",
                             expr_to_text(&loop_block.collection),
-                            loop_block.item
+                            loop_block.item,
+                            index_suffix
                         ),
                     );
                     let mut loop_scope = local_scope.clone();
@@ -432,6 +449,15 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                             id: loop_block.item.clone(),
                         },
                     );
+                    if let Some(idx) = &loop_block.index {
+                        loop_scope.insert(
+                            idx.clone(),
+                            Producer {
+                                kind: "loop_index".to_string(),
+                                id: idx.clone(),
+                            },
+                        );
+                    }
                     walk(
                         &loop_block.body,
                         Some(&cond),
@@ -479,7 +505,7 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                         when: condition.unwrap_or("true").to_string(),
                     });
                 }
-                Statement::Break => {
+                Statement::Break | Statement::Continue => {
                     // runtime-only; IR is a static graph, no-op
                 }
                 Statement::BareLoop(block) => {

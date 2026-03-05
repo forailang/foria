@@ -17,7 +17,9 @@ body
 done
 
 test Input
-    # Source: reads from terminal — stub test
-    ok = true
-    must ok == true
+    it "works"
+        # Source: reads from terminal — stub test
+        ok = true
+        must ok == true
+    done
 done

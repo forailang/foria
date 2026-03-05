@@ -1,7 +1,7 @@
 use crate::codec::CodecRegistry;
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rand::Rng;
+use rand::RngExt;
 use regex::Regex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
@@ -1288,11 +1288,11 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             if min > max {
                 return Err(format!("Op `{op}` min ({min}) > max ({max})"));
             }
-            let val = rand::thread_rng().gen_range(min..=max);
+            let val = rand::rng().random_range(min..=max);
             Ok(json!(val))
         }
         "random.float" => {
-            let val: f64 = rand::thread_rng().r#gen();
+            let val: f64 = rand::rng().random();
             Ok(json!(val))
         }
         "random.uuid" => Ok(json!(Uuid::new_v4().to_string())),
@@ -1301,15 +1301,15 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             if arr.is_empty() {
                 return Err(format!("Op `{op}` cannot choose from empty list"));
             }
-            let idx = rand::thread_rng().gen_range(0..arr.len());
+            let idx = rand::rng().random_range(0..arr.len());
             Ok(arr[idx].clone())
         }
         "random.shuffle" => {
             let arr = read_array_arg(args, 0, op)?;
             let mut shuffled = arr.clone();
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             for i in (1..shuffled.len()).rev() {
-                let j = rng.gen_range(0..=i);
+                let j = rng.random_range(0..=i);
                 shuffled.swap(i, j);
             }
             Ok(Value::Array(shuffled))
@@ -1760,7 +1760,7 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 return Err(format!("Op `{op}` count must be 1–1024, got {count}"));
             }
             let mut buf = vec![0u8; count as usize];
-            rand::thread_rng().fill(&mut buf[..]);
+            rand::rng().fill(&mut buf[..]);
             let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
             Ok(json!(hex))
         }

@@ -10,11 +10,13 @@ body
     b = 20
     c = a + b
     msg = "hello from wasm: " + to.text(c)
-    _ = log.info(msg)
+    log.info(msg)
     emit msg
 done
 
 test Compute
-    r = Compute()
-    must r != ""
+    it "works"
+        r = Compute()
+        must r != ""
+    done
 done

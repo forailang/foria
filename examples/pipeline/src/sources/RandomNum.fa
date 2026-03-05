@@ -16,7 +16,9 @@ body
 done
 
 test RandomNum
-    r = RandomNum()
-    must r >= 0.0
-    must r <= 100.0
+    it "works"
+        r = RandomNum()
+        must r >= 0.0
+        must r <= 100.0
+    done
 done

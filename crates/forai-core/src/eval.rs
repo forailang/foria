@@ -149,6 +149,26 @@ pub fn pattern_matches(value: &Value, pattern: &Pattern) -> bool {
                 false
             }
         }
+        Pattern::Or(alts) => alts.iter().any(|p| pattern_matches(value, p)),
+        Pattern::Range { lo, hi } => {
+            if let Some(n) = value.as_i64() {
+                n >= *lo && n < *hi
+            } else if let Some(f) = value.as_f64() {
+                f >= *lo as f64 && f < *hi as f64
+            } else {
+                false
+            }
+        }
+        Pattern::Type(t) => match t.as_str() {
+            "text" => value.is_string(),
+            "bool" => value.is_boolean(),
+            "long" => value.is_i64(),
+            "real" => value.is_f64(),
+            "list" => value.is_array(),
+            "dict" => value.is_object(),
+            "void" => value.is_null(),
+            _ => false,
+        },
     }
 }
 
@@ -304,8 +324,42 @@ mod tests {
     }
 
     #[test]
+    fn div_negative_exact_preserves_integer() {
+        let r = eval_binop(BinOp::Div, &json!(-10), &json!(2)).unwrap();
+        assert_eq!(r, json!(-5));
+        assert!(r.is_i64(), "-10 / 2 should stay integer");
+    }
+
+    #[test]
+    fn div_negative_inexact_returns_float() {
+        // -7 / 2 → -3.5 (no floor/truncation — exact float result)
+        let r = eval_binop(BinOp::Div, &json!(-7), &json!(2)).unwrap();
+        assert_eq!(r, json!(-3.5));
+    }
+
+    #[test]
+    fn div_mixed_int_float_returns_float() {
+        // When one operand is float, result is always float
+        let r = eval_binop(BinOp::Div, &json!(10), &json!(2.0)).unwrap();
+        assert_eq!(r.as_f64().unwrap(), 5.0);
+        assert!(!r.is_i64(), "10 / 2.0 should be float (mixed operands)");
+    }
+
+    #[test]
     fn div_by_zero_errors() {
         assert!(eval_binop(BinOp::Div, &json!(10), &json!(0)).is_err());
+    }
+
+    #[test]
+    fn div_by_zero_float_errors() {
+        assert!(eval_binop(BinOp::Div, &json!(10), &json!(0.0)).is_err());
+    }
+
+    #[test]
+    fn div_large_exact_preserves_integer() {
+        let r = eval_binop(BinOp::Div, &json!(1000000), &json!(1000)).unwrap();
+        assert_eq!(r, json!(1000));
+        assert!(r.is_i64());
     }
 
     // --- Power: integer preservation ---
@@ -318,9 +372,36 @@ mod tests {
     }
 
     #[test]
+    fn pow_large_integer_preserves() {
+        let r = eval_binop(BinOp::Pow, &json!(2), &json!(10)).unwrap();
+        assert_eq!(r, json!(1024));
+        assert!(r.is_i64());
+    }
+
+    #[test]
+    fn pow_negative_base_preserves_integer() {
+        let r = eval_binop(BinOp::Pow, &json!(-2), &json!(3)).unwrap();
+        assert_eq!(r, json!(-8));
+        assert!(r.is_i64());
+    }
+
+    #[test]
+    fn pow_zero_exponent_preserves_integer() {
+        let r = eval_binop(BinOp::Pow, &json!(5), &json!(0)).unwrap();
+        assert_eq!(r, json!(1));
+        assert!(r.is_i64());
+    }
+
+    #[test]
     fn pow_fractional_returns_float() {
         let r = eval_binop(BinOp::Pow, &json!(2), &json!(-1)).unwrap();
         assert_eq!(r, json!(0.5));
+    }
+
+    #[test]
+    fn pow_mixed_float_returns_float() {
+        let r = eval_binop(BinOp::Pow, &json!(4.0), &json!(0.5)).unwrap();
+        assert_eq!(r, json!(2.0));
     }
 
     // --- Modulo ---
@@ -363,6 +444,47 @@ mod tests {
         assert_eq!(eval_binop(BinOp::Eq, &json!("a"), &json!("b")).unwrap(), json!(false));
     }
 
+    #[test]
+    fn eq_zero_int_float() {
+        // 0 == 0.0 must be true
+        assert_eq!(eval_binop(BinOp::Eq, &json!(0), &json!(0.0)).unwrap(), json!(true));
+    }
+
+    #[test]
+    fn eq_negative_int_float() {
+        assert_eq!(eval_binop(BinOp::Eq, &json!(-5), &json!(-5.0)).unwrap(), json!(true));
+    }
+
+    #[test]
+    fn neq_different_values_int_float() {
+        // 5 != 6.0 must be true
+        assert_eq!(eval_binop(BinOp::Neq, &json!(5), &json!(6.0)).unwrap(), json!(true));
+    }
+
+    #[test]
+    fn eq_float_float() {
+        assert_eq!(eval_binop(BinOp::Eq, &json!(3.14), &json!(3.14)).unwrap(), json!(true));
+        assert_eq!(eval_binop(BinOp::Eq, &json!(3.14), &json!(3.15)).unwrap(), json!(false));
+    }
+
+    #[test]
+    fn eq_different_types_not_equal() {
+        // string "42" != number 42
+        assert_eq!(eval_binop(BinOp::Eq, &json!("42"), &json!(42)).unwrap(), json!(false));
+    }
+
+    #[test]
+    fn eq_bool_not_equal_to_number() {
+        assert_eq!(eval_binop(BinOp::Eq, &json!(true), &json!(1)).unwrap(), json!(false));
+        assert_eq!(eval_binop(BinOp::Eq, &json!(false), &json!(0)).unwrap(), json!(false));
+    }
+
+    #[test]
+    fn eq_null_values() {
+        assert_eq!(eval_binop(BinOp::Eq, &json!(null), &json!(null)).unwrap(), json!(true));
+        assert_eq!(eval_binop(BinOp::Eq, &json!(null), &json!(0)).unwrap(), json!(false));
+    }
+
     // --- Division then equality (the classic footgun) ---
 
     #[test]
@@ -370,6 +492,35 @@ mod tests {
         let div = eval_binop(BinOp::Div, &json!(10), &json!(2)).unwrap();
         let eq = eval_binop(BinOp::Eq, &div, &json!(5)).unwrap();
         assert_eq!(eq, json!(true));
+    }
+
+    // --- Ordering: cross-type numeric comparison ---
+
+    #[test]
+    fn lt_int_float_cross_type() {
+        assert_eq!(eval_binop(BinOp::Lt, &json!(1), &json!(2.5)).unwrap(), json!(true));
+        assert_eq!(eval_binop(BinOp::Gt, &json!(3), &json!(2.5)).unwrap(), json!(true));
+    }
+
+    #[test]
+    fn lteq_int_float_equal_value() {
+        assert_eq!(eval_binop(BinOp::LtEq, &json!(5), &json!(5.0)).unwrap(), json!(true));
+        assert_eq!(eval_binop(BinOp::GtEq, &json!(5), &json!(5.0)).unwrap(), json!(true));
+    }
+
+    // --- Pattern matching: value-based numeric comparison ---
+
+    #[test]
+    fn pattern_lit_int_matches_float_value() {
+        // case 42.0 / when 42 should match
+        assert!(pattern_matches(&json!(42.0), &Pattern::Lit(json!(42))));
+        assert!(pattern_matches(&json!(42), &Pattern::Lit(json!(42.0))));
+    }
+
+    #[test]
+    fn pattern_lit_zero_int_matches_float() {
+        assert!(pattern_matches(&json!(0), &Pattern::Lit(json!(0.0))));
+        assert!(pattern_matches(&json!(0.0), &Pattern::Lit(json!(0))));
     }
 
     // --- Ordering: numbers and strings ---
@@ -559,5 +710,110 @@ mod tests {
         assert_eq!(value_to_string(&json!(3.14)), "3.14");
         assert_eq!(value_to_string(&json!(true)), "true");
         assert_eq!(value_to_string(&json!(null)), "null");
+    }
+
+    // --- OR pattern ---
+
+    #[test]
+    fn pattern_or_matches() {
+        let pat = Pattern::Or(vec![
+            Pattern::Lit(json!("yes")),
+            Pattern::Lit(json!("y")),
+            Pattern::Lit(json!("true")),
+        ]);
+        assert!(pattern_matches(&json!("yes"), &pat));
+        assert!(pattern_matches(&json!("y"), &pat));
+        assert!(pattern_matches(&json!("true"), &pat));
+        assert!(!pattern_matches(&json!("no"), &pat));
+    }
+
+    // --- Range pattern ---
+
+    #[test]
+    fn pattern_range_inclusive_lo_exclusive_hi() {
+        let pat = Pattern::Range { lo: 90, hi: 101 };
+        assert!(pattern_matches(&json!(90), &pat));
+        assert!(pattern_matches(&json!(100), &pat));
+        assert!(!pattern_matches(&json!(101), &pat));
+        assert!(!pattern_matches(&json!(89), &pat));
+    }
+
+    #[test]
+    fn pattern_range_float_value() {
+        let pat = Pattern::Range { lo: 0, hi: 10 };
+        assert!(pattern_matches(&json!(5.5), &pat));
+        assert!(!pattern_matches(&json!(10.0), &pat));
+        assert!(pattern_matches(&json!(0.0), &pat));
+    }
+
+    #[test]
+    fn pattern_range_negative_bounds() {
+        let pat = Pattern::Range { lo: -10, hi: 0 };
+        assert!(pattern_matches(&json!(-10), &pat));
+        assert!(pattern_matches(&json!(-1), &pat));
+        assert!(!pattern_matches(&json!(0), &pat));
+    }
+
+    #[test]
+    fn pattern_range_non_number_no_match() {
+        let pat = Pattern::Range { lo: 0, hi: 10 };
+        assert!(!pattern_matches(&json!("5"), &pat));
+    }
+
+    // --- Type pattern ---
+
+    #[test]
+    fn pattern_type_text() {
+        let pat = Pattern::Type("text".to_string());
+        assert!(pattern_matches(&json!("hello"), &pat));
+        assert!(!pattern_matches(&json!(42), &pat));
+    }
+
+    #[test]
+    fn pattern_type_bool() {
+        let pat = Pattern::Type("bool".to_string());
+        assert!(pattern_matches(&json!(true), &pat));
+        assert!(!pattern_matches(&json!(1), &pat));
+    }
+
+    #[test]
+    fn pattern_type_long() {
+        let pat = Pattern::Type("long".to_string());
+        assert!(pattern_matches(&json!(42), &pat));
+        assert!(!pattern_matches(&json!(3.14), &pat));
+    }
+
+    #[test]
+    fn pattern_type_real() {
+        let pat = Pattern::Type("real".to_string());
+        assert!(pattern_matches(&json!(3.14), &pat));
+        assert!(!pattern_matches(&json!(42), &pat));
+    }
+
+    #[test]
+    fn pattern_type_list() {
+        let pat = Pattern::Type("list".to_string());
+        assert!(pattern_matches(&json!([1, 2]), &pat));
+        assert!(!pattern_matches(&json!("list"), &pat));
+    }
+
+    #[test]
+    fn pattern_type_dict() {
+        let pat = Pattern::Type("dict".to_string());
+        assert!(pattern_matches(&json!({"a": 1}), &pat));
+        assert!(!pattern_matches(&json!([1]), &pat));
+    }
+
+    #[test]
+    fn pattern_type_void() {
+        let pat = Pattern::Type("void".to_string());
+        assert!(pattern_matches(&json!(null), &pat));
+        assert!(!pattern_matches(&json!(0), &pat));
+    }
+
+    #[test]
+    fn pattern_type_unknown_no_match() {
+        let pat = Pattern::Type("unknown".to_string());
+        assert!(!pattern_matches(&json!("anything"), &pat));
     }
 }

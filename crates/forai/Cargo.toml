@@ -9,21 +9,21 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time", "net", "io-util", "fs", "process", "macros", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-tokio-tungstenite = "0.24"
+reqwest = { version = "0.13", features = ["json"] }
+tokio-tungstenite = "0.28"
 futures = "0.3"
-tungstenite = "0.24"
-crossterm = "0.28"
+tungstenite = "0.28"
+crossterm = "0.29"
 uuid = { version = "1", features = ["v4"] }
-rand = "0.8"
+rand = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
-bcrypt = "0.16"
-rusqlite = { version = "0.31", features = ["bundled"] }
-wasmtime = "29"
+bcrypt = "0.19"
+rusqlite = { version = "0.38", features = ["bundled"] }
+wasmtime = "41"
 flate2 = "1"
-libloading = "0.8"
+libloading = "0.9"
 libffi = "5"
 lsp-server = "0.7"
 lsp-types = "0.97"

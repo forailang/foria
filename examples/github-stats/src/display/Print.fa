@@ -1,0 +1,16 @@
+docs Print
+    Prints text to the terminal.
+done
+
+sink Print
+    take text as text
+body
+    term.print(text)
+done
+
+test Print
+    it "works"
+        Print("hello")
+        must true
+    done
+done

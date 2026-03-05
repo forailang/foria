@@ -16,14 +16,16 @@ body
 
     response = {received: true, name: name, message: message}
     body_text = json.encode(response)
-    _ = http.respond.json(conn_id, 200, body_text)
+    http.respond.json(conn_id, 200, body_text)
     ok = true
     emit ok
 done
 
 test ContactSubmit
     mock http.respond.json => true
-    req = {conn_id: "test", body: "{\"name\":\"Alice\",\"message\":\"Hello\"}"}
-    result = ContactSubmit(req)
-    must result == true
+    it "works"
+        req = {conn_id: "test", body: "{\"name\":\"Alice\",\"message\":\"Hello\"}"}
+        result = ContactSubmit(req)
+        must result == true
+    done
 done

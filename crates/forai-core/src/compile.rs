@@ -421,7 +421,7 @@ fn compile_virtual_func(
     let flow = parser::parse_runtime_func_decl_v1(func_decl)
         .map_err(|e| format!("{}: func `{}` parse error: {e}", file_path, func_decl.name))?;
 
-    typecheck::typecheck_func(&func_decl.name, &func_decl.takes, &flow.body)
+    typecheck::typecheck_func_with_flows(&func_decl.name, &func_decl.takes, &flow.body, &func_decl.emits, &func_decl.fails, registry, Some(flow_registry))
         .map_err(|e| format!("{}: {e}", file_path))?;
 
     let mut ops = Vec::new();
@@ -475,6 +475,11 @@ fn compile_virtual_flow(
 ) -> Result<FlowProgram, String> {
     let flow_graph = parser::parse_flow_graph_decl_v1(flow_decl)
         .map_err(|e| format!("{}: flow `{}` parse error: {e}", file_path, flow_decl.name))?;
+
+    // Type-check flow step wiring against the flow registry
+    typecheck::typecheck_flow(&flow_decl.name, &flow_graph, registry, flow_registry)
+        .map_err(|e| format!("{}: {e}", file_path))?;
+
     let flow = parser::lower_flow_graph_to_flow(&flow_graph)
         .map_err(|e| format!("{}: flow `{}` lower error: {e}", file_path, flow_decl.name))?;
 
@@ -529,7 +534,7 @@ fn collect_ops(stmts: &[Statement], out: &mut Vec<String>) {
             Statement::BareLoop(l) => collect_ops(&l.body, out),
             Statement::Sync(s) => collect_ops(&s.body, out),
             Statement::SendNowait(s) => out.push(s.target.clone()),
-            Statement::Break => {}
+            Statement::Break | Statement::Continue => {}
             Statement::SourceLoop(sl) => {
                 out.push(sl.source_op.clone());
                 collect_ops(&sl.body, out);
@@ -582,6 +587,10 @@ fn collect_expr_ops(expr: &Expr, out: &mut Vec<String>) {
                     collect_expr_ops(e, out);
                 }
             }
+        }
+        Expr::Coalesce { lhs, rhs } => {
+            collect_expr_ops(lhs, out);
+            collect_expr_ops(rhs, out);
         }
         Expr::Var(_) | Expr::Lit(_) => {}
     }

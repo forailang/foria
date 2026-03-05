@@ -52,8 +52,10 @@ body
 done
 
 test Layout
-    r = Layout("Test", "hello world")
-    must str.contains(r, "Test")
-    must str.contains(r, "hello world")
-    must str.contains(r, "/blog")
+    it "works"
+        r = Layout("Test", "hello world")
+        must str.contains(r, "Test")
+        must str.contains(r, "hello world")
+        must str.contains(r, "/blog")
+    done
 done

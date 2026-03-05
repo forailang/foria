@@ -14,7 +14,9 @@ body
 done
 
 test NotFound
-    # Flow: HTTP route handler — stub test
-    ok = true
-    must ok == true
+    it "works"
+        # Flow: HTTP route handler — stub test
+        ok = true
+        must ok == true
+    done
 done

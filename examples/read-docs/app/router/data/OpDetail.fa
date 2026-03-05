@@ -292,9 +292,9 @@ body
             t = t + "  Returns: number of rows affected (long)" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    _ = db.exec(conn, \"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)\")" + n
+            t = t + "    db.exec(conn, \"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)\")" + n
             t = t + "    params = [\"Alice\"]" + n
-            t = t + "    _ = db.exec(conn, \"INSERT INTO users (name) VALUES (?1)\", params)"
+            t = t + "    db.exec(conn, \"INSERT INTO users (name) VALUES (?1)\", params)"
             emit t
         when "db.query"
             t = "=== db.query ===" + n
@@ -316,7 +316,7 @@ body
             t = t + "  Returns: bool (true on success)" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    _ = db.close(conn)"
+            t = t + "    db.close(conn)"
             emit t
         when "term.print"
             t = "=== term.print ===" + n
@@ -326,7 +326,7 @@ body
             t = t + "  Returns: bool (true)" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    _ = term.print(\"Hello, world!\")"
+            t = t + "    term.print(\"Hello, world!\")"
             emit t
         when "term.prompt"
             t = "=== term.prompt ===" + n
@@ -346,7 +346,7 @@ body
             t = t + "  Returns: bool (true)" + n
             t = t + n
             t = t + "  Example:" + n
-            t = t + "    _ = term.clear()"
+            t = t + "    term.clear()"
             emit t
         when "http.get"
             t = "=== http.get ===" + n
@@ -408,6 +408,8 @@ body
 done
 
 test OpDetail
-    r = OpDetail("obj.get")
-    must str.contains(r, "obj.get")
+    it "works"
+        r = OpDetail("obj.get")
+        must str.contains(r, "obj.get")
+    done
 done

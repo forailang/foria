@@ -248,11 +248,16 @@ pub enum Expr {
         expr: Box<Expr>,
         index: Box<Expr>,
     },
+    Coalesce {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExprAssign {
     pub bind: String,
+    pub type_annotation: Option<String>,
     pub expr: Expr,
 }
 
@@ -260,6 +265,9 @@ pub struct ExprAssign {
 pub enum Pattern {
     Ident(String),
     Lit(Value),
+    Or(Vec<Pattern>),
+    Range { lo: i64, hi: i64 },
+    Type(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +276,7 @@ pub struct NodeAssign {
     pub node_id: String,
     pub op: String,
     pub args: Vec<Arg>,
+    pub type_annotation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +288,7 @@ pub struct Emit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseArm {
     pub pattern: Pattern,
+    pub guard: Option<Expr>,
     pub body: Vec<Statement>,
 }
 
@@ -293,6 +303,7 @@ pub struct CaseBlock {
 pub struct LoopBlock {
     pub collection: Expr,
     pub item: String,
+    pub index: Option<String>,
     pub body: Vec<Statement>,
 }
 
@@ -349,6 +360,7 @@ pub enum Statement {
     Sync(SyncBlock),
     SendNowait(SendNowait),
     Break,
+    Continue,
     BareLoop(BareLoopBlock),
     SourceLoop(SourceLoopBlock),
     On(OnBlock),
@@ -362,6 +374,7 @@ pub struct FlowStateDecl {
     pub bind: String,
     pub callee: String,
     pub args: Vec<Arg>,
+    pub value: Option<Expr>,
     pub span: Span,
 }
 

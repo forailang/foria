@@ -15,7 +15,9 @@ body
 done
 
 test Requests
-    # Source: I/O dependent — stub test
-    ok = true
-    must ok == true
+    it "works"
+        # Source: I/O dependent — stub test
+        ok = true
+        must ok == true
+    done
 done

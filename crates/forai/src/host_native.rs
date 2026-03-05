@@ -666,7 +666,7 @@ impl Host for NativeHost {
                         .ok_or_else(|| format!("Op `{op}` unknown ws handle `{handle_id}`"))?;
                     let result = ws_handle
                         .socket
-                        .send(tungstenite::Message::Text(message))
+                        .send(tungstenite::Message::Text(message.into()))
                         .await;
                     handles.borrow_mut().websockets.insert(handle_id, ws_handle);
                     result.map_err(|e| format!("Op `{op}` send failed: {e}"))?;
@@ -828,6 +828,7 @@ async fn execute_reqwest(
         .unwrap_or(30000);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
+        .user_agent("forai/0.1")
         .build()
         .map_err(|e| format!("http client build error: {e}"))?;
 
@@ -1059,7 +1060,7 @@ fn base64_encode(data: &[u8]) -> String {
 
 fn ws_message_to_json(msg: tungstenite::Message) -> Result<Value, String> {
     match msg {
-        tungstenite::Message::Text(t) => Ok(json!({"type": "text", "data": t})),
+        tungstenite::Message::Text(t) => Ok(json!({"type": "text", "data": t.to_string()})),
         tungstenite::Message::Binary(b) => {
             let encoded = base64_encode(&b);
             Ok(json!({"type": "binary", "data": encoded}))

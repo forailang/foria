@@ -34,6 +34,8 @@ body
 done
 
 test Classify
-    must Classify("help") == "help"
-    must Classify("quit") == "quit"
+    it "works"
+        must Classify("help") == "help"
+        must Classify("quit") == "quit"
+    done
 done

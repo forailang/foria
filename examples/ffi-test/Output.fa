@@ -8,10 +8,13 @@ sink Output
     take message as text
     fail error as text
 body
-    _ = term.print(message)
+    term.print(message)
 done
 
 test Output
     mock term.print => true
-    _ = Output("hello")
+    it "works"
+        Output("hello")
+        must true
+    done
 done

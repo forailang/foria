@@ -1,0 +1,30 @@
+use api from "./api"
+use display from "./display"
+
+docs main
+    Fetches GitHub profiles for a hardcoded list of usernames
+    and prints a summary of their stats.
+done
+
+flow main
+body
+    state users = ["torvalds", "graydon", "brianbal"]
+    step api.FetchAll(users to :usernames) then
+        next :result to data
+    done
+    step display.Summary(data to :data) then
+        next :result to text
+    done
+    step display.Print(text to :text) done
+done
+
+test main
+    mock api.FetchAll => {profiles: [{login: "torvalds", name: "Linus Torvalds", bio: "Linux", public_repos: 7, followers: 200000}], errors: []}
+    mock display.Summary => "=== GitHub Stats ==="
+    mock display.Print => true
+    it "works"
+        _ = main()
+        ok = true
+        must ok == true
+    done
+done

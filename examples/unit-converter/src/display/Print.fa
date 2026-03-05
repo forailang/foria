@@ -5,15 +5,13 @@ done
 
 sink Print
     take text as text
-    emit result as bool
-    fail error as text
 body
-    _ = term.print(text)
-    ok = true
-    emit ok
+    term.print(text)
 done
 
 test Print
-    r = Print("100 km = 62.1371 mi")
-    must r == true
+    it "works"
+        Print("100 km = 62.1371 mi")
+        must true
+    done
 done

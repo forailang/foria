@@ -1,0 +1,6 @@
+{
+  "name": "github-stats",
+  "version": "0.1.0",
+  "description": "Fetch GitHub user profiles and summarize stats. Showcases types, ??, loop with index, continue, sync.",
+  "main": "src/main.fa"
+}

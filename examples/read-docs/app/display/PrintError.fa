@@ -4,17 +4,14 @@ done
 
 sink PrintError
     take cmd as text
-    emit result as bool
-    fail error as text
 body
-    _ = term.print("")
-    _ = term.print("Unknown command: '#{cmd}'. Type 'help' for available commands.")
-    ok = true
-    emit ok
+    term.print("")
+    term.print("Unknown command: '#{cmd}'. Type 'help' for available commands.")
 done
 
 test PrintError
-    # Sink: outputs error message, verify it succeeds
-    r = PrintError("badcmd")
-    must r == true
+    it "works"
+        PrintError("badcmd")
+        must true
+    done
 done

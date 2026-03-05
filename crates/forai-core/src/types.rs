@@ -45,9 +45,11 @@ pub enum TypeDef {
         constraints: Vec<ResolvedConstraint>,
     },
     Struct {
+        open: bool,
         fields: Vec<ResolvedField>,
     },
     Enum {
+        open: bool,
         variants: Vec<String>,
     },
 }
@@ -150,6 +152,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "HttpRequest".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("method", "text", true),
                 field("path", "text", true),
@@ -165,6 +168,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "Date".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("unix_ms", "long", true),
                 field("tz_offset_min", "long", true),
@@ -176,6 +180,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "Stamp".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![field("ns", "long", true)],
         },
     );
@@ -184,6 +189,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "TimeRange".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("start", "Date", true),
                 field("end", "Date", true),
@@ -195,6 +201,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "HttpResponse".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("status", "long", true),
                 field("headers", "dict", true),
@@ -209,6 +216,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "ProcessOutput".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("code", "long", true),
                 field("stdout", "text", true),
@@ -222,6 +230,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "WebSocketMessage".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("type", "text", true),
                 field("data", "text", true),
@@ -233,6 +242,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "ErrorObject".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("code", "text", true),
                 field("message", "text", true),
@@ -245,6 +255,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
     types.insert(
         "URLParts".to_string(),
         TypeDef::Struct {
+            open: true,
             fields: vec![
                 field("path", "text", true),
                 field("query", "text", true),
@@ -336,7 +347,7 @@ impl TypeRegistry {
                                         .collect(),
                                 })
                                 .collect();
-                            types.insert(td.name.clone(), TypeDef::Struct { fields: resolved });
+                            types.insert(td.name.clone(), TypeDef::Struct { open: td.open, fields: resolved });
                         }
                     }
                 }
@@ -351,6 +362,7 @@ impl TypeRegistry {
                     types.insert(
                         ed.name.clone(),
                         TypeDef::Enum {
+                            open: ed.open,
                             variants: ed.variants.clone(),
                         },
                     );
@@ -433,6 +445,10 @@ impl TypeRegistry {
         self.types.contains_key(name)
     }
 
+    pub fn get(&self, name: &str) -> Option<&TypeDef> {
+        self.types.get(name)
+    }
+
     pub fn validate(&self, value: &Value, type_name: &str, path: &str) -> Vec<ValidationError> {
         let Some(typedef) = self.types.get(type_name) else {
             return vec![ValidationError {
@@ -459,8 +475,8 @@ impl TypeRegistry {
                 }
                 errs
             }
-            TypeDef::Struct { fields } => self.validate_struct(value, fields, path),
-            TypeDef::Enum { variants } => self.validate_enum(value, variants, path),
+            TypeDef::Struct { open, fields } => self.validate_struct(value, *open, fields, path),
+            TypeDef::Enum { open, variants } => self.validate_enum(value, *open, variants, path),
         }
     }
 
@@ -603,6 +619,7 @@ impl TypeRegistry {
     fn validate_struct(
         &self,
         value: &Value,
+        open: bool,
         fields: &[ResolvedField],
         path: &str,
     ) -> Vec<ValidationError> {
@@ -647,12 +664,34 @@ impl TypeRegistry {
                 }
             }
         }
+
+        // Closed types reject extra fields
+        if !open {
+            let declared: std::collections::HashSet<&str> =
+                fields.iter().map(|f| f.name.as_str()).collect();
+            for key in obj.keys() {
+                if !declared.contains(key.as_str()) {
+                    let field_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}.{}", path, key)
+                    };
+                    errs.push(ValidationError {
+                        path: field_path,
+                        constraint: "closed".to_string(),
+                        message: format!("unexpected field '{}' in closed type", key),
+                    });
+                }
+            }
+        }
+
         errs
     }
 
     fn validate_enum(
         &self,
         value: &Value,
+        open: bool,
         variants: &[String],
         path: &str,
     ) -> Vec<ValidationError> {
@@ -663,7 +702,7 @@ impl TypeRegistry {
                 message: format!("expected string for enum, got {}", value_type_label(value)),
             }];
         };
-        if !variants.iter().any(|v| v == s) {
+        if !open && !variants.iter().any(|v| v == s) {
             vec![ValidationError {
                 path: path.to_string(),
                 constraint: "enum".to_string(),

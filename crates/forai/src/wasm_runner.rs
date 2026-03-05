@@ -552,10 +552,10 @@ fn wasmtime_wasi_stubs(linker: &mut Linker<WasmState>) -> Result<(), String> {
                     let start = buf_ptr as usize;
                     let end = start + buf_len as usize;
                     if end <= data.len() {
-                        use rand::Rng;
-                        let mut rng = rand::thread_rng();
+                        use rand::RngExt;
+                        let mut rng = rand::rng();
                         for byte in &mut data[start..end] {
-                            *byte = rng.r#gen();
+                            *byte = rng.random();
                         }
                     }
                 }

@@ -13,7 +13,9 @@ body
 done
 
 test AllPosts
-    all = AllPosts()
-    ok = true
-    must ok == true
+    it "works"
+        all = AllPosts()
+        ok = true
+        must ok == true
+    done
 done

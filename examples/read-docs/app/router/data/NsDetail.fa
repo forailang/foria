@@ -94,6 +94,8 @@ body
 done
 
 test NsDetail
-    r = NsDetail("obj")
-    must str.contains(r, "obj.get")
+    it "works"
+        r = NsDetail("obj")
+        must str.contains(r, "obj.get")
+    done
 done

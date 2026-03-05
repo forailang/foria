@@ -41,10 +41,12 @@ body
 done
 
 test GetPost
-    p = GetPost("hello-world")
-    must p.slug == "hello-world"
-    must p.title == "Hello World"
+    it "works"
+        p = GetPost("hello-world")
+        must p.slug == "hello-world"
+        must p.title == "Hello World"
 
-    err = trap GetPost("nonexistent")
-    must err == "post not found"
+        err = trap GetPost("nonexistent")
+        must err == "post not found"
+    done
 done

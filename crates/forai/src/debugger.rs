@@ -71,7 +71,7 @@ struct Session {
 
 fn send_msg(ws: &mut WebSocket<TcpStream>, msg: &ServerMessage) -> Result<(), String> {
     let json = serde_json::to_string(msg).map_err(|e| format!("serialize error: {e}"))?;
-    ws.send(Message::Text(json))
+    ws.send(Message::Text(json.into()))
         .map_err(|e| format!("ws send error: {e}"))
 }
 
