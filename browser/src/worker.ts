@@ -27,6 +27,7 @@ interface InitMessage {
 const WORKER_LOCAL_OPS = new Set([
   "log.debug", "log.info", "log.warn", "log.error", "log.trace",
   "term.print", "term.clear", "term.size", "term.cursor",
+  "dom.write", "dom.set_title",
 ]);
 
 // Ops unavailable in the browser — return error immediately
@@ -72,6 +73,16 @@ function handleWorkerLocalOp(op: string, args: unknown[]): unknown {
       return { cols: 80, rows: 24 };
     case "term.cursor":
       return { col: 0, row: 0 };
+    case "dom.write": {
+      const html = String(args[0] ?? "");
+      self.postMessage({ type: "dom", action: "write", html });
+      return true;
+    }
+    case "dom.set_title": {
+      const title = String(args[0] ?? "");
+      self.postMessage({ type: "dom", action: "set_title", title });
+      return true;
+    }
     default:
       throw new Error(`unhandled worker-local op: ${op}`);
   }

@@ -11,9 +11,10 @@ body
     if count == 0
         term.print("No listening ports found.")
     else
-        # Measure column widths
-        pw = 4
-        pidw = 3
+        # Measure column widths (minimum = header text length)
+        pw = 6
+        pidw = 8
+        cmdw = 7
         loop ports as entry
             pl = str.len(obj.get(entry, "port"))
             if pl > pw
@@ -23,22 +24,24 @@ body
             if pidl > pidw
                 pidw = pidl
             done
+            cmdl = str.len(obj.get(entry, "command"))
+            if cmdl > cmdw
+                cmdw = cmdl
+            done
         done
 
-        # Add gutter
-        pw = pw + 2
-        pidw = pidw + 2
-
-        total = pw + pidw + 7
-        rule = str.repeat("─", total)
+        total = pw + pidw + cmdw + 10
+        rule = str.repeat("-", total)
 
         term.print("")
         term.color("  Listening Ports", "white")
+        term.print("")
         term.print("  #{rule}")
 
         port_hdr_pad = str.repeat(" ", pw - 4)
         pid_hdr_pad = str.repeat(" ", pidw - 3)
-        header = "  PORT#{port_hdr_pad}PID#{pid_hdr_pad}COMMAND"
+        cmd_hdr_pad = str.repeat(" ", cmdw - 7)
+        header = "  PORT#{port_hdr_pad} | PID#{pid_hdr_pad} | COMMAND#{cmd_hdr_pad}"
         term.print(header)
         term.print("  #{rule}")
 
@@ -47,19 +50,10 @@ body
             pid = obj.get(entry, "pid")
             command = obj.get(entry, "command")
 
-            port_gap = pw - str.len(port)
-            if port_gap < 1
-                port_gap = 1
-            done
-            port_pad = str.repeat(" ", port_gap)
+            port_pad = str.repeat(" ", pw - str.len(port))
+            pid_pad = str.repeat(" ", pidw - str.len(pid))
 
-            pid_gap = pidw - str.len(pid)
-            if pid_gap < 1
-                pid_gap = 1
-            done
-            pid_pad = str.repeat(" ", pid_gap)
-
-            row = "  #{port}#{port_pad}#{pid}#{pid_pad}#{command}"
+            row = "  #{port}#{port_pad} | #{pid}#{pid_pad} | #{command}"
             term.color(row, "cyan")
         done
 

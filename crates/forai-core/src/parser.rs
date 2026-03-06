@@ -295,14 +295,15 @@ fn lower_flow_statements(
     counter: &mut usize,
 ) -> Result<Vec<Statement>, String> {
     let mut out = Vec::new();
-    for stmt in stmts {
-        match stmt {
+    let mut i = 0;
+    while i < stmts.len() {
+        match &stmts[i] {
             FlowStatement::Step(step) => {
                 // Find first Next item for the bind name
                 let bind = if let Some(StepThenItem::Next(first)) = step
                     .then_body
                     .iter()
-                    .find(|i| matches!(i, StepThenItem::Next(_)))
+                    .find(|item| matches!(item, StepThenItem::Next(_)))
                 {
                     first.wire.clone()
                 } else {
@@ -339,18 +340,21 @@ fn lower_flow_statements(
                         }
                     }
                 }
+                i += 1;
             }
             FlowStatement::Emit(e) => {
                 out.push(Statement::Emit(Emit {
                     output: e.port.clone(),
                     value_expr: Expr::Var(e.wire.clone()),
                 }));
+                i += 1;
             }
             FlowStatement::Fail(f) => {
                 out.push(Statement::Emit(Emit {
                     output: f.port.clone(),
                     value_expr: Expr::Var(f.wire.clone()),
                 }));
+                i += 1;
             }
             FlowStatement::State(state) => {
                 if let Some(expr) = &state.value {
@@ -370,6 +374,7 @@ fn lower_flow_statements(
                         type_annotation: None,
                     }));
                 }
+                i += 1;
             }
             FlowStatement::SendNowait(sn) => {
                 let args: Vec<Expr> = sn.args.iter().map(|a| Expr::Var(a.clone())).collect();
@@ -377,25 +382,12 @@ fn lower_flow_statements(
                     target: sn.target.clone(),
                     args,
                 }));
+                i += 1;
             }
-            FlowStatement::Branch(branch) => {
-                let lowered_body = lower_flow_statements(&branch.body, counter)?;
-                match &branch.condition {
-                    Some(cond) => {
-                        out.push(Statement::Case(CaseBlock {
-                            expr: cond.clone(),
-                            arms: vec![CaseArm {
-                                pattern: Pattern::Lit(serde_json::json!(true)),
-                                guard: None,
-                                body: lowered_body,
-                            }],
-                            else_body: vec![],
-                        }));
-                    }
-                    None => {
-                        out.extend(lowered_body);
-                    }
-                }
+            FlowStatement::Branch(_) => {
+                // Collect consecutive branch blocks into a single if/else-if/else chain
+                let lowered = lower_branch_chain(&stmts[i..], &mut i, counter)?;
+                out.extend(lowered);
             }
             FlowStatement::Log(log) => {
                 let bind = format!("_log_{}", *counter);
@@ -407,10 +399,78 @@ fn lower_flow_statements(
                     args: log.args.clone(),
                     type_annotation: None,
                 }));
+                i += 1;
             }
         }
     }
     Ok(out)
+}
+
+/// Lower consecutive `branch` blocks into a nested if/else-if/else `Case` statement.
+/// Advances `pos` past all consumed branches.
+fn lower_branch_chain(
+    stmts: &[FlowStatement],
+    pos: &mut usize,
+    counter: &mut usize,
+) -> Result<Vec<Statement>, String> {
+    let mut guarded: Vec<(Expr, Vec<Statement>)> = Vec::new();
+    let mut else_body: Vec<Statement> = Vec::new();
+    let mut j = 0;
+
+    while j < stmts.len() {
+        match &stmts[j] {
+            FlowStatement::Branch(branch) => {
+                let lowered = lower_flow_statements(&branch.body, counter)?;
+                match &branch.condition {
+                    Some(cond) => {
+                        guarded.push((cond.clone(), lowered));
+                        j += 1;
+                    }
+                    None => {
+                        // Unguarded branch is the else — consumes and terminates the chain
+                        else_body = lowered;
+                        j += 1;
+                        break;
+                    }
+                }
+            }
+            _ => break, // Non-branch statement ends the chain
+        }
+    }
+
+    *pos += j;
+
+    // No guarded branches — just inline the else body (single unguarded branch)
+    if guarded.is_empty() {
+        return Ok(else_body);
+    }
+
+    // Build nested if/else-if/else: last guarded branch gets the else_body,
+    // then wrap each preceding branch around it.
+    let (last_cond, last_body) = guarded.pop().unwrap();
+    let mut result = Statement::Case(CaseBlock {
+        expr: last_cond,
+        arms: vec![CaseArm {
+            pattern: Pattern::Lit(serde_json::json!(true)),
+            guard: None,
+            body: last_body,
+        }],
+        else_body,
+    });
+
+    for (cond, body) in guarded.into_iter().rev() {
+        result = Statement::Case(CaseBlock {
+            expr: cond,
+            arms: vec![CaseArm {
+                pattern: Pattern::Lit(serde_json::json!(true)),
+                guard: None,
+                body,
+            }],
+            else_body: vec![result],
+        });
+    }
+
+    Ok(vec![result])
 }
 
 // --- Func body parser (existing RuntimeBodyParser, unchanged) ---

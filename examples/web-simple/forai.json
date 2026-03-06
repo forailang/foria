@@ -1,0 +1,9 @@
+{
+  "name": "web-simple",
+  "version": "0.1.0",
+  "description": "Simple web server with routing, blog pages, and contact form",
+  "main": "src/main.fa",
+  "build": {
+    "targets": ["native"]
+  }
+}

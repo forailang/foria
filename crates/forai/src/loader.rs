@@ -681,6 +681,9 @@ pub fn build_flow_registry(
         }
     }
 
+    // Transform flow bodies: wrap source calls into SourceLoop blocks
+    wrap_source_loops(&mut registry);
+
     Ok(registry)
 }
 

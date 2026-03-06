@@ -12,22 +12,22 @@ func Distance
 body
     # Convert input to meters (base unit)
     base = case from
-        when "m" then value
-        when "km" then value * 1000.0
-        when "mi" then value * 1609.344
-        when "ft" then value * 0.3048
-        when "in" then value * 0.0254
-        else then fail "Unknown distance unit: #{from}"
+    when "m" then value
+    when "km" then value * 1000.0
+    when "mi" then value * 1609.344
+    when "ft" then value * 0.3048
+    when "in" then value * 0.0254
+    else then fail "Unknown distance unit: #{from}"
     done
 
     # Convert from meters to target unit
     output = case to
-        when "m" then base
-        when "km" then base / 1000.0
-        when "mi" then base / 1609.344
-        when "ft" then base / 0.3048
-        when "in" then base / 0.0254
-        else then fail "Unknown distance unit: #{to}"
+    when "m" then base
+    when "km" then base / 1000.0
+    when "mi" then base / 1609.344
+    when "ft" then base / 0.3048
+    when "in" then base / 0.0254
+    else then fail "Unknown distance unit: #{to}"
     done
 
     r = {input: value, output: output, from: from, to: to}

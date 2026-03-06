@@ -575,6 +575,9 @@ pub fn known_ops() -> &'static [&'static str] {
         "tmpl.render",
         // FFI
         "ffi.available",
+        // DOM (browser only)
+        "dom.write",
+        "dom.set_title",
     ]
 }
 
@@ -2119,7 +2122,7 @@ fn eval_expr<'a>(
                             (None, Some(f)) => {
                                 Err(format!("flow `{func}` emitted on fail track: {f}"))
                             }
-                            (None, None) => Err(format!("flow `{func}` produced no outputs")),
+                            (None, None) => Ok(serde_json::Value::Null),
                             (Some(_), Some(_)) => {
                                 Err(format!("flow `{func}` produced both emit and fail outputs"))
                             }
@@ -2537,7 +2540,11 @@ async fn try_dispatch_flow(
     match (success, failure) {
         (Some(v), None) => Some(Ok(v)),
         (None, Some(f)) => Some(Err(format!("flow `{op}` emitted on fail track: {f}"))),
-        (None, None) => Some(Err(format!("flow `{op}` produced no outputs"))),
+        (None, None) => {
+            // Flow completed without emitting — this is normal for source-driven
+            // flows that process events until the source stops.
+            Some(Ok(serde_json::Value::Null))
+        }
         (Some(_), Some(_)) => Some(Err(format!(
             "flow `{op}` produced both emit and fail outputs"
         ))),

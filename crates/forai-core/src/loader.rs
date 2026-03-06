@@ -3,13 +3,17 @@ use crate::ir::Ir;
 use crate::types::TypeRegistry;
 use std::collections::HashMap;
 
-/// Serializable program bundle for WASM distribution.
+/// Serializable program bundle for native/WASM distribution.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProgramBundle {
     pub entry_flow: Flow,
     pub entry_ir: Ir,
     pub type_registry: TypeRegistry,
     pub flow_registry: FlowRegistry,
+    /// FFI registry metadata (serialized FfiRegistry). Present when the project
+    /// declares `extern` blocks and `ffi` config in forai.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffi_registry: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

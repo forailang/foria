@@ -1,7 +1,7 @@
 {
   "name": "ffi-test",
-  "main": "main.fa",
-  "build": { "targets": [] },
+  "main": "src/main.fa",
+  "build": { "targets": ["native"] },
   "ffi": {
     "c": { "lib": "c" }
   }

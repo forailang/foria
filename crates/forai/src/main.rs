@@ -170,6 +170,151 @@ fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String>
     Ok(())
 }
 
+// --- Native bundle V3 (self-extracting with async runtime) ---
+// V3 format: [ runner exe ][ compressed bundle JSON ][ len: u64 LE ][ flags: u8 ][ FORAI_BUNDLE_V3\0 ]
+const BUNDLE_V3_MAGIC: &[u8; 16] = b"FORAI_BUNDLE_V3\0";
+const BUNDLE_V3_FLAGS_COMPRESSED: u8 = 0x01;
+
+fn create_native_v3_bundle(bundle_json: &[u8], out_path: &Path) -> Result<(), String> {
+    let runner_path = find_runner_binary()?;
+    let runner_bytes = fs::read(&runner_path)
+        .map_err(|e| format!("failed to read runner binary {}: {e}", runner_path.display()))?;
+
+    // Write runner binary to output
+    fs::write(out_path, &runner_bytes)
+        .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
+
+    // Strip debug symbols (best-effort)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        let _ = fs::set_permissions(out_path, perms);
+    }
+    let strip_result = if cfg!(target_os = "macos") {
+        std::process::Command::new("strip")
+            .arg("-x")
+            .arg(out_path)
+            .output()
+    } else {
+        std::process::Command::new("strip").arg(out_path).output()
+    };
+    match strip_result {
+        Ok(o) if o.status.success() => {
+            let orig_size = runner_bytes.len();
+            let stripped_size = fs::metadata(out_path).map(|m| m.len()).unwrap_or(0) as usize;
+            if stripped_size < orig_size {
+                eprintln!(
+                    "  strip    saved {:.1} MB",
+                    (orig_size - stripped_size) as f64 / 1_048_576.0
+                );
+            }
+        }
+        _ => eprintln!("  strip    skipped (not available)"),
+    }
+
+    // Compress bundle JSON with gzip
+    let compressed = {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder
+            .write_all(bundle_json)
+            .map_err(|e| format!("gzip compression failed: {e}"))?;
+        encoder
+            .finish()
+            .map_err(|e| format!("gzip finish failed: {e}"))?
+    };
+
+    // Append compressed bundle + V3 footer
+    let compressed_len = compressed.len() as u64;
+    let flags: u8 = BUNDLE_V3_FLAGS_COMPRESSED;
+    let mut footer = Vec::with_capacity(compressed.len() + BUNDLE_FOOTER_SIZE);
+    footer.extend_from_slice(&compressed);
+    footer.extend_from_slice(&compressed_len.to_le_bytes());
+    footer.push(flags);
+    footer.extend_from_slice(BUNDLE_V3_MAGIC);
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(out_path)
+        .map_err(|e| format!("failed to open {} for append: {e}", out_path.display()))?;
+    file.write_all(&footer)
+        .map_err(|e| format!("failed to append bundle data: {e}"))?;
+
+    // chmod +x on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        fs::set_permissions(out_path, perms)
+            .map_err(|e| format!("failed to set permissions on {}: {e}", out_path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn find_runner_binary() -> Result<PathBuf, String> {
+    // 1. Environment variable
+    if let Ok(path) = std::env::var("FORAI_RUNNER") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+
+    // 2. Adjacent to the current binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let adjacent = dir.join("forai-runner");
+            if adjacent.exists() {
+                return Ok(adjacent);
+            }
+        }
+    }
+
+    // 3. Workspace target directory (development builds)
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/release/forai-runner");
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+
+    let dev_debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/debug/forai-runner");
+    if dev_debug.exists() {
+        return Ok(dev_debug);
+    }
+
+    // 4. Auto-build the runner
+    match build_runner_binary() {
+        Ok(p) => Ok(p),
+        Err(e) => Err(format!("forai-runner not found and auto-build failed: {e}")),
+    }
+}
+
+fn build_runner_binary() -> Result<PathBuf, String> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    eprintln!("  native   building runner...");
+    let output = std::process::Command::new("cargo")
+        .args(["build", "-p", "forai-runner", "--release"])
+        .current_dir(&workspace_root)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !output.status.success() {
+        return Err("cargo build failed for forai-runner".to_string());
+    }
+    let runner_path = workspace_root.join("target/release/forai-runner");
+    if runner_path.exists() {
+        Ok(runner_path)
+    } else {
+        Err("forai-runner build succeeded but output file not found".to_string())
+    }
+}
+
 fn collect_ops(statements: &[Statement], out: &mut Vec<String>) {
     for stmt in statements {
         match stmt {
@@ -498,7 +643,7 @@ fn build_browser_js() -> Result<PathBuf, String> {
     }
 }
 
-fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Result<(), String> {
+fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str, project_root: &Path) -> Result<(), String> {
     // Create browser output directory
     fs::create_dir_all(browser_dir)
         .map_err(|e| format!("failed to create {}: {e}", browser_dir.display()))?;
@@ -521,9 +666,15 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Re
         let _ = fs::copy(&sourcemap, &dest_map);
     }
 
-    // Generate index.html
-    let html = format!(
-        r#"<!DOCTYPE html>
+    // Use public/index.html if it exists, otherwise generate a default one
+    let html_path = browser_dir.join("index.html");
+    let custom_html = project_root.join("public/index.html");
+    if custom_html.exists() {
+        fs::copy(&custom_html, &html_path)
+            .map_err(|e| format!("failed to copy public/index.html: {e}"))?;
+    } else {
+        let html = format!(
+            r#"<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -563,10 +714,9 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str) -> Re
 </body>
 </html>
 "#
-    );
-
-    let html_path = browser_dir.join("index.html");
-    fs::write(&html_path, html).map_err(|e| format!("failed to write index.html: {e}"))?;
+        );
+        fs::write(&html_path, html).map_err(|e| format!("failed to write index.html: {e}"))?;
+    }
 
     Ok(())
 }
@@ -705,11 +855,17 @@ async fn run() -> Result<(), String> {
             let needs_wasm = targets.iter().any(|t| t == "wasm" || t == "bundle" || t == "browser");
             let mut target_failures: Vec<String> = Vec::new();
 
+            let ffi_json = if ffi_registry.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&ffi_registry).map_err(|e| format!("failed to serialize ffi_registry: {e}"))?)
+            };
             let bundle = forai_core::loader::ProgramBundle {
                 entry_flow: flow,
                 entry_ir: ir,
                 type_registry: registry,
                 flow_registry,
+                ffi_registry: ffi_json,
             };
             let bundle_json = serde_json::to_vec(&bundle)
                 .map_err(|e| format!("failed to serialize program bundle: {e}"))?;
@@ -751,10 +907,24 @@ async fn run() -> Result<(), String> {
                 }
             }
 
+            if targets.contains(&"native".to_string()) {
+                let native_path = out_dir.join(&config.name);
+                match create_native_v3_bundle(&bundle_json, &native_path) {
+                    Ok(()) => {
+                        let size = fs::metadata(&native_path).map(|m| m.len()).unwrap_or(0);
+                        eprintln!("  native   ok ({:.1} MB)", size as f64 / 1_048_576.0);
+                    }
+                    Err(e) => {
+                        eprintln!("  native   FAILED: {e}");
+                        target_failures.push("native".to_string());
+                    }
+                }
+            }
+
             if targets.contains(&"browser".to_string()) {
                 if wasm_ok {
                     let browser_dir = out_dir.join("browser");
-                    match create_browser_target(&wasm_path, &browser_dir, &config.name) {
+                    match create_browser_target(&wasm_path, &browser_dir, &config.name, &project_root) {
                         Ok(()) => {
                             eprintln!("  browser  ok");
                         }

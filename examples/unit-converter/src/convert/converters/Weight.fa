@@ -12,20 +12,20 @@ func Weight
 body
     # Convert input to grams (base unit)
     base = case from
-        when "g" then value
-        when "kg" then value * 1000.0
-        when "lb" then value * 453.592
-        when "oz" then value * 28.3495
-        else then fail "Unknown weight unit: #{from}"
+    when "g" then value
+    when "kg" then value * 1000.0
+    when "lb" then value * 453.592
+    when "oz" then value * 28.3495
+    else then fail "Unknown weight unit: #{from}"
     done
 
     # Convert from grams to target unit
     output = case to
-        when "g" then base
-        when "kg" then base / 1000.0
-        when "lb" then base / 453.592
-        when "oz" then base / 28.3495
-        else then fail "Unknown weight unit: #{to}"
+    when "g" then base
+    when "kg" then base / 1000.0
+    when "lb" then base / 453.592
+    when "oz" then base / 28.3495
+    else then fail "Unknown weight unit: #{to}"
     done
 
     r = {input: value, output: output, from: from, to: to}

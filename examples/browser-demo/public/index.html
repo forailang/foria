@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>forai browser demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #c8c8d8;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 3rem 1rem;
+    }
+    #app {
+      max-width: 640px;
+      width: 100%;
+      line-height: 1.7;
+    }
+    #app h1 { color: #7c8aff; margin-bottom: 0.5rem; }
+    #app p { margin: 0.4rem 0; }
+    #app ul { margin: 0.5rem 0 0.5rem 1.5rem; }
+    #app li { margin: 0.2rem 0; }
+    #app strong { color: #fff; }
+    #app em { color: #888; }
+    #error { color: #ff6b6b; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    import { run } from "./forai-browser.js";
+
+    const app = document.getElementById("app");
+
+    if (typeof crossOriginIsolated !== "undefined" && !crossOriginIsolated) {
+      app.innerHTML = `
+        <div id="error">
+          <p>This page requires cross-origin isolation for SharedArrayBuffer.</p>
+          <p>Serve with headers:</p>
+          <pre>Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp</pre>
+        </div>`;
+    } else {
+      try {
+        await run({
+          wasmUrl: "./browser-demo.wasm",
+          onDomWrite: (html) => { app.innerHTML += html; },
+          onPrint: (text) => console.log(text),
+          onStdout: (text) => console.log(text),
+          onStderr: (text) => console.error(text),
+        });
+      } catch (e) {
+        app.innerHTML += `<p id="error">Error: ${e.message}</p>`;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -82,6 +82,7 @@ static KNOWN_OPS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         "html.escape", "html.unescape",
         "tmpl.render",
         "ffi.available",
+        "dom.write", "dom.set_title",
     ] {
         ops.insert(op.to_string());
     }
@@ -245,6 +246,7 @@ pub fn compile_project(
         entry_ir,
         type_registry,
         flow_registry,
+        ffi_registry: None,
     })
 }
 

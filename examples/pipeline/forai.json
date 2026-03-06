@@ -4,6 +4,6 @@
   "description": "Example forai pipeline using source, flow, func, and sink",
   "main": "src/main.fa",
   "build": {
-    "targets": ["wasm", "bundle"]
+    "targets": ["native", "wasm", "bundle"]
   }
 }

@@ -6,6 +6,7 @@ enum Block {
     Body,     // body content
     Docs,     // docs block
     Test,     // test block
+    It,       // it "..." block inside test
     TypeDecl, // type, data, enum
     Case,     // case block
     Arm,      // when/else arm inside case
@@ -76,11 +77,16 @@ pub fn format_source(source: &str) -> String {
         // --- Pops (dedent before printing) ---
         match first_word {
             "done" => {
-                // Pop arm if present, then pop the structural block
-                if stack.last() == Some(&Block::Arm) {
-                    stack.pop();
+                // `it` blocks have their own `done` — pop just the It block.
+                // `when`/`else` arms share the parent's `done` — pop arm, then parent.
+                if stack.last() == Some(&Block::It) {
+                    stack.pop(); // close the it block only
+                } else {
+                    if stack.last() == Some(&Block::Arm) {
+                        stack.pop();
+                    }
+                    stack.pop(); // structural block (Case, If, Loop, Body, Docs, Test, etc.)
                 }
-                stack.pop(); // structural block (Case, If, Loop, Body, Docs, etc.)
             }
             "body" if second_token(&norm) != "=" => {
                 // Close the Decl header
@@ -91,6 +97,12 @@ pub fn format_source(source: &str) -> String {
             "when" => {
                 // Close previous arm if present
                 if stack.last() == Some(&Block::Arm) {
+                    stack.pop();
+                }
+            }
+            "it" => {
+                // Close previous it block if present
+                if stack.last() == Some(&Block::It) {
                     stack.pop();
                 }
             }
@@ -164,6 +176,9 @@ pub fn format_source(source: &str) -> String {
                 }
                 "test" => {
                     stack.push(Block::Test);
+                }
+                "it" => {
+                    stack.push(Block::It);
                 }
                 "type" | "data" | "enum" if !single_line_done => {
                     // Only treat as a declaration if not an assignment (e.g. `data = {…}`).

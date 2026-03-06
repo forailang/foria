@@ -1,8 +1,8 @@
 extern "c"
-    fn strlen
-        take s as text
-        return long
-    done
+fn strlen
+take s as text
+return long
+done
 done
 
 docs CheckFfi

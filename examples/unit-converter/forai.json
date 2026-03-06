@@ -4,6 +4,6 @@
   "description": "Interactive unit converter exercising math, case/when, if/else, loop, and string interpolation",
   "main": "src/main.fa",
   "build": {
-    "targets": ["wasm", "bundle"]
+    "targets": ["native", "wasm", "bundle"]
   }
 }

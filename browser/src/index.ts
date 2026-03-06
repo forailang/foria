@@ -13,6 +13,7 @@ export interface RunOptions extends DispatcherOptions {
   onPrint?: (text: string) => void;
   onStdout?: (text: string) => void;
   onStderr?: (text: string) => void;
+  onDomWrite?: (html: string) => void;
 }
 
 /**
@@ -163,6 +164,15 @@ export async function run(opts: RunOptions): Promise<void> {
           }
           break;
         }
+        case "dom":
+          if (msg.action === "write" && opts.onDomWrite) {
+            opts.onDomWrite(msg.html);
+          } else if (msg.action === "set_title") {
+            if (typeof document !== "undefined") {
+              document.title = msg.title;
+            }
+          }
+          break;
         case "done":
           cleanup();
           if (msg.success) {

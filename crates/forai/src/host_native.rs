@@ -802,6 +802,20 @@ impl Host for NativeHost {
                     Ok(json!(true))
                 }
 
+                // --- DOM ops (browser only, no-op on native) ---
+                "dom.write" => {
+                    let html = args.first()
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !self.quiet {
+                        eprintln!("[dom.write] {html}");
+                    }
+                    Ok(json!(true))
+                }
+                "dom.set_title" => {
+                    Ok(json!(true))
+                }
+
                 _ => Err(format!("Unknown I/O op `{op}`")),
             }
         })

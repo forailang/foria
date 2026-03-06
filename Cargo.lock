@@ -813,6 +813,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forai-runner"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "forai",
+ "forai-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "forai-wasm"
 version = "0.1.0"
 dependencies = [

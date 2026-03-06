@@ -287,6 +287,7 @@ fn load_library(lib_name: &str) -> Result<libloading::Library, String> {
         ]
     } else {
         vec![
+            format!("lib{lib_name}.so.6"),
             format!("lib{lib_name}.so"),
             lib_name.to_string(),
         ]

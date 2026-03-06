@@ -86,5 +86,8 @@ pub fn is_io_op(op: &str) -> bool {
         // Time (blocking)
         | "time.sleep"
         | "time.tick"
+        // DOM (browser only)
+        | "dom.write"
+        | "dom.set_title"
     )
 }

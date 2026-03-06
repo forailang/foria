@@ -23,29 +23,29 @@ body
         next :num to raw
     done
     branch when raw > 50.0
-    step lib.Square(raw to :num) then
-        next :result to processed
+        step lib.Square(raw to :num) then
+            next :result to processed
+        done
+        step lib.NumToText(processed to :num) then
+            next :result to big_label
+        done
+        step sinks.Print(big_label to :line) done
     done
-    step lib.NumToText(processed to :num) then
-        next :result to big_label
+    branch when raw <= 50.0
+        step lib.Double(raw to :num) then
+            next :result to doubled
+        done
+        step lib.SevenLess(doubled to :num) then
+            next :result to reduced
+        done
+        step lib.CircleArea(reduced to :radius) then
+            next :result to area
+        done
+        step lib.NumToText(area to :num) then
+            next :result to small_label
+        done
+        step sinks.Print(small_label to :line) done
     done
-    step sinks.Print(big_label to :line) done
-done
-branch when raw <= 50.0
-step lib.Double(raw to :num) then
-    next :result to doubled
-done
-step lib.SevenLess(doubled to :num) then
-    next :result to reduced
-done
-step lib.CircleArea(reduced to :radius) then
-    next :result to area
-done
-step lib.NumToText(area to :num) then
-    next :result to small_label
-done
-step sinks.Print(small_label to :line) done
-done
 done
 
 test main

@@ -226,6 +226,10 @@ pub fn op_signature(op: &str) -> Option<OpSignature> {
         "term.color" => sig(vec![Text, Text], Bool),
         "term.read_key" => sig(vec![], Text),
 
+        // ── DOM (browser only) ──
+        "dom.write" => sig(vec![Text], Bool),
+        "dom.set_title" => sig(vec![Text], Bool),
+
         // ── Formatting ──
         "fmt.pad_hms" => sig(vec![Dict], Text),
         "fmt.wrap_field" => sig(vec![Text, Any], Dict),
