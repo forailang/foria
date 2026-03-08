@@ -683,7 +683,7 @@ fn infer_list_elem_type_from_expr(
                 }
             }
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             // Delegate to the same logic as Node assignments
             let node_args: Vec<Arg> = args.iter().map(|e| {
                 match e {
@@ -706,7 +706,7 @@ fn check_expr_calls(
     errors: &mut Vec<String>,
 ) {
     match expr {
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             check_call_args(func_name, func, args, var_types, registry, errors);
             for arg in args {
                 check_expr_calls(func_name, arg, var_types, registry, errors);
@@ -963,14 +963,34 @@ fn check_flow_statements(
                     }
                 }
             }
+            FlowStatement::Choose(choose) => {
+                for branch in &choose.branches {
+                    let mut branch_scope = scope.clone();
+                    check_flow_statements(flow_name, &branch.body, &mut branch_scope, registry, flow_registry, errors);
+                    // Merge back
+                    for (k, v) in &branch_scope {
+                        if scope.contains_key(k) {
+                            scope.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
             FlowStatement::State(state) => {
                 if state.value.is_some() {
-                    // Literal value — type will be inferred at runtime
                     scope.insert(state.bind.clone(), InferredType::Unknown);
                 } else if let Some(sig) = op_types::op_signature(&state.callee) {
                     scope.insert(state.bind.clone(), InferredType::Known(sig.returns));
                 } else {
                     scope.insert(state.bind.clone(), InferredType::Unknown);
+                }
+            }
+            FlowStatement::Local(local) => {
+                if local.value.is_some() {
+                    scope.insert(local.bind.clone(), InferredType::Unknown);
+                } else if let Some(sig) = op_types::op_signature(&local.callee) {
+                    scope.insert(local.bind.clone(), InferredType::Known(sig.returns));
+                } else {
+                    scope.insert(local.bind.clone(), InferredType::Unknown);
                 }
             }
             _ => {} // Emit, Fail, SendNowait, Log — no wiring to check
@@ -1124,6 +1144,7 @@ mod tests {
             Expr::Call {
                 func: "db.exec".to_string(),
                 args: vec![Expr::Var("name".to_string()), Expr::Lit(json!("SELECT 1"))],
+                children: None,
             },
         )];
         let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
@@ -1209,6 +1230,7 @@ mod tests {
                 Expr::Call {
                     func: "exec.run".to_string(),
                     args: vec![Expr::Lit(json!("ls"))],
+                    children: None,
                 },
             ),
             node(
@@ -1446,6 +1468,7 @@ mod tests {
                 Expr::Call {
                     func: "obj.get".to_string(),
                     args: vec![Expr::Var("input".to_string()), Expr::Lit(json!("key"))],
+                    children: None,
                 },
                 "Email",
             ),
@@ -1562,6 +1585,8 @@ mod tests {
                 inputs: flow_inputs,
                 outputs: flow_outputs,
                 body: vec![],
+                state_names: vec![],
+                local_names: vec![],
             },
             ir: Ir {
                 forai_ir: "0.1".to_string(),
@@ -1692,6 +1717,9 @@ mod tests {
                     then_body: vec![StepThenItem::Next(NextWire {
                         port: "result".to_string(),
                         wire: "step_a_out".to_string(),
+                        via_callee: None,
+                        via_inputs: vec![],
+                        via_outputs: vec![],
                         span: span(),
                     })],
                     span: span(),

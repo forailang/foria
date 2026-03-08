@@ -86,6 +86,13 @@ pub fn is_io_op(op: &str) -> bool {
         // Time (blocking)
         | "time.sleep"
         | "time.tick"
+        // UI rendering
+        | "ui.render"
+        | "ui.events"
+        | "ui.mount"
+        | "ui.update"
+        | "ui.navigate"
+        | "ui.current_path"
         // DOM (browser only)
         | "dom.write"
         | "dom.set_title"

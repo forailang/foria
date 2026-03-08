@@ -4,6 +4,7 @@ export { SAB_SIZE } from "./protocol.js";
 import { SAB_SIZE } from "./protocol.js";
 import { createDispatcher, type DispatcherOptions } from "./dispatcher.js";
 import { ProcessExit } from "./wasi.js";
+import { createUiRuntime, type UiDebugEvent } from "./ui_runtime.js";
 // @ts-ignore — generated at build time by build.mjs
 import { workerCode } from "../dist/worker-inline.js";
 
@@ -14,6 +15,7 @@ export interface RunOptions extends DispatcherOptions {
   onStdout?: (text: string) => void;
   onStderr?: (text: string) => void;
   onDomWrite?: (html: string) => void;
+  onUiDebug?: (event: UiDebugEvent) => void;
 }
 
 /**
@@ -121,11 +123,52 @@ export async function run(opts: RunOptions): Promise<void> {
   const blob = new Blob([workerCode], { type: "application/javascript" });
   const workerUrl = URL.createObjectURL(blob);
   const worker = new Worker(workerUrl);
+  const uiEventQueue: unknown[] = [];
+  const uiEventWaiters: Array<(event: unknown) => void> = [];
+
+  const emitUiDebug = opts.onUiDebug ?? ((event: UiDebugEvent) => {
+    if (typeof console !== "undefined" && console.debug) {
+      console.debug("[forai-ui]", event);
+    }
+  });
+
+  const enqueueUiEvent = (event: unknown) => {
+    emitUiDebug({ kind: "event", action: "queue", event });
+    const waiter = uiEventWaiters.shift();
+    if (waiter) {
+      waiter(event);
+    } else {
+      uiEventQueue.push(event);
+    }
+  };
+
+  const nextUiEvent = async (): Promise<unknown> => {
+    if (uiEventQueue.length > 0) {
+      return uiEventQueue.shift();
+    }
+    return new Promise<unknown>((resolve) => {
+      uiEventWaiters.push(resolve);
+    });
+  };
+
+  const uiRuntime = createUiRuntime(enqueueUiEvent, emitUiDebug);
+
+  const onPopState = () => {
+    if (typeof window !== "undefined") {
+      const navEvent = { type: "nav", path: window.location.pathname };
+      enqueueUiEvent(navEvent);
+      emitUiDebug({ kind: "nav", action: "popstate", path: window.location.pathname });
+    }
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("popstate", onPopState);
+  }
 
   // Set up the main thread dispatcher for async ops
   const dispatcher = createDispatcher(sab, {
     onPrint: opts.onPrint,
     onPrompt: opts.onPrompt,
+    onUiEvent: opts.onUiEvent ?? nextUiEvent,
   });
 
   // Start the dispatch loop (runs in background)
@@ -173,6 +216,16 @@ export async function run(opts: RunOptions): Promise<void> {
             }
           }
           break;
+        case "ui":
+          emitUiDebug({ kind: "tree", action: `worker.${String(msg.action ?? "unknown")}`, tree: msg.tree });
+          if (msg.action === "mount") {
+            uiRuntime.mount(msg.tree, typeof msg.selector === "string" ? msg.selector : "#app");
+          } else if (msg.action === "update") {
+            uiRuntime.update(msg.tree);
+          } else if (msg.action === "navigate") {
+            uiRuntime.navigate(String(msg.path ?? "/"));
+          }
+          break;
         case "done":
           cleanup();
           if (msg.success) {
@@ -199,6 +252,10 @@ export async function run(opts: RunOptions): Promise<void> {
 
     function cleanup() {
       dispatcher.stop();
+      uiRuntime.unmount();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("popstate", onPopState);
+      }
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
     }

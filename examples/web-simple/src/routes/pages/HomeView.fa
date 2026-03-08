@@ -1,0 +1,47 @@
+docs HomeView
+    Builds the home page content as a UI tree and returns HTML.
+done
+
+func HomeView
+    emit result as text
+    fail error as text
+body
+    tree = ui.vstack(24) do stack
+        stack.padding(8)
+        ui.text("A modern pipeline language for building reactive applications.", 20)
+        ui.hstack(16) do row
+            row.align("start")
+            ui.vstack(8) do card
+                card.padding(6)
+                card.border(true)
+                ui.text("Sources", 18)
+                ui.text("Where data comes from - event producers like listeners, pollers, and streams.")
+            done
+            ui.vstack(8) do card
+                card.padding(6)
+                card.border(true)
+                ui.text("Flows", 18)
+                ui.text("The glue - declarative wiring that connects sources, funcs, and sinks together.")
+            done
+            ui.vstack(8) do card
+                card.padding(6)
+                card.border(true)
+                ui.text("Funcs", 18)
+                ui.text("The building blocks - imperative code that does the actual computation work.")
+            done
+        done
+        ui.text("Get started by exploring the blog or learning more about us.")
+    done
+    html = ui.to_html(tree)
+    emit html
+done
+
+test HomeView
+    it "returns html with key content"
+        html = HomeView()
+        must str.contains(html, "pipeline language")
+        must str.contains(html, "Sources")
+        must str.contains(html, "Flows")
+        must str.contains(html, "Funcs")
+    done
+done

@@ -15,3 +15,4 @@ pub mod sync_host;
 pub mod typecheck;
 pub mod sync_runtime;
 pub mod types;
+pub mod ui_html;

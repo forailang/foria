@@ -48,8 +48,9 @@ pub enum TopDecl {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct UsesDecl {
-    pub name: String,  // bound name (e.g. "lib" or "Round")
-    pub path: String,  // path string (e.g. "./lib" or "./round.fa")
+    pub name: String,       // bound name (e.g. "lib" or "Round")
+    pub path: String,       // path string (e.g. "./lib" or "./round.fa")
+    pub imports: Vec<String>, // named imports (e.g. ["View", "Loop"]); empty = import whole module
     pub span: Span,
 }
 
@@ -235,6 +236,7 @@ pub enum Expr {
     Call {
         func: String,
         args: Vec<Expr>,
+        children: Option<Vec<Statement>>,
     },
     Interp(Vec<InterpExpr>),
     Ternary {
@@ -380,6 +382,16 @@ pub struct FlowStateDecl {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+pub struct FlowLocalDecl {
+    pub bind: String,
+    pub callee: String,
+    pub args: Vec<Arg>,
+    pub value: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FlowSendNowait {
     pub target: String,
     pub args: Vec<String>,
@@ -401,6 +413,9 @@ pub struct PortMapping {
 pub struct NextWire {
     pub port: String,
     pub wire: String,
+    pub via_callee: Option<String>,
+    pub via_inputs: Vec<PortMapping>,
+    pub via_outputs: Vec<NextWire>,
     pub span: Span,
 }
 
@@ -415,8 +430,19 @@ pub struct ContinuationWire {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+pub struct FlowOnBlock {
+    pub port: String,
+    pub wire: String,
+    pub body: Vec<StepThenItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum StepThenItem {
     Next(NextWire),
+    On(FlowOnBlock),
+    Step(StepBlock),
     Continuation(ContinuationWire),
     Emit(FlowEmitStmt),
     Fail(FlowEmitStmt),
@@ -437,7 +463,9 @@ pub enum FlowStatement {
     Emit(FlowEmitStmt),
     Fail(FlowEmitStmt),
     State(FlowStateDecl),
+    Local(FlowLocalDecl),
     SendNowait(FlowSendNowait),
+    Choose(FlowChooseBlock),
     Branch(FlowBranchBlock),
     Log(FlowLogStmt),
 }
@@ -454,6 +482,13 @@ pub struct FlowLogStmt {
 pub struct FlowBranchBlock {
     pub condition: Option<Expr>,
     pub body: Vec<FlowStatement>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct FlowChooseBlock {
+    pub branches: Vec<FlowBranchBlock>,
     pub span: Span,
 }
 
@@ -482,4 +517,8 @@ pub struct Flow {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub body: Vec<Statement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<String>,
 }

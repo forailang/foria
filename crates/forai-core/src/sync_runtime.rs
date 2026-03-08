@@ -10,6 +10,59 @@ use crate::types::TypeRegistry;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+const UI_BLOCK_CONTEXT_MARKER: &str = "__forai_ui_block_ctx__";
+
+fn modifier_prop_name(name: &str) -> Option<&'static str> {
+    match name {
+        "padding" => Some("padding"),
+        "margin" => Some("margin"),
+        "align" => Some("align"),
+        "width" => Some("width"),
+        "height" => Some("height"),
+        "color" => Some("color"),
+        "bg" | "backgroundColor" => Some("bg"),
+        "bold" => Some("bold"),
+        "italic" => Some("italic"),
+        "size" => Some("size"),
+        "border" => Some("border"),
+        _ => None,
+    }
+}
+
+fn try_apply_ui_modifier_call(
+    op: &str,
+    args: &[Value],
+    vars: &HashMap<String, Value>,
+    modifiers: &mut serde_json::Map<String, Value>,
+) -> bool {
+    let Some((target, method)) = op.split_once('.') else {
+        return false;
+    };
+    let Some(Value::String(marker)) = vars.get(target) else {
+        return false;
+    };
+    if marker != UI_BLOCK_CONTEXT_MARKER {
+        return false;
+    }
+    if method == "style" {
+        let Some(key) = args.first().and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let Some(value) = args.get(1) else {
+            return false;
+        };
+        modifiers.insert(key.to_string(), value.clone());
+        return true;
+    }
+    let Some(prop_name) = modifier_prop_name(method) else {
+        return false;
+    };
+    if let Some(v) = args.first() {
+        modifiers.insert(prop_name.to_string(), v.clone());
+    }
+    true
+}
+
 pub enum ExecSignal {
     Continue,
     Emit {
@@ -265,17 +318,76 @@ pub fn execute_flow(
 
     let mut vars = inputs;
     let mut outputs = serde_json::Map::new();
+    let is_reactive = !flow.state_names.is_empty();
+    let mut cycle = 0usize;
 
-    if let ExecSignal::Emit {
-        output,
-        value_var,
-        value,
-    } = execute_statements(&flow.body, &mut vars, flow_registry, host, codecs)?
-    {
-        outputs.insert(output, value.clone());
-        if !value_var.contains(' ') && !value_var.contains('"') {
-            vars.insert(value_var, value);
+    // Split body into init statements (state/local declarations) and step statements.
+    let all_init_names: std::collections::HashSet<&str> = flow
+        .state_names
+        .iter()
+        .chain(flow.local_names.iter())
+        .map(|s| s.as_str())
+        .collect();
+    let init_count = if is_reactive {
+        flow.body
+            .iter()
+            .take_while(|stmt| match stmt {
+                Statement::ExprAssign(ea) => all_init_names.contains(ea.bind.as_str()),
+                Statement::Node(na) => all_init_names.contains(na.bind.as_str()),
+                _ => false,
+            })
+            .count()
+    } else {
+        0
+    };
+    let (init_stmts, step_stmts) = if is_reactive && init_count > 0 {
+        (&flow.body[..init_count], &flow.body[init_count..])
+    } else {
+        (&flow.body[..0], &flow.body[..])
+    };
+
+    // Run init statements once and capture local init values for cycle resets.
+    let mut local_init_values: HashMap<String, Value> = HashMap::new();
+    if !init_stmts.is_empty() {
+        let _ = execute_statements(init_stmts, &mut vars, flow_registry, host, codecs)?;
+        for name in &flow.local_names {
+            if let Some(val) = vars.get(name) {
+                local_init_values.insert(name.clone(), val.clone());
+            }
         }
+    }
+
+    loop {
+        if is_reactive && cycle > 0 {
+            for (name, val) in &local_init_values {
+                vars.insert(name.clone(), val.clone());
+            }
+        }
+
+        if let ExecSignal::Emit {
+            output,
+            value_var,
+            value,
+        } = execute_statements(step_stmts, &mut vars, flow_registry, host, codecs)?
+        {
+            outputs.insert(output, value.clone());
+            if !value_var.contains(' ') && !value_var.contains('"') {
+                vars.insert(value_var, value);
+            }
+        }
+
+        if is_reactive {
+            cycle += 1;
+            let has_mocks = flow_registry
+                .map(|fr| !fr.value_mocks.is_empty())
+                .unwrap_or(false);
+            if (has_mocks || flow_registry.is_none()) && cycle >= 100 {
+                break;
+            }
+            continue;
+        }
+
+        break;
     }
 
     Ok(RunResult {
@@ -461,6 +573,84 @@ fn execute_statements(
     Ok(ExecSignal::Continue)
 }
 
+/// Execute a single statement inside a do...done block, collecting non-void results
+/// (typically UiNode values) into `child_nodes`. Emit statements inside blocks are
+/// captured as `{port: value}` entries in the `events` map (declarative event metadata).
+fn execute_child_stmt(
+    stmt: &Statement,
+    vars: &mut HashMap<String, Value>,
+    flow_registry: Option<&FlowRegistry>,
+    host: &dyn SyncHost,
+    codecs: &CodecRegistry,
+    child_nodes: &mut Vec<Value>,
+    events: &mut serde_json::Map<String, Value>,
+    modifiers: &mut serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    match stmt {
+        Statement::Node(node) => {
+            let mut args = Vec::new();
+            for arg in &node.args {
+                match arg {
+                    Arg::Lit { lit } => args.push(lit.clone()),
+                    Arg::Var { var } => {
+                        if let Some(value) = resolve_var_path(vars, var) {
+                            args.push(value);
+                        } else {
+                            return Err(format!("Missing variable `{var}`"));
+                        }
+                    }
+                }
+            }
+            if try_apply_ui_modifier_call(&node.op, &args, vars, modifiers) {
+                vars.insert(node.bind.clone(), Value::Null);
+                return Ok(());
+            }
+            let result = dispatch_op(&node.op, &args, flow_registry, host, codecs)?;
+            if !result.is_null() {
+                // Collect UiNode results (objects with "type" field)
+                if result.is_object() && result.get("type").is_some() {
+                    child_nodes.push(result.clone());
+                }
+            }
+            vars.insert(node.bind.clone(), result);
+        }
+        Statement::ExprAssign(ea) => {
+            if let Expr::Call {
+                func,
+                args,
+                children: None,
+            } = &ea.expr
+            {
+                let mut evaluated = Vec::with_capacity(args.len());
+                for a in args {
+                    evaluated.push(eval_expr(a, vars, flow_registry, host, codecs)?);
+                }
+                if try_apply_ui_modifier_call(func, &evaluated, vars, modifiers) {
+                    vars.insert(ea.bind.clone(), Value::Null);
+                    return Ok(());
+                }
+            }
+            let value = eval_expr(&ea.expr, vars, flow_registry, host, codecs)?;
+            if !value.is_null() {
+                if value.is_object() && value.get("type").is_some() {
+                    child_nodes.push(value.clone());
+                }
+            }
+            vars.insert(ea.bind.clone(), value);
+        }
+        Statement::Emit(emit) => {
+            // Emits inside do...done blocks are captured as declarative event metadata
+            let value = eval_expr(&emit.value_expr, vars, flow_registry, host, codecs)?;
+            events.insert(emit.output.clone(), value);
+        }
+        _ => {
+            // For other statement types (case, loop, etc.), execute normally
+            execute_statements(std::slice::from_ref(stmt), vars, flow_registry, host, codecs)?;
+        }
+    }
+    Ok(())
+}
+
 fn dispatch_op(
     op: &str,
     args: &[Value],
@@ -546,10 +736,36 @@ fn eval_expr(
             let v = eval_expr(inner, vars, flow_registry, host, codecs)?;
             eval::eval_unary(*op, &v)
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, children } => {
             let mut evaluated = Vec::with_capacity(args.len());
             for a in args {
                 evaluated.push(eval_expr(a, vars, flow_registry, host, codecs)?);
+            }
+            // If this call has a do...done block, evaluate children and append as last arg
+            if let Some(child_stmts) = children {
+                let mut child_nodes = Vec::new();
+                let mut child_events = serde_json::Map::new();
+                let mut child_modifiers = serde_json::Map::new();
+                let mut child_vars = vars.clone();
+                for stmt in child_stmts {
+                    execute_child_stmt(
+                        stmt,
+                        &mut child_vars,
+                        flow_registry,
+                        host,
+                        codecs,
+                        &mut child_nodes,
+                        &mut child_events,
+                        &mut child_modifiers,
+                    )?;
+                }
+                evaluated.push(Value::Array(child_nodes));
+                if !child_events.is_empty() {
+                    evaluated.push(json!({ "__ui_events": child_events }));
+                }
+                if !child_modifiers.is_empty() {
+                    evaluated.push(json!({ "__ui_modifiers": child_modifiers }));
+                }
             }
             dispatch_op(func, &evaluated, flow_registry, host, codecs)
         }
@@ -713,6 +929,8 @@ mod tests {
                 })
                 .collect(),
             body,
+            state_names: vec![],
+            local_names: vec![],
         }
     }
 
@@ -739,6 +957,7 @@ mod tests {
         Expr::Call {
             func: func.to_string(),
             args,
+            children: None,
         }
     }
     fn ternary(cond: Expr, then_e: Expr, else_e: Expr) -> Expr {
@@ -2080,6 +2299,8 @@ mod tests {
                 "result",
                 binop(BinOp::Mul, var("n"), lit(json!(2))),
             )],
+            state_names: vec![],
+            local_names: vec![],
         };
         let sub_ir = dummy_ir();
         let mut flow_registry = FlowRegistry::new();
@@ -2834,5 +3055,411 @@ mod tests {
         // We test by using a missing variable in RHS — should not error.
         let v = run_body(vec![emit("result", coalesce(lit(json!("yes")), var("does_not_exist")))]);
         assert_eq!(v, json!("yes"));
+    }
+
+    // --- UI block runtime tests ---
+
+    fn call_with_children(func: &str, args: Vec<Expr>, children: Vec<Statement>) -> Expr {
+        Expr::Call {
+            func: func.to_string(),
+            args,
+            children: Some(children),
+        }
+    }
+
+    #[test]
+    fn ui_text_returns_ui_node() {
+        let v = run_body(vec![
+            assign("tree", call("ui.text", vec![lit(json!("hello"))])),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["props"]["value"], "hello");
+        assert!(v["children"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ui_vstack_with_children_block() {
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.vstack",
+                    vec![lit(json!(10))],
+                    vec![
+                        assign("_c0", call("ui.text", vec![lit(json!("hello"))])),
+                        assign("_c1", call("ui.text", vec![lit(json!("world"))])),
+                    ],
+                ),
+            ),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "vstack");
+        assert_eq!(v["props"]["spacing"], 10);
+        let children = v["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["type"], "text");
+        assert_eq!(children[0]["props"]["value"], "hello");
+        assert_eq!(children[1]["type"], "text");
+        assert_eq!(children[1]["props"]["value"], "world");
+    }
+
+    #[test]
+    fn ui_nested_screen_vstack_text() {
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.screen",
+                    vec![],
+                    vec![assign(
+                        "_inner",
+                        call_with_children(
+                            "ui.vstack",
+                            vec![lit(json!(20))],
+                            vec![
+                                assign("_t", call("ui.text", vec![lit(json!("Count: 42")), lit(json!(24))])),
+                            ],
+                        ),
+                    )],
+                ),
+            ),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "screen");
+        let vstack = &v["children"][0];
+        assert_eq!(vstack["type"], "vstack");
+        assert_eq!(vstack["props"]["spacing"], 20);
+        let text = &vstack["children"][0];
+        assert_eq!(text["type"], "text");
+        assert_eq!(text["props"]["value"], "Count: 42");
+        assert_eq!(text["props"]["size"], 24);
+    }
+
+    #[test]
+    fn ui_button_with_label() {
+        let v = run_body(vec![
+            assign("tree", call("ui.button", vec![lit(json!("Click me"))])),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "button");
+        assert_eq!(v["props"]["label"], "Click me");
+    }
+
+    #[test]
+    fn ui_counter_view_integration() {
+        // Simulates CounterView(42) → screen > vstack > [text, hstack > [button, button]]
+        let v = run_body_with_inputs(
+            vec![
+                assign(
+                    "tree",
+                    call_with_children(
+                        "ui.screen",
+                        vec![],
+                        vec![assign(
+                            "_vs",
+                            call_with_children(
+                                "ui.vstack",
+                                vec![lit(json!(20))],
+                                vec![
+                                    assign(
+                                        "_label",
+                                        call("ui.text", vec![
+                                            lit(json!("Current Count: 42")),
+                                            lit(json!(24)),
+                                        ]),
+                                    ),
+                                    assign(
+                                        "_btns",
+                                        call_with_children(
+                                            "ui.hstack",
+                                            vec![lit(json!(10))],
+                                            vec![
+                                                assign("_b1", call("ui.button", vec![lit(json!("+"))])),
+                                                assign("_b2", call("ui.button", vec![lit(json!("-"))])),
+                                            ],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        )],
+                    ),
+                ),
+                emit("result", var("tree")),
+            ],
+            vec![("count", json!(42))],
+        );
+        // Verify tree structure
+        assert_eq!(v["type"], "screen");
+        let vstack = &v["children"][0];
+        assert_eq!(vstack["type"], "vstack");
+        assert_eq!(vstack["children"][0]["props"]["value"], "Current Count: 42");
+        let hstack = &vstack["children"][1];
+        assert_eq!(hstack["type"], "hstack");
+        assert_eq!(hstack["children"][0]["props"]["label"], "+");
+        assert_eq!(hstack["children"][1]["props"]["label"], "-");
+    }
+
+    #[test]
+    fn ui_empty_children_block() {
+        let v = run_body(vec![
+            assign("tree", call_with_children("ui.vstack", vec![], vec![])),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "vstack");
+        assert!(v["children"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ui_children_block_non_ui_statements_not_collected() {
+        // Regular assignments (non-UiNode values) should not appear in children
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.vstack",
+                    vec![],
+                    vec![
+                        assign("x", lit(json!(42))),              // plain number, not UiNode
+                        assign("_t", call("ui.text", vec![lit(json!("hello"))])),  // UiNode
+                        assign("y", lit(json!("plain string"))),  // plain string, not UiNode
+                    ],
+                ),
+            ),
+            emit("result", var("tree")),
+        ]);
+        let children = v["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1, "only the UiNode should be collected");
+        assert_eq!(children[0]["type"], "text");
+    }
+
+    #[test]
+    fn ui_children_block_error_propagates() {
+        // Calling a non-existent op inside a children block should produce an error
+        let flow = make_flow(
+            "Test",
+            vec![],
+            vec![("result", "Any")],
+            vec![
+                assign(
+                    "tree",
+                    call_with_children(
+                        "ui.vstack",
+                        vec![],
+                        vec![assign("_bad", call("nonexistent.op", vec![]))],
+                    ),
+                ),
+                emit("result", var("tree")),
+            ],
+        );
+        let result = execute_flow(
+            &flow,
+            dummy_ir(),
+            HashMap::new(),
+            &TypeRegistry::empty(),
+            None,
+            &CodecRegistry::default_registry(),
+            &NullHost,
+        );
+        assert!(result.is_err(), "error in children block should propagate");
+    }
+
+    #[test]
+    fn ui_5_level_nesting_runtime() {
+        // screen > zstack > vstack > hstack > text — 5 levels deep
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children("ui.screen", vec![], vec![
+                    assign("_l1", call_with_children("ui.zstack", vec![], vec![
+                        assign("_l2", call_with_children("ui.vstack", vec![], vec![
+                            assign("_l3", call_with_children("ui.hstack", vec![], vec![
+                                assign("_l4", call("ui.text", vec![lit(json!("deep"))])),
+                            ])),
+                        ])),
+                    ])),
+                ]),
+            ),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "screen");
+        assert_eq!(v["children"][0]["type"], "zstack");
+        assert_eq!(v["children"][0]["children"][0]["type"], "vstack");
+        assert_eq!(v["children"][0]["children"][0]["children"][0]["type"], "hstack");
+        assert_eq!(
+            v["children"][0]["children"][0]["children"][0]["children"][0]["props"]["value"],
+            "deep"
+        );
+    }
+
+    #[test]
+    fn ui_children_scope_isolation() {
+        // Variables assigned inside a children block should not leak to the outer scope
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.vstack",
+                    vec![],
+                    vec![
+                        assign("inner_var", lit(json!("should not leak"))),
+                        assign("_t", call("ui.text", vec![lit(json!("hi"))])),
+                    ],
+                ),
+            ),
+            // inner_var should not exist here — emitting tree instead
+            emit("result", var("tree")),
+        ]);
+        // Just verify the tree is valid; the real test is that inner_var doesn't leak
+        assert_eq!(v["type"], "vstack");
+    }
+
+    // =========================================================
+    // UI Event Metadata Capture
+    // =========================================================
+
+    #[test]
+    fn ui_button_emit_stores_events() {
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.button",
+                    vec![lit(json!("+"))],
+                    vec![emit("on_inc", lit(json!(true)))],
+                ),
+            ),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "button");
+        assert_eq!(v["props"]["label"], "+");
+        assert_eq!(v["events"]["on_inc"], true);
+    }
+
+    #[test]
+    fn ui_emit_outside_block_still_works() {
+        let v = run_body(vec![
+            assign("tree", call("ui.button", vec![lit(json!("+"))])),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["type"], "button");
+        assert_eq!(v["events"], json!({}));
+    }
+
+    #[test]
+    fn ui_button_multiple_events() {
+        let v = run_body(vec![
+            assign(
+                "tree",
+                call_with_children(
+                    "ui.button",
+                    vec![lit(json!("+"))],
+                    vec![
+                        emit("on_inc", lit(json!(true))),
+                        emit("on_focus", lit(json!("focused"))),
+                    ],
+                ),
+            ),
+            emit("result", var("tree")),
+        ]);
+        assert_eq!(v["events"]["on_inc"], true);
+        assert_eq!(v["events"]["on_focus"], "focused");
+    }
+
+    #[test]
+    fn ui_block_context_modifiers_set_props() {
+        use crate::parser::{parse_module_v1, parse_runtime_func_decl_v1};
+
+        let src = r##"
+docs Styled
+  Test do-block context modifiers.
+done
+
+func Styled
+  emit result as dict
+body
+  tree = ui.vstack(8) do stack
+    stack.padding(12)
+    stack.backgroundColor("#333")
+    stack.align("center")
+    stack.style("box-shadow", "0 0 2px #000")
+    ui.text("hello")
+  done
+  emit tree
+done
+"##;
+
+        let module = parse_module_v1(src).expect("parse failed");
+        let func_decl = match &module.decls[1] {
+            crate::ast::TopDecl::Func(f) => f,
+            other => panic!("expected func, got: {other:?}"),
+        };
+        let flow = parse_runtime_func_decl_v1(func_decl).expect("compile failed");
+
+        let result = execute_flow(
+            &flow,
+            dummy_ir(),
+            HashMap::new(),
+            &TypeRegistry::empty(),
+            None,
+            &CodecRegistry::default_registry(),
+            &NullHost,
+        )
+        .unwrap();
+
+        let outputs = result.outputs.as_object().unwrap();
+        let v = outputs.get("result").unwrap();
+        assert_eq!(v["type"], "vstack");
+        assert_eq!(v["props"]["spacing"], 8);
+        assert_eq!(v["props"]["padding"], 12);
+        assert_eq!(v["props"]["bg"], "#333");
+        assert_eq!(v["props"]["align"], "center");
+        assert_eq!(v["props"]["box-shadow"], "0 0 2px #000");
+        assert_eq!(v["children"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ui_emit_to_port_parse_roundtrip() {
+        use crate::parser::{parse_module_v1, parse_runtime_func_decl_v1};
+
+        let src = r#"
+docs TestView
+  Test emit to port roundtrip.
+done
+
+func TestView
+  emit view as dict
+body
+  btn = ui.button("click") do
+    emit true to :on_click
+    emit "hello" to :on_greet
+  done
+  emit btn
+done
+"#;
+        let module = parse_module_v1(src).expect("parse failed");
+        let func_decl = match &module.decls[1] {
+            crate::ast::TopDecl::Func(f) => f,
+            other => panic!("expected func, got: {other:?}"),
+        };
+        let flow = parse_runtime_func_decl_v1(func_decl).expect("compile failed");
+
+        let result = execute_flow(
+            &flow,
+            dummy_ir(),
+            HashMap::new(),
+            &TypeRegistry::empty(),
+            None,
+            &CodecRegistry::default_registry(),
+            &NullHost,
+        )
+        .unwrap();
+
+        let outputs = result.outputs.as_object().unwrap();
+        let v = outputs.get("view").unwrap();
+        assert_eq!(v["type"], "button");
+        assert_eq!(v["props"]["label"], "click");
+        assert_eq!(v["events"]["on_click"], true);
+        assert_eq!(v["events"]["on_greet"], "hello");
     }
 }

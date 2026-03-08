@@ -1,0 +1,220 @@
+{
+  "forai_ir": "0.1",
+  "flow": "main",
+  "inputs": [],
+  "outputs": [],
+  "nodes": [
+    {
+      "id": "counter",
+      "op": "expr:0",
+      "bind": "counter",
+      "args": [],
+      "when": "true"
+    },
+    {
+      "id": "_step_0",
+      "op": "View",
+      "bind": "_step_0",
+      "args": [
+        {
+          "var": "counter"
+        }
+      ],
+      "when": "true"
+    },
+    {
+      "id": "_type_1",
+      "op": "type.of",
+      "bind": "_type_1",
+      "args": [
+        {
+          "var": "_step_0"
+        }
+      ],
+      "when": "true"
+    },
+    {
+      "id": "_has_1",
+      "op": "obj.has",
+      "bind": "_has_1",
+      "args": [
+        {
+          "var": "_step_0"
+        },
+        {
+          "lit": "action"
+        }
+      ],
+      "when": "case(_type_1 == \"dict\")"
+    },
+    {
+      "id": "_route_1",
+      "op": "obj.get",
+      "bind": "_route_1",
+      "args": [
+        {
+          "var": "_step_0"
+        },
+        {
+          "lit": "action"
+        }
+      ],
+      "when": "(case(_type_1 == \"dict\")) and (case(_has_1 == true))"
+    },
+    {
+      "id": "inc",
+      "op": "obj.get",
+      "bind": "inc",
+      "args": [
+        {
+          "var": "_step_0"
+        },
+        {
+          "lit": "value"
+        }
+      ],
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_inc\"))"
+    },
+    {
+      "id": "counter",
+      "op": "Update",
+      "bind": "counter",
+      "args": [
+        {
+          "var": "counter"
+        },
+        {
+          "lit": "inc"
+        }
+      ],
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_inc\"))"
+    },
+    {
+      "id": "dec",
+      "op": "obj.get",
+      "bind": "dec",
+      "args": [
+        {
+          "var": "_step_0"
+        },
+        {
+          "lit": "value"
+        }
+      ],
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_dec\"))"
+    },
+    {
+      "id": "counter",
+      "op": "Update",
+      "bind": "counter",
+      "args": [
+        {
+          "var": "counter"
+        },
+        {
+          "lit": "dec"
+        }
+      ],
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_dec\"))"
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "kind": "node",
+        "id": "counter"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_0",
+        "port": "arg0"
+      },
+      "when": "true"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "_step_0"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_type_1",
+        "port": "arg0"
+      },
+      "when": "true"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "_step_0"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_has_1",
+        "port": "arg0"
+      },
+      "when": "case(_type_1 == \"dict\")"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "_step_0"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_route_1",
+        "port": "arg0"
+      },
+      "when": "(case(_type_1 == \"dict\")) and (case(_has_1 == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "_step_0"
+      },
+      "to": {
+        "kind": "node",
+        "id": "inc",
+        "port": "arg0"
+      },
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_inc\"))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "counter"
+      },
+      "to": {
+        "kind": "node",
+        "id": "counter",
+        "port": "arg0"
+      },
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_inc\"))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "_step_0"
+      },
+      "to": {
+        "kind": "node",
+        "id": "dec",
+        "port": "arg0"
+      },
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_dec\"))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "counter"
+      },
+      "to": {
+        "kind": "node",
+        "id": "counter",
+        "port": "arg0"
+      },
+      "when": "((case(_type_1 == \"dict\")) and (case(_has_1 == true))) and (case(_route_1 == \"on_dec\"))"
+    }
+  ],
+  "emits": []
+}

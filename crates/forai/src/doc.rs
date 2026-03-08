@@ -1125,7 +1125,16 @@ done
         }
         copy_dir_recursive(&read_docs_dir, &tmp);
 
-        let tmp_entry = tmp.join("main.fa");
+        // Read the main entry point from forai.json (defaults to "main.fa")
+        let config_path = tmp.join("forai.json");
+        let main_rel = if config_path.exists() {
+            let config_text = fs::read_to_string(&config_path).unwrap();
+            let config: serde_json::Value = serde_json::from_str(&config_text).unwrap();
+            config["main"].as_str().unwrap_or("main.fa").to_string()
+        } else {
+            "main.fa".to_string()
+        };
+        let tmp_entry = tmp.join(&main_rel);
         let text = fs::read_to_string(&tmp_entry).unwrap();
         let module = parser::parse_module_v1(&text).unwrap();
 

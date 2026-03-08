@@ -61,6 +61,153 @@ pub fn read_f64_arg(args: &[Value], index: usize, op: &str) -> Result<f64, Strin
         .ok_or_else(|| format!("Op `{op}` expected number at arg{index}"))
 }
 
+/// Build a UiNode from a `ui.*` op call.
+/// Convention: all positional args go into `props` by name based on the node type.
+/// The last arg, if it's a list (from do...done block evaluation), becomes `children`.
+fn build_ui_node(op: &str, args: &[Value]) -> Result<Value, String> {
+    let node_type = op.strip_prefix("ui.").unwrap_or(op);
+    let mut props = serde_json::Map::new();
+    let mut children = Value::Array(vec![]);
+
+    // Optional internal wrappers from do...done evaluation:
+    // { "__ui_events": {...} }, { "__ui_modifiers": {...} }
+    let mut effective_args = args;
+    let mut extracted_events: Option<serde_json::Map<String, Value>> = None;
+    let mut extracted_modifiers: Option<serde_json::Map<String, Value>> = None;
+    loop {
+        let Some(last) = effective_args.last() else {
+            break;
+        };
+        let Some(last_obj) = last.as_object() else {
+            break;
+        };
+        if let Some(ev) = last_obj.get("__ui_events").and_then(|v| v.as_object()) {
+            extracted_events = Some(ev.clone());
+            effective_args = &effective_args[..effective_args.len() - 1];
+            continue;
+        }
+        if let Some(mods) = last_obj.get("__ui_modifiers").and_then(|v| v.as_object()) {
+            extracted_modifiers = Some(mods.clone());
+            effective_args = &effective_args[..effective_args.len() - 1];
+            continue;
+        }
+        // Backward compatibility: previously the trailing non-UiNode object was the raw events map.
+        if last_obj.get("type").is_none() {
+            extracted_events = Some(last_obj.clone());
+            effective_args = &effective_args[..effective_args.len() - 1];
+        }
+        break;
+    }
+    let args = effective_args;
+
+    // Container types: all object args become children, unless a single list arg is passed
+    let is_container = matches!(node_type, "screen" | "vstack" | "hstack" | "zstack");
+
+    if is_container {
+        // If a single list-of-objects arg, use it as children directly
+        if args.len() == 1 {
+            if let Some(arr) = args[0].as_array() {
+                if arr.iter().all(|v| v.is_object()) && !arr.is_empty() {
+                    children = args[0].clone();
+                }
+            } else if args[0].is_object() {
+                // Single object child
+                children = Value::Array(vec![args[0].clone()]);
+            }
+        } else {
+            // Multiple args: collect objects as children, arrays as children lists, numbers as props
+            let mut child_list = Vec::new();
+            for arg in args {
+                if let Some(arr) = arg.as_array() {
+                    // Array of child nodes from do...done block
+                    for item in arr {
+                        if item.is_object() {
+                            child_list.push(item.clone());
+                        }
+                    }
+                } else if arg.is_object() {
+                    child_list.push(arg.clone());
+                } else if let Some(n) = arg.as_u64() {
+                    props.insert("spacing".to_string(), json!(n));
+                }
+            }
+            if !child_list.is_empty() {
+                children = Value::Array(child_list);
+            }
+        }
+    } else {
+        // Separate children (last arg if it's a list of objects) from props
+        let prop_args = if let Some(last) = args.last() {
+            if let Some(arr) = last.as_array() {
+                if arr.iter().all(|v| v.is_object()) && !arr.is_empty() {
+                    children = last.clone();
+                    &args[..args.len() - 1]
+                } else {
+                    args
+                }
+            } else {
+                args
+            }
+        } else {
+            args
+        };
+
+        // Map positional args to named props based on node type
+        match node_type {
+            "text" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("value".to_string(), v.clone());
+                }
+                if let Some(v) = prop_args.get(1) {
+                    props.insert("size".to_string(), v.clone());
+                }
+            }
+            "button" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("label".to_string(), v.clone());
+                }
+            }
+            "input" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("placeholder".to_string(), v.clone());
+                }
+                if let Some(v) = prop_args.get(1) {
+                    props.insert("value".to_string(), v.clone());
+                }
+            }
+            "toggle" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("value".to_string(), v.clone());
+                }
+            }
+            "image" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("src".to_string(), v.clone());
+                }
+            }
+            _ => {
+                // Generic: put all args as numbered props
+                for (i, v) in prop_args.iter().enumerate() {
+                    props.insert(format!("arg{i}"), v.clone());
+                }
+            }
+        }
+    }
+
+    let mut node = serde_json::Map::new();
+    if let Some(mods) = extracted_modifiers {
+        for (k, v) in mods {
+            props.insert(k, v);
+        }
+    }
+    node.insert("type".to_string(), json!(node_type));
+    node.insert("props".to_string(), Value::Object(props));
+    node.insert("children".to_string(), children);
+    let events = extracted_events.map(Value::Object).unwrap_or_else(|| json!({}));
+    node.insert("events".to_string(), events);
+    Ok(Value::Object(node))
+}
+
 fn extract_first_number(s: &str) -> Option<f64> {
     let re = Regex::new(r"-?\d+(\.\d+)?").unwrap();
     re.find(s).and_then(|m| m.as_str().parse::<f64>().ok())
@@ -563,11 +710,39 @@ pub fn known_ops() -> &'static [&'static str] {
         // route
         "route.match",
         "route.params",
+        "route.get",
+        "route.post",
+        "route.put",
+        "route.delete",
+        "route.patch",
         // html
         "html.escape",
         "html.unescape",
         // template
         "tmpl.render",
+        // Docs
+        "docs.namespaces",
+        "docs.ops",
+        "docs.detail",
+        // UI
+        "ui.screen",
+        "ui.vstack",
+        "ui.hstack",
+        "ui.zstack",
+        "ui.text",
+        "ui.button",
+        "ui.input",
+        "ui.toggle",
+        "ui.image",
+        "ui.shape",
+        "ui.list",
+        "ui.render",
+        "ui.events",
+        "ui.mount",
+        "ui.update",
+        "ui.navigate",
+        "ui.current_path",
+        "ui.to_html",
     ]
 }
 
@@ -1922,6 +2097,14 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
             let path = read_string_arg(args, 1, op)?;
             Ok(route_extract_params(&pattern, &path))
         }
+        "route.get" | "route.post" | "route.put" | "route.delete" | "route.patch" => {
+            let pattern = read_string_arg(args, 0, op)?;
+            let req = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
+            let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            let path = req.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let expected = op.strip_prefix("route.").unwrap().to_uppercase();
+            Ok(json!(method == expected && route_match_bool(&pattern, path)))
+        }
 
         // --- HTML ops ---
         "html.escape" => {
@@ -1970,6 +2153,19 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
                 .get(&format)
                 .ok_or_else(|| format!("codec.encode_pretty: unknown format `{format}`"))?;
             codec.encode_pretty(value).map(|s| Value::String(s))
+        }
+
+        // ── UI ops ──
+        "ui.screen" | "ui.vstack" | "ui.hstack" | "ui.zstack" | "ui.text" | "ui.button"
+        | "ui.input" | "ui.toggle" | "ui.image" | "ui.shape" | "ui.list" => {
+            build_ui_node(op, args)
+        }
+
+        "ui.to_html" => {
+            let tree = args
+                .first()
+                .ok_or_else(|| "Op `ui.to_html` missing arg0 (UiNode tree)".to_string())?;
+            Ok(Value::String(crate::ui_html::render_html(tree)))
         }
 
         // Format-specific codec ops: {format}.decode(text), {format}.encode(value), etc.

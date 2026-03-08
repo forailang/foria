@@ -1,0 +1,36 @@
+use { View, Update } from "./app"
+
+docs main
+    Counter UI app. Renders a counter with increment and decrement buttons.
+    Buttons declare semantic events (on_inc, on_dec, on_quit) via do...done blocks.
+    ui.events matches key presses against button labels in the rendered tree,
+    so no manual key-to-action mapping is needed.
+done
+
+flow main
+body
+    state counter = 0
+
+    step View(counter to :count) then
+        on :on_inc as inc then
+            step Update(counter to :count, "inc" to :type) then
+                next :count to counter
+            done
+        done
+        on :on_dec as dec then
+            step Update(counter to :count, "dec" to :type) then
+                next :count to counter
+            done
+        done
+    done
+done
+
+test main
+    mock View => {type: "action", action: "on_inc", value: true}
+    mock Update => 1
+    it "runs"
+        _ = main()
+        ok = true
+        must ok == true
+    done
+done

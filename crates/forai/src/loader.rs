@@ -7,13 +7,77 @@ use crate::parser;
 use crate::runtime;
 use crate::sema;
 use crate::typecheck;
-use forai_core::ast::{DeclKind, FlowDecl, SourceLoopBlock, Statement, TopDecl};
+use forai_core::ast::{DeclKind, FlowDecl, SourceLoopBlock, Statement, TopDecl, UsesDecl};
 use forai_core::codec::CodecRegistry;
 use forai_core::ir;
 use forai_core::types::TypeRegistry;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Register imports from a loaded module into sub_registry, respecting named imports.
+/// When `uses.imports` is non-empty, registers only the named items without module prefix.
+/// When empty, registers the whole module with prefix as before.
+fn register_uses_imports(
+    uses: &UsesDecl,
+    resolved: &Path,
+    sub_registry: &mut FlowRegistry,
+    loading_set: &mut HashSet<String>,
+    extra_ops: &HashSet<String>,
+    resolved_deps: &ResolvedDeps,
+    context_path: &Path,
+) -> Result<(), String> {
+    if resolved.is_file() {
+        let sub = load_single_file(&uses.name, resolved, loading_set, extra_ops, resolved_deps)?;
+        if uses.imports.is_empty() {
+            sub_registry.insert(uses.name.clone(), sub);
+        } else {
+            // Single file exports one program — register under each imported name
+            for import_name in &uses.imports {
+                sub_registry.insert(import_name.clone(), sub.clone());
+            }
+        }
+    } else if resolved.is_dir() {
+        let loaded = load_module(&uses.name, resolved, loading_set, extra_ops, resolved_deps)?;
+        if uses.imports.is_empty() {
+            for (name, program) in loaded.flows {
+                sub_registry.insert(name, program);
+            }
+        } else {
+            // Pick only the requested names, strip the module prefix
+            let prefix = format!("{}.", uses.name);
+            for import_name in &uses.imports {
+                let qualified = format!("{}{}", prefix, import_name);
+                if let Some(program) = loaded.flows.get(&qualified) {
+                    sub_registry.insert(import_name.clone(), program.clone());
+                } else {
+                    return Err(format!(
+                        "{}: '{}' not found in module '{}'",
+                        context_path.display(),
+                        import_name,
+                        uses.name
+                    ));
+                }
+            }
+            // Also include transitive dependencies (sub-imports that the
+            // named funcs depend on at runtime). These are entries without
+            // the module prefix — they were propagated from nested use decls.
+            for (name, program) in &loaded.flows {
+                if !name.starts_with(&prefix) {
+                    sub_registry.insert(name.clone(), program.clone());
+                }
+            }
+        }
+    } else {
+        return Err(format!(
+            "{}: import '{}' not found at '{}'",
+            context_path.display(),
+            uses.name,
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
 
 fn resolve_use_path(
     uses_path: &str,
@@ -50,7 +114,7 @@ fn format_unknown_op(prefix: &str, op: &str) -> String {
 
 fn collect_expr_ops(expr: &forai_core::ast::Expr, out: &mut Vec<String>) {
     match expr {
-        forai_core::ast::Expr::Call { func, args } => {
+        forai_core::ast::Expr::Call { func, args, .. } => {
             out.push(func.clone());
             for a in args {
                 collect_expr_ops(a, out);
@@ -431,22 +495,7 @@ pub fn load_single_file(
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
             let resolved = resolve_use_path(&uses.path, file_dir, resolved_deps)?;
-            if resolved.is_file() {
-                let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
-                sub_registry.insert(uses.name.clone(), sub);
-            } else if resolved.is_dir() {
-                let sub = load_module(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
-                for (sub_name, program) in sub.flows {
-                    sub_registry.insert(sub_name, program);
-                }
-            } else {
-                return Err(format!(
-                    "{}: import '{}' not found at '{}'",
-                    file_path.display(),
-                    uses.name,
-                    resolved.display()
-                ));
-            }
+            register_uses_imports(uses, &resolved, &mut sub_registry, loading_set, extra_ops, resolved_deps, file_path)?;
         }
     }
 
@@ -557,22 +606,7 @@ pub fn load_module(
         for decl in &module.decls {
             if let TopDecl::Uses(uses) = decl {
                 let resolved = resolve_use_path(&uses.path, module_dir, resolved_deps)?;
-                if resolved.is_file() {
-                    let sub = load_single_file(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
-                    sub_registry.insert(uses.name.clone(), sub);
-                } else if resolved.is_dir() {
-                    let sub = load_module(&uses.name, &resolved, loading_set, extra_ops, resolved_deps)?;
-                    for (name, program) in sub.flows {
-                        sub_registry.insert(name, program);
-                    }
-                } else {
-                    return Err(format!(
-                        "{}: import '{}' not found at '{}'",
-                        file.display(),
-                        uses.name,
-                        resolved.display()
-                    ));
-                }
+                register_uses_imports(uses, &resolved, &mut sub_registry, loading_set, extra_ops, resolved_deps, file)?;
             }
         }
 
@@ -662,22 +696,7 @@ pub fn build_flow_registry(
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
             let resolved = resolve_use_path(&uses.path, base_dir, resolved_deps)?;
-            if resolved.is_file() {
-                let program =
-                    load_single_file(&uses.name, &resolved, &mut loading_set, &extra_ops, resolved_deps)?;
-                registry.insert(uses.name.clone(), program);
-            } else if resolved.is_dir() {
-                let loaded = load_module(&uses.name, &resolved, &mut loading_set, &extra_ops, resolved_deps)?;
-                for (name, program) in loaded.flows {
-                    registry.insert(name, program);
-                }
-            } else {
-                return Err(format!(
-                    "import '{}' not found at '{}'",
-                    uses.name,
-                    resolved.display()
-                ));
-            }
+            register_uses_imports(uses, &resolved, &mut registry, &mut loading_set, &extra_ops, resolved_deps, entry_path)?;
         }
     }
 

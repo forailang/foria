@@ -1,5 +1,5 @@
 docs NotFound
-    Serves the 404 Not Found page.
+    Serves the 404 page using UI tree rendering.
 done
 
 use pages from "./pages"
@@ -7,7 +7,10 @@ use pages from "./pages"
 flow NotFound
     take conn_id as http_conn
 body
-    step pages.Layout("Not Found" to :title, "<p>The page you requested does not exist.</p><p><a href=\"/\">Go home</a></p>" to :content) then
+    step pages.NotFoundView() then
+        next :result to content
+    done
+    step pages.Layout("Not Found" to :title, content to :content) then
         next :result to html
     done
     step http.respond.html(conn_id to :conn_id, 404 to :status, html to :body) done

@@ -41,6 +41,38 @@ cargo run -- dev examples/read-docs/main.fa                  # interactive debug
 cargo run -- doc examples/read-docs/main.fa                  # generate docs artifact (JSON)
 ```
 
+## Build Targets (`forai.json`)
+
+Projects can declare output targets in `forai.json`:
+
+```json
+{
+  "name": "my-app",
+  "main": "src/main.fa",
+  "build": {
+    "out": "dist",
+    "targets": ["wasm", "browser"]
+  }
+}
+```
+
+Supported targets:
+
+| Target | Output | Notes |
+|--------|--------|-------|
+| `wasm` | `dist/<name>.wasm` | Embeds compiled program bundle into the runtime WASM |
+| `browser` | `dist/browser/` | Copies `forai-browser.js`, `<name>.wasm`, and an `index.html` bootstrap |
+| `bundle` | `dist/<name>` | Native self-extracting executable bundle (requires `wasm`) |
+| `native` | `dist/<name>` | Native v3 bundle output |
+
+For browser apps, build and run:
+
+```bash
+cargo run -p forai -- build examples/web-simple-wasm
+cd examples/web-simple-wasm
+./start.sh 3000
+```
+
 ## Language syntax (`.fa`)
 
 ```

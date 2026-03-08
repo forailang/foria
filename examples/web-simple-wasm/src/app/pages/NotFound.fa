@@ -1,0 +1,26 @@
+docs NotFound
+    Not-found page content for unknown routes.
+done
+
+func NotFound
+    take path as text
+    emit result as dict
+body
+    tree = ui.vstack(8) do stack
+    stack.padding(8)
+    ui.text("404", 22) do code
+    code.bold(true)
+done
+ui.text("No page found for #{path}")
+done
+emit tree
+done
+
+test NotFound
+    it "includes the missing path"
+        v = NotFound("/missing")
+        c = obj.get(v, "children")
+        txt = to.text(c)
+        must str.contains(txt, "/missing")
+    done
+done

@@ -1,0 +1,22 @@
+docs NotFoundView
+    Builds the 404 page content as a UI tree and returns HTML.
+done
+
+func NotFoundView
+    emit result as text
+    fail error as text
+body
+    tree = ui.vstack(16) do
+        ui.text("The page you requested does not exist.", 18)
+        ui.text("Check the URL or head back to the home page.")
+    done
+    html = ui.to_html(tree)
+    emit html
+done
+
+test NotFoundView
+    it "returns html with not found message"
+        html = NotFoundView()
+        must str.contains(html, "does not exist")
+    done
+done

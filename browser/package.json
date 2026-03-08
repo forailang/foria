@@ -8,7 +8,9 @@
   "files": ["dist/"],
   "scripts": {
     "build": "node build.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:prepare": "node build-test-modules.mjs",
+    "test": "npm run test:prepare && node --test test/**/*.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.20.0",

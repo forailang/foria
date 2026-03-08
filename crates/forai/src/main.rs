@@ -36,6 +36,8 @@ mod sema {
 }
 mod stdlib_docs;
 mod tester;
+mod ui_layout;
+mod ui_render;
 mod typecheck {
     pub use forai_core::typecheck::*;
 }
@@ -547,7 +549,12 @@ fn find_runtime_wasm() -> Result<PathBuf, String> {
         }
     }
 
-    // 3. Workspace target directory (development builds)
+    // 3. In a workspace/dev context, build runtime to ensure op table stays in sync
+    if let Ok(p) = build_wasm_runtime() {
+        return Ok(p);
+    }
+
+    // 4. Fallback to any existing workspace target artifact
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip1/release/forai-wasm.wasm");
     if dev_path.exists() {
@@ -560,11 +567,7 @@ fn find_runtime_wasm() -> Result<PathBuf, String> {
         return Ok(dev_debug);
     }
 
-    // 5. Auto-build the WASM runtime
-    match build_wasm_runtime() {
-        Ok(p) => Ok(p),
-        Err(e) => Err(format!("WASM runtime not found and auto-build failed: {e}")),
-    }
+    Err("WASM runtime not found (and runtime rebuild failed)".to_string())
 }
 
 fn build_wasm_runtime() -> Result<PathBuf, String> {
@@ -1607,7 +1610,7 @@ done
         local
             .run_until(async {
                 let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../examples/read-docs/app/router/Classify.fa");
+                    .join("../../examples/read-docs/src/app/router/Classify.fa");
                 let (flow, ir, registry, flow_registry, _ffi_registry) =
                     compile_source(&path, &ResolvedDeps::empty()).unwrap_or_else(|e| panic!("compile failed: {e}"));
 

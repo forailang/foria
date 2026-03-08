@@ -1,0 +1,49 @@
+docs AboutView
+    Builds the about page content as a UI tree and returns HTML.
+done
+
+func AboutView
+    emit result as text
+    fail error as text
+body
+    tree = ui.vstack(20) do stack
+        stack.padding(8)
+        ui.text("forai is a text-first DSL for building reactive, pipeline-based applications.", 18)
+        ui.vstack(12) do details
+            details.margin(4)
+            ui.text("The core idea is simple: data flows through a tree of pipelines. Sources produce events, funcs process them, and sinks deliver results. Flows wire everything together declaratively - no callbacks, no shared state.")
+            ui.text("The same application can render in a terminal, serve as a web page, or run as a native app. UI components are platform-agnostic trees that each renderer translates to its native format.")
+            ui.text("This website is itself a forai application. Each page is a func that builds a UI tree, converts it to HTML, and serves it over HTTP - all in a few lines of declarative code.")
+        done
+        ui.hstack(24) do row
+            row.align("start")
+            ui.vstack(8) do card
+                card.padding(6)
+                ui.text("Pipeline-first", 16)
+                ui.text("Every app is a tree of pipelines. Data flows forward, concurrency is automatic.")
+            done
+            ui.vstack(8) do card
+                card.padding(6)
+                ui.text("Multi-platform", 16)
+                ui.text("One set of UI primitives renders to terminal, web, and native targets.")
+            done
+            ui.vstack(8) do card
+                card.padding(6)
+                ui.text("Test-first", 16)
+                ui.text("Every func, flow, and source ships with tests. Mocks and assertions are built in.")
+            done
+        done
+    done
+    html = ui.to_html(tree)
+    emit html
+done
+
+test AboutView
+    it "returns html with about content"
+        html = AboutView()
+        must str.contains(html, "pipeline-based")
+        must str.contains(html, "Pipeline-first")
+        must str.contains(html, "Multi-platform")
+        must str.contains(html, "Test-first")
+    done
+done

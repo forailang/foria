@@ -1082,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn runs_classify_example_tests() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/read-docs/app/router/Classify.fa");
+            .join("../../examples/read-docs/src/app/router/Classify.fa");
         let summary = run_tests_at_path_async(&path)
             .await
             .expect("test run should succeed");

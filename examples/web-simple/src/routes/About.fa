@@ -1,5 +1,5 @@
 docs About
-    Serves the about page.
+    Serves the about page using UI tree rendering.
 done
 
 use pages from "./pages"
@@ -7,7 +7,10 @@ use pages from "./pages"
 flow About
     take conn_id as http_conn
 body
-    step pages.Layout("About" to :title, "<p>A tiny web server written in the <strong>forai</strong> language.</p>" to :content) then
+    step pages.AboutView() then
+        next :result to content
+    done
+    step pages.Layout("About" to :title, content to :content) then
         next :result to html
     done
     step http.respond.html(conn_id to :conn_id, 200 to :status, html to :body) done

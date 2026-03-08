@@ -1,4 +1,4 @@
-use data from "./data"
+use { HelpText, Namespaces, NsDetail, OpDetail } from "./data"
 
 docs Route
     Dispatches user commands to the appropriate data function.
@@ -12,7 +12,7 @@ func Route
     fail error as text
 body
     if str.contains(cmd, ".")
-        result = data.OpDetail(cmd)
+        result = OpDetail(cmd)
         emit result
     else
         case cmd
@@ -23,13 +23,13 @@ body
                 result = "Goodbye!"
                 emit result
             when "help"
-                result = data.HelpText()
+                result = HelpText()
                 emit result
             when "ls"
-                result = data.Namespaces()
+                result = Namespaces()
                 emit result
             else
-                result = data.NsDetail(cmd)
+                result = NsDetail(cmd)
                 emit result
         done
     done

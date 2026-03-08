@@ -83,6 +83,7 @@ static KNOWN_OPS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         "tmpl.render",
         "ffi.available",
         "dom.write", "dom.set_title",
+        "ui.mount", "ui.update", "ui.navigate", "ui.current_path",
     ] {
         ops.insert(op.to_string());
     }
@@ -551,7 +552,7 @@ fn collect_ops(stmts: &[Statement], out: &mut Vec<String>) {
 
 fn collect_expr_ops(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             out.push(func.clone());
             for a in args {
                 collect_expr_ops(a, out);

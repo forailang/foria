@@ -1,6 +1,7 @@
-use sources from "./sources"
-use router from "./router"
-use display from "./display"
+use { Commands } from "./sources"
+use { Classify } from "./router"
+use { Welcome, Print, PrintError } from "./display"
+use { HelpText, Namespaces, NsDetail, OpDetail } from "./router/data"
 
 docs StartResult
     Result of the documentation browser session.
@@ -37,43 +38,45 @@ flow Start
     emit result as StartResult
     fail error as StartError
 body
-    step display.Welcome() done
-    step sources.Commands() then
+    step Welcome() done
+    step Commands() then
         next :cmd to cmd
     done
-    step router.Classify(cmd to :cmd) then
+    step Classify(cmd to :cmd) then
         next :result to kind
     done
-    branch when kind == "help"
-        step data.HelpText() then
+    choose
+    branch kind == "help"
+        step HelpText() then
             next :result to output
         done
-        step display.Print(output to :text) done
+        step Print(output to :text) done
     done
-    branch when kind == "ls"
-        step data.Namespaces() then
+    branch kind == "ls"
+        step Namespaces() then
             next :result to output
         done
-        step display.Print(output to :text) done
+        step Print(output to :text) done
     done
-    branch when kind == "quit"
-        step display.Print("Goodbye!" to :text) done
+    branch kind == "quit"
+        step Print("Goodbye!" to :text) done
     done
-    branch when kind == "ns"
-        step data.NsDetail(cmd to :ns) then
+    branch kind == "ns"
+        step NsDetail(cmd to :ns) then
             next :result to output
         done
-        step display.Print(output to :text) done
+        step Print(output to :text) done
     done
-    branch when kind == "op"
-        step data.OpDetail(cmd to :op) then
+    branch kind == "op"
+        step OpDetail(cmd to :op) then
             next :result to output
         done
-        step display.Print(output to :text) done
+        step Print(output to :text) done
     done
-    branch when kind == "unknown"
-        step display.PrintError(cmd to :cmd) done
+    branch kind == "unknown"
+        step PrintError(cmd to :cmd) done
     done
+done
 done
 
 test Start

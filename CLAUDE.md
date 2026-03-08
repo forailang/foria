@@ -126,7 +126,7 @@ Source files use `.fa` extension. Comments start with `#`. Key constructs:
 - **on**: `on :eventType from sourceExpr(args) to varName`...`done` — event handler block inside source bodies. Runs body once per event from the source expression. Event tag (`:request`, `:input`) is stored but cosmetic in v1
 - **sink**: `sink Name` — same syntax as `func`, declared as a side-effect-only endpoint
 - **flow**: `flow Name` with optional `take`/`emit`/`fail` header, `body`...`done` — step-based wiring of funcs/flows; body contains `step`, `branch`, `emit`/`fail` blocks. `branch when <expr>` is a conditional sub-pipeline; `branch` (unguarded) always runs. Flows may have zero ports (no take/emit/fail) — they are pure wiring
-- **uses**: `uses module` — imports a module directory; call as `module.FuncName(...)`. External package imports use `use Name from "@user/repo"` where the path matches a key in `forai.json` `dependencies`
+- **use**: `use Name from "path"` — imports a module directory (`use app from "./app"` → call as `app.Func(...)`) or file (`use Round from "./round.fa"` → call as `Round(...)`). Named imports: `use { View, Update } from "./app"` — imports specific items without prefix, call as `View(...)`, `Update(...)`. External package imports use `use Name from "@user/repo"` where the path matches a key in `forai.json` `dependencies`
 - **docs**: `docs Identifier`...`done` — required for every func, flow, sink, and test
 - **test**: `test Name`...`done` with `it "description"`...`done` sub-cases. Shared setup (mocks, assignments) before first `it` is cloned into each case. Per-`it` mocks override shared mocks. `must` assertions, `trap` for failure paths
 - **if/else if/else/done**: boolean conditional branching; condition is a full expression. Desugars to `case` at parse time
@@ -155,6 +155,7 @@ All examples live under `examples/` as project directories:
 |---------|-------------|
 | `read-docs/` | Interactive stdlib documentation browser — source/func/flow/sink with `uses`, `branch when`, `case`, `loop`, nested modules, `term.prompt` |
 | `web-simple/` | Web server with route.match-based routing, parameterized URLs (`/blog/:slug`), blog pages, HTML templating |
+| `counter-ui/` | Counter UI app with named imports (`use { View, Update } from "./app"`), `state`, `step`/`on` event routing, nested step wiring |
 
 ## Migration Status
 

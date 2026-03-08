@@ -100,6 +100,9 @@ pub fn all_stdlib_docs() -> Vec<StdlibNamespaceDoc> {
         html_docs(),
         tmpl_docs(),
         ffi_docs(),
+        dom_docs(),
+        ui_docs(),
+        docs_docs(),
     ]
 }
 
@@ -2142,6 +2145,56 @@ fn route_docs() -> StdlibNamespaceDoc {
                     "Dict of captured parameter values (empty dict if no match)",
                 ),
             ),
+            op(
+                "get",
+                "route",
+                "Match a GET request against a URL pattern",
+                vec![
+                    arg(0, "pattern", "text", "Route pattern (e.g. \"/users/:id\")"),
+                    arg(1, "req", "dict", "HTTP request with method and path fields"),
+                ],
+                ret("bool", "True if method is GET and path matches"),
+            ),
+            op(
+                "post",
+                "route",
+                "Match a POST request against a URL pattern",
+                vec![
+                    arg(0, "pattern", "text", "Route pattern"),
+                    arg(1, "req", "dict", "HTTP request with method and path fields"),
+                ],
+                ret("bool", "True if method is POST and path matches"),
+            ),
+            op(
+                "put",
+                "route",
+                "Match a PUT request against a URL pattern",
+                vec![
+                    arg(0, "pattern", "text", "Route pattern"),
+                    arg(1, "req", "dict", "HTTP request with method and path fields"),
+                ],
+                ret("bool", "True if method is PUT and path matches"),
+            ),
+            op(
+                "delete",
+                "route",
+                "Match a DELETE request against a URL pattern",
+                vec![
+                    arg(0, "pattern", "text", "Route pattern"),
+                    arg(1, "req", "dict", "HTTP request with method and path fields"),
+                ],
+                ret("bool", "True if method is DELETE and path matches"),
+            ),
+            op(
+                "patch",
+                "route",
+                "Match a PATCH request against a URL pattern",
+                vec![
+                    arg(0, "pattern", "text", "Route pattern"),
+                    arg(1, "req", "dict", "HTTP request with method and path fields"),
+                ],
+                ret("bool", "True if method is PATCH and path matches"),
+            ),
         ],
     )
 }
@@ -2197,6 +2250,197 @@ fn ffi_docs() -> StdlibNamespaceDoc {
             vec![arg(0, "lib_name", "text", "Library name to check availability for")],
             ret("bool", "true if the library can be loaded, false otherwise"),
         )],
+    )
+}
+
+fn ui_docs() -> StdlibNamespaceDoc {
+    ns(
+        "ui",
+        "Declarative UI components for terminal rendering",
+        vec![
+            op(
+                "screen",
+                "ui",
+                "Create a root screen container node",
+                vec![arg(0, "children", "dict", "Child UI nodes (variadic)")],
+                ret("dict", "UiNode tree with type 'screen'"),
+            ),
+            op(
+                "vstack",
+                "ui",
+                "Vertical stack layout — arranges children top to bottom",
+                vec![arg(0, "children", "dict", "Child UI nodes (variadic)")],
+                ret("dict", "UiNode tree with type 'vstack'"),
+            ),
+            op(
+                "hstack",
+                "ui",
+                "Horizontal stack layout — arranges children left to right",
+                vec![arg(0, "children", "dict", "Child UI nodes (variadic)")],
+                ret("dict", "UiNode tree with type 'hstack'"),
+            ),
+            op(
+                "zstack",
+                "ui",
+                "Overlay stack — children overlap in the same space",
+                vec![arg(0, "children", "dict", "Child UI nodes (variadic)")],
+                ret("dict", "UiNode tree with type 'zstack'"),
+            ),
+            op(
+                "text",
+                "ui",
+                "Text display node",
+                vec![arg(0, "value", "text", "The text to display")],
+                ret("dict", "UiNode tree with type 'text'"),
+            ),
+            op(
+                "button",
+                "ui",
+                "Button with a label",
+                vec![arg(0, "label", "text", "Button label text")],
+                ret("dict", "UiNode tree with type 'button'"),
+            ),
+            op(
+                "input",
+                "ui",
+                "Text input field",
+                vec![arg(0, "placeholder", "text", "Placeholder text")],
+                ret("dict", "UiNode tree with type 'input'"),
+            ),
+            op(
+                "toggle",
+                "ui",
+                "Boolean toggle switch",
+                vec![arg(0, "on", "bool", "Current toggle state")],
+                ret("dict", "UiNode tree with type 'toggle'"),
+            ),
+            op(
+                "image",
+                "ui",
+                "Image display node",
+                vec![arg(0, "src", "text", "Image source path or URL")],
+                ret("dict", "UiNode tree with type 'image'"),
+            ),
+            op(
+                "shape",
+                "ui",
+                "Shape drawing node",
+                vec![arg(0, "kind", "text", "Shape type (rect, circle, line)")],
+                ret("dict", "UiNode tree with type 'shape'"),
+            ),
+            op(
+                "list",
+                "ui",
+                "Scrollable list container",
+                vec![arg(0, "items", "list", "List items to display")],
+                ret("dict", "UiNode tree with type 'list'"),
+            ),
+            op(
+                "render",
+                "ui",
+                "Render a UiNode tree to the terminal (I/O op)",
+                vec![arg(0, "tree", "dict", "UiNode tree to render")],
+                ret("bool", "true on success"),
+            ),
+            op(
+                "events",
+                "ui",
+                "Wait for and return the next UI event (I/O op). Browser payloads are normalized as action/input/toggle/nav.",
+                vec![],
+                ret("dict", "Event object, e.g. {type:\"action\",action:\"on_click\",value:true}"),
+            ),
+            op(
+                "mount",
+                "ui",
+                "Mount a UiNode tree to a browser DOM container selector (I/O op, browser target)",
+                vec![
+                    arg(0, "tree", "dict", "UiNode tree to mount"),
+                    arg(1, "selector", "text", "Optional DOM selector (default: #app)"),
+                ],
+                ret("bool", "true on success"),
+            ),
+            op(
+                "update",
+                "ui",
+                "Update the mounted browser UI tree (I/O op, browser target)",
+                vec![arg(0, "tree", "dict", "UiNode tree snapshot to render")],
+                ret("bool", "true on success"),
+            ),
+            op(
+                "navigate",
+                "ui",
+                "Navigate browser history to a path (I/O op, browser target)",
+                vec![arg(0, "path", "text", "Application path, e.g. /about")],
+                ret("bool", "true on success"),
+            ),
+            op(
+                "current_path",
+                "ui",
+                "Read the current browser location path (I/O op, browser target)",
+                vec![],
+                ret("text", "Current path, e.g. /about"),
+            ),
+            op(
+                "to_html",
+                "ui",
+                "Convert a UiNode tree to an HTML string",
+                vec![arg(0, "tree", "dict", "UiNode tree to render as HTML")],
+                ret("text", "HTML string representation of the UI tree"),
+            ),
+        ],
+    )
+}
+
+fn dom_docs() -> StdlibNamespaceDoc {
+    ns(
+        "dom",
+        "Browser DOM operations (no-op on native)",
+        vec![
+            op(
+                "write",
+                "dom",
+                "Write HTML content to the DOM",
+                vec![arg(0, "html", "text", "HTML string to write")],
+                ret("bool", "true on success"),
+            ),
+            op(
+                "set_title",
+                "dom",
+                "Set the document title",
+                vec![arg(0, "title", "text", "New title")],
+                ret("bool", "true on success"),
+            ),
+        ],
+    )
+}
+
+fn docs_docs() -> StdlibNamespaceDoc {
+    ns(
+        "docs",
+        "Stdlib documentation introspection",
+        vec![
+            op(
+                "namespaces",
+                "docs",
+                "List all stdlib namespaces with summary and op count",
+                vec![],
+                ret("list", "List of {namespace, summary, op_count} dicts"),
+            ),
+            op(
+                "ops",
+                "docs",
+                "List ops in a namespace",
+                vec![arg(0, "namespace", "text", "Namespace name")],
+                ret("list", "List of {name, full_name, summary} dicts"),
+            ),
+            op(
+                "detail",
+                "docs",
+                "Get detailed documentation for a specific op",
+                vec![arg(0, "full_name", "text", "Fully qualified op name (e.g. str.len)")],
+                ret("dict", "Op detail with name, summary, args, returns, errors"),
+            ),
+        ],
     )
 }
 

@@ -72,6 +72,8 @@ pub struct NativeHost {
     quiet: bool,
     ffi: RefCell<FfiManager>,
     ffi_registry: FfiRegistry,
+    ui_active: RefCell<bool>,
+    ui_tree: RefCell<Option<Value>>,
 }
 
 impl NativeHost {
@@ -81,6 +83,8 @@ impl NativeHost {
             quiet: false,
             ffi: RefCell::new(FfiManager::new()),
             ffi_registry: FfiRegistry::new(),
+            ui_active: RefCell::new(false),
+            ui_tree: RefCell::new(None),
         }
     }
 
@@ -92,6 +96,8 @@ impl NativeHost {
             quiet: true,
             ffi: RefCell::new(FfiManager::new()),
             ffi_registry: FfiRegistry::new(),
+            ui_active: RefCell::new(false),
+            ui_tree: RefCell::new(None),
         }
     }
 
@@ -101,8 +107,39 @@ impl NativeHost {
     }
 }
 
+/// Walk a UiNode tree and collect button label → (action_name, value) mappings.
+/// Used by `ui.events` to match key presses against button event metadata.
+fn collect_button_events(tree: &Value) -> HashMap<String, (String, Value)> {
+    let mut map = HashMap::new();
+    collect_button_events_recursive(tree, &mut map);
+    map
+}
+
+fn collect_button_events_recursive(node: &Value, map: &mut HashMap<String, (String, Value)>) {
+    if node.get("type").and_then(|t| t.as_str()) == Some("button") {
+        if let Some(label) = node.get("props").and_then(|p| p.get("label")).and_then(|l| l.as_str()) {
+            if let Some(events) = node.get("events").and_then(|e| e.as_object()) {
+                if let Some((action, value)) = events.iter().next() {
+                    map.insert(label.to_string(), (action.clone(), value.clone()));
+                }
+            }
+        }
+    }
+    if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+        for child in children {
+            collect_button_events_recursive(child, map);
+        }
+    }
+}
+
 impl Drop for NativeHost {
     fn drop(&mut self) {
+        if *self.ui_active.borrow() {
+            use crossterm::{cursor, execute, terminal};
+            let mut stdout = std::io::stdout();
+            let _ = execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show);
+            let _ = terminal::disable_raw_mode();
+        }
         self.handles.borrow_mut().cleanup();
     }
 }
@@ -801,6 +838,110 @@ impl Host for NativeHost {
                     eprintln!("{line}");
                     Ok(json!(true))
                 }
+
+                // --- UI rendering ops ---
+                "ui.render" => {
+                    let tree = args
+                        .first()
+                        .ok_or_else(|| "Op `ui.render` missing arg0 (UiNode tree)".to_string())?;
+
+                    // Store tree for tree-aware ui.events matching
+                    *self.ui_tree.borrow_mut() = Some(tree.clone());
+
+                    // Enter alternate screen + raw mode on first call
+                    if !*self.ui_active.borrow() {
+                        use crossterm::{cursor, execute, terminal};
+                        let mut stdout = std::io::stdout();
+                        let _ = terminal::enable_raw_mode();
+                        let _ = execute!(
+                            stdout,
+                            terminal::EnterAlternateScreen,
+                            cursor::Hide
+                        );
+                        *self.ui_active.borrow_mut() = true;
+                    }
+
+                    let mut stdout = std::io::stdout();
+                    crate::ui_render::render_ui_tree(tree, &mut stdout);
+                    Ok(json!(true))
+                }
+
+                "ui.events" => {
+                    // Build button label → event mapping from the stored tree
+                    let button_events = {
+                        let tree = self.ui_tree.borrow();
+                        tree.as_ref()
+                            .map(|t| collect_button_events(t))
+                            .unwrap_or_default()
+                    };
+
+                    let result = tokio::task::spawn_blocking(move || {
+                        use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+                        match event::read() {
+                            Ok(Event::Key(key_event)) => {
+                                let key = match key_event.code {
+                                    KeyCode::Char(c) => {
+                                        if key_event
+                                            .modifiers
+                                            .contains(KeyModifiers::CONTROL)
+                                        {
+                                            if c == 'c' {
+                                                // Ctrl+C: exit process cleanly
+                                                crossterm::terminal::disable_raw_mode().ok();
+                                                std::process::exit(0);
+                                            }
+                                            format!("ctrl+{c}")
+                                        } else {
+                                            c.to_string()
+                                        }
+                                    }
+                                    KeyCode::Enter => "enter".to_string(),
+                                    KeyCode::Esc => "esc".to_string(),
+                                    KeyCode::Backspace => "backspace".to_string(),
+                                    KeyCode::Tab => "tab".to_string(),
+                                    KeyCode::Up => "up".to_string(),
+                                    KeyCode::Down => "down".to_string(),
+                                    KeyCode::Left => "left".to_string(),
+                                    KeyCode::Right => "right".to_string(),
+                                    KeyCode::Home => "home".to_string(),
+                                    KeyCode::End => "end".to_string(),
+                                    KeyCode::PageUp => "page_up".to_string(),
+                                    KeyCode::PageDown => "page_down".to_string(),
+                                    KeyCode::Delete => "delete".to_string(),
+                                    KeyCode::Insert => "insert".to_string(),
+                                    KeyCode::F(n) => format!("f{n}"),
+                                    _ => "unknown".to_string(),
+                                };
+                                // Match key against button events from the rendered tree
+                                if let Some((action, value)) = button_events.get(&key) {
+                                    Ok(json!({ "type": "action", "action": action, "value": value }))
+                                } else {
+                                    Ok(json!({ "type": "key", "key": key }))
+                                }
+                            }
+                            Ok(Event::Resize(w, h)) => {
+                                Ok(json!({ "type": "resize", "width": w, "height": h }))
+                            }
+                            Ok(Event::Mouse(mouse)) => {
+                                Ok(json!({
+                                    "type": "mouse",
+                                    "column": mouse.column,
+                                    "row": mouse.row
+                                }))
+                            }
+                            Ok(_) => Ok(json!({ "type": "unknown" })),
+                            Err(e) => {
+                                Err(format!("Op `ui.events` read error: {e}"))
+                            }
+                        }
+                    })
+                    .await
+                    .map_err(|e| format!("spawn error: {e}"))??;
+                    Ok(result)
+                }
+                "ui.mount" | "ui.update" | "ui.navigate" | "ui.current_path" => Err(format!(
+                    "Op `{op}` is browser-only; use the wasm/browser target"
+                )),
 
                 // --- DOM ops (browser only, no-op on native) ---
                 "dom.write" => {

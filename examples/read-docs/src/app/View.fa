@@ -1,0 +1,101 @@
+use { BuildList } from "./BuildList.fa"
+use { BuildDetail } from "./BuildDetail.fa"
+
+docs View
+    Builds the two-panel UI tree from application state.
+    Left panel shows the op list, right panel shows selected op details.
+    Buttons declare semantic events for keyboard navigation.
+    Renders the tree and waits for user input.
+    Returns the matched action event from the key press.
+done
+
+func View
+    take state as dict
+    emit event as dict
+body
+    all_ops = obj.get(state, "all_ops")
+    selected = obj.get(state, "selected")
+    scroll_top = obj.get(state, "scroll_top")
+    detail = obj.get(state, "detail")
+    detail_scroll = obj.get(state, "detail_scroll")
+    panel = obj.get(state, "panel")
+
+    size = term.size()
+    screen_h = obj.get(size, "rows")
+    screen_w = obj.get(size, "cols")
+
+    # Header with bold+green
+    header = ui.text(" forai stdlib browser  [Tab] switch  [q] quit")
+    header_props = obj.get(header, "props")
+    header_props = obj.set(header_props, "bold", true)
+    header_props = obj.set(header_props, "color", "green")
+    header_props = obj.set(header_props, "height", 1)
+    header = obj.set(header, "props", header_props)
+
+    # Build left panel items
+    left_height = screen_h - 1
+    left_items = BuildList(all_ops, selected, scroll_top, left_height)
+
+    # Build right panel detail
+    right_lines = BuildDetail(detail, detail_scroll, left_height)
+
+    left_panel = ui.vstack(left_items)
+    left_panel_props = obj.get(left_panel, "props")
+    left_panel_props = obj.set(left_panel_props, "width", 32)
+    left_panel_props = obj.set(left_panel_props, "align", "start")
+    left_panel = obj.set(left_panel, "props", left_panel_props)
+
+    right_panel = ui.vstack(right_lines)
+    right_panel_props = obj.get(right_panel, "props")
+    right_panel_props = obj.set(right_panel_props, "align", "start")
+    right_panel = obj.set(right_panel, "props", right_panel_props)
+
+    body_row = ui.hstack(left_panel, right_panel)
+
+    tree = ui.screen(ui.vstack(header, body_row)) do
+    ui.button("up") do
+    emit true to :on_up
+done
+ui.button("down") do
+emit true to :on_down
+done
+ui.button("tab") do
+emit true to :on_tab
+done
+ui.button("enter") do
+emit true to :on_enter
+done
+ui.button("page_up") do
+emit true to :on_page_up
+done
+ui.button("page_down") do
+emit true to :on_page_down
+done
+ui.button("q") do
+emit true to :on_quit
+done
+ui.button("esc") do
+emit true to :on_quit
+done
+ui.button("ctrl+c") do
+emit true to :on_quit
+done
+done
+
+ui.render(tree)
+event = ui.events()
+emit event
+done
+
+test View
+    mock term.size => {rows: 24, cols: 80}
+    mock ui.render => true
+    mock ui.events => {type: "action", action: "on_up", value: true}
+
+    it "builds and renders view"
+        state = {all_ops: ["str.len", "str.upper"], selected: 0, scroll_top: 0, detail: {full_name: "str.len", summary: "Length", args: [], returns: {type: "long", description: "len"}, errors: null}, detail_scroll: 0, panel: "list"}
+        event = View(state)
+        t = obj.get(event, "type")
+        must t == "action"
+    done
+done

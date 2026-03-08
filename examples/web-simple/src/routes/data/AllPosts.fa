@@ -1,21 +1,23 @@
 docs AllPosts
-    Returns all blog posts as a list of BlogPost dicts.
+    Returns all blog posts as a list of post dicts.
+    Each post has slug, title, summary, and content fields.
 done
 
 func AllPosts
     emit result as list
     fail error as text
 body
-    p1 = {slug: "hello-world", title: "Hello World", content: "Welcome to our first blog post! This is a simple example of a forai-powered blog."}
-    p2 = {slug: "forai-intro", title: "Introduction to forai", content: "forai is a pipeline-based language where sources produce events, funcs compute, and flows wire everything together."}
-    posts = [p1, p2]
+    p1 = {slug: "hello-world", title: "Hello World", summary: "Welcome to our blog - here is what we are about.", content: "Welcome to our first blog post! We built this site with forai, a pipeline-based language where sources produce events, funcs compute, and flows wire everything together. Stay tuned for more updates as we grow."}
+    p2 = {slug: "why-pipelines", title: "Why Pipelines Matter", summary: "How thinking in pipelines changes the way you build software.", content: "Most programs are written as sequences of instructions. But real systems are networks of data flowing between producers and consumers. Pipelines make that flow explicit. Each stage does one thing, passes the result downstream, and the runtime handles concurrency. No callbacks, no shared state, no race conditions."}
+    p3 = {slug: "building-with-forai", title: "Building a Website with forai", summary: "A walkthrough of our web-simple example project.", content: "This very website is built with forai. The main flow listens for HTTP requests, matches routes, and dispatches to handler flows. Each handler builds a UI tree with ui.* primitives, converts it to HTML with ui.to_html, and wraps it in a page layout. The same UI components could render in a terminal or native app - zero changes needed."}
+    p4 = {slug: "ui-primitives", title: "The Core UI Primitives", summary: "Meet vstack, hstack, text, button, and friends.", content: "forai ships with 10 built-in UI primitives inspired by SwiftUI and React Native. Layout containers (vstack, hstack, zstack) arrange children. Content nodes (text, image, shape) display data. Interaction nodes (button, input, toggle) handle user events. A single set of components works across terminal, web, and native platforms."}
+    posts = [p1, p2, p3, p4]
     emit posts
 done
 
 test AllPosts
-    it "works"
+    it "returns four posts"
         all = AllPosts()
-        ok = true
-        must ok == true
+        must list.len(all) == 4
     done
 done

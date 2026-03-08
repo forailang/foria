@@ -28,24 +28,37 @@ const WORKER_LOCAL_OPS = new Set([
   "log.debug", "log.info", "log.warn", "log.error", "log.trace",
   "term.print", "term.clear", "term.size", "term.cursor",
   "dom.write", "dom.set_title",
+  "ui.mount", "ui.update", "ui.navigate",
 ]);
 
-// Ops unavailable in the browser — return error immediately
+// Ops unavailable in the browser — return error immediately with guidance.
 const UNAVAILABLE_PREFIXES = [
-  "file.", "exec.", "http.server.", "db.", "env.",
+  "file.", "exec.", "http.server.", "db.", "env.", "ffi.",
 ];
 
-function isUnavailable(op: string): string | null {
+const UNAVAILABLE_EXACT: Record<string, string> = {
+  "ui.render": "use ui.mount/ui.update in browser apps",
+  "term.read_key": "use ui.events() for browser input",
+  "term.move_to": "terminal cursor control is not available in browser mode",
+  "term.color": "terminal color control is not available in browser mode",
+};
+
+function unavailableMessage(op: string): string | null {
+  const exact = UNAVAILABLE_EXACT[op];
+  if (exact) {
+    return `browser mode: \`${op}\` is not supported (${exact})`;
+  }
   const messages: Record<string, string> = {
     "file.": "file I/O is not available in the browser",
     "exec.": "process execution is not available in the browser",
     "http.server.": "HTTP server is not available in the browser",
     "db.": "SQLite database is not available in the browser",
     "env.": "environment variables are not available in the browser",
+    "ffi.": "extern/FFI calls are not available in browser mode",
   };
   for (const prefix of UNAVAILABLE_PREFIXES) {
     if (op.startsWith(prefix)) {
-      return `${op}: ${messages[prefix]}`;
+      return `browser mode: \`${op}\` is not supported (${messages[prefix]})`;
     }
   }
   return null;
@@ -81,6 +94,22 @@ function handleWorkerLocalOp(op: string, args: unknown[]): unknown {
     case "dom.set_title": {
       const title = String(args[0] ?? "");
       self.postMessage({ type: "dom", action: "set_title", title });
+      return true;
+    }
+    case "ui.mount": {
+      const tree = args[0] ?? null;
+      const selector = typeof args[1] === "string" ? args[1] : "#app";
+      self.postMessage({ type: "ui", action: "mount", tree, selector });
+      return true;
+    }
+    case "ui.update": {
+      const tree = args[0] ?? null;
+      self.postMessage({ type: "ui", action: "update", tree });
+      return true;
+    }
+    case "ui.navigate": {
+      const path = String(args[0] ?? "/");
+      self.postMessage({ type: "ui", action: "navigate", path });
       return true;
     }
     default:
@@ -146,7 +175,7 @@ self.onmessage = (event: MessageEvent) => {
     }
 
     // Check for unavailable ops first
-    const unavailMsg = isUnavailable(op);
+    const unavailMsg = unavailableMessage(op);
     if (unavailMsg) {
       return writeError(memory, resultPtr, resultCap, unavailMsg);
     }
@@ -163,7 +192,7 @@ self.onmessage = (event: MessageEvent) => {
       }
     }
 
-    // SAB round-trip for async ops (http.*, time.*, ws.*, term.prompt)
+    // SAB round-trip for async ops (http.*, time.*, ws.*, term.prompt, ui.events)
     const argsJson = JSON.stringify(args);
     const response = sabRoundTrip(sab, op, argsJson);
 

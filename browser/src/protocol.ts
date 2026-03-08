@@ -19,6 +19,15 @@ export const SAB_SIZE = 4 * 1024 * 1024; // 4MB
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function decodeSharedBytes(data: Uint8Array, start: number, len: number): string {
+  if (len <= 0) return "";
+  // TextDecoder rejects views backed by SharedArrayBuffer in some browsers.
+  // Copy into a regular Uint8Array before decoding.
+  const copy = new Uint8Array(len);
+  copy.set(data.subarray(start, start + len));
+  return decoder.decode(copy);
+}
+
 /**
  * Write a request into the SAB (worker side).
  * Format: op string + \0 + JSON args in the data region.
@@ -48,10 +57,10 @@ export function readRequest(sab: SharedArrayBuffer): { op: string; argsJson: str
   const opLen = view.getInt32(8, true);
   const dataLen = view.getInt32(4, true);
 
-  const op = decoder.decode(data.subarray(HEADER_SIZE, HEADER_SIZE + opLen));
+  const op = decodeSharedBytes(data, HEADER_SIZE, opLen);
   const argsStart = HEADER_SIZE + opLen + 1; // skip \0
   const argsLen = dataLen - opLen - 1;
-  const argsJson = decoder.decode(data.subarray(argsStart, argsStart + argsLen));
+  const argsJson = decodeSharedBytes(data, argsStart, argsLen);
 
   return { op, argsJson };
 }
@@ -78,7 +87,7 @@ export function readResponse(sab: SharedArrayBuffer): { ok: boolean; data: strin
 
   const flag = view.getInt32(0, true);
   const dataLen = view.getInt32(4, true);
-  const text = decoder.decode(sabData.subarray(HEADER_SIZE, HEADER_SIZE + dataLen));
+  const text = decodeSharedBytes(sabData, HEADER_SIZE, dataLen);
 
   return { ok: flag === FLAG_RESPONSE_OK, data: text };
 }

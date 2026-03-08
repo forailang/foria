@@ -1,5 +1,5 @@
 docs Home
-    Serves the home page.
+    Serves the home page using UI tree rendering.
 done
 
 use pages from "./pages"
@@ -7,7 +7,10 @@ use pages from "./pages"
 flow Home
     take conn_id as http_conn
 body
-    step pages.Layout("Home" to :title, "<p>Welcome to forai!</p><p>Try <a href=\"/about\">/about</a> or <a href=\"/blog\">/blog</a>.</p>" to :content) then
+    step pages.HomeView() then
+        next :result to content
+    done
+    step pages.Layout("Home" to :title, content to :content) then
         next :result to html
     done
     step http.respond.html(conn_id to :conn_id, 200 to :status, html to :body) done

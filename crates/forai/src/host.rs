@@ -80,6 +80,13 @@ pub fn is_io_op(op: &str) -> bool {
         | "log.warn"
         | "log.error"
         | "log.trace"
+        // UI rendering
+        | "ui.render"
+        | "ui.events"
+        | "ui.mount"
+        | "ui.update"
+        | "ui.navigate"
+        | "ui.current_path"
         // Time (blocking)
         | "time.sleep"
         | "time.tick"

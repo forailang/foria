@@ -1,11 +1,11 @@
 use crate::ast::{
     Arg, BareLoopBlock, BinOp, CaseArm, CaseBlock, ConstraintValue, ContinuationWire, DocsDecl,
     Emit, EnumDecl, Expr, ExprAssign, ExternBlock, ExternFnDecl, FieldDecl, FieldDocsEntry, Flow,
-    FlowBranchBlock, FlowDecl, FlowEmitStmt, FlowGraph, FlowLogStmt, FlowSendNowait,
-    FlowStateDecl, FlowStatement, FuncDecl, InterpExpr, LoopBlock, ModuleAst, NextWire,
-    NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping, SendNowait, Span, Statement,
-    StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl, TestDecl, TopDecl, TypeConstraint,
-    TypeDecl, TypeKind, UnaryOp, UsesDecl,
+    FlowBranchBlock, FlowChooseBlock, FlowDecl, FlowEmitStmt, FlowGraph, FlowLocalDecl,
+    FlowLogStmt, FlowOnBlock, FlowSendNowait, FlowStateDecl, FlowStatement, FuncDecl, InterpExpr,
+    LoopBlock, ModuleAst, NextWire, NodeAssign, OnBlock, Pattern, Port, PortDecl, PortMapping,
+    SendNowait, Span, Statement, StepBlock, StepThenItem, SyncBlock, SyncOptions, TakeDecl,
+    TestDecl, TopDecl, TypeConstraint, TypeDecl, TypeKind, UnaryOp, UsesDecl,
 };
 use crate::lexer::{InterpPart, Token, TokenKind, lex};
 use serde_json::json;
@@ -204,6 +204,8 @@ pub fn parse_runtime_func_decl_v1(func_decl: &FuncDecl) -> Result<Flow, String> 
             .collect(),
         outputs,
         body,
+        state_names: vec![],
+        local_names: vec![],
     })
 }
 
@@ -282,12 +284,232 @@ pub fn lower_flow_graph_to_flow(graph: &FlowGraph) -> Result<Flow, String> {
         });
     }
 
+    // Collect state and local variable names for cycle execution
+    let mut state_names = Vec::new();
+    let mut local_names = Vec::new();
+    for stmt in &graph.body {
+        match stmt {
+            FlowStatement::State(s) => state_names.push(s.bind.clone()),
+            FlowStatement::Local(l) => local_names.push(l.bind.clone()),
+            _ => {}
+        }
+    }
+
     Ok(Flow {
         name: graph.name.clone(),
         inputs: graph.inputs.clone(),
         outputs,
         body,
+        state_names,
+        local_names,
     })
+}
+
+fn lower_step_then_items(
+    items: &[StepThenItem],
+    step_bind: &str,
+    counter: &mut usize,
+) -> Result<Vec<Statement>, String> {
+    use crate::ast::FlowOnBlock;
+
+    let mut out = Vec::new();
+
+    // Collect on blocks for case routing
+    let on_blocks: Vec<&FlowOnBlock> = items.iter().filter_map(|item| {
+        if let StepThenItem::On(on) = item { Some(on) } else { None }
+    }).collect();
+
+    if on_blocks.len() >= 2 {
+        // Event-routed lowering: generate safe Case routing on action field
+        let type_var = format!("_type_{}", *counter);
+        let has_var = format!("_has_{}", *counter);
+        let route_var = format!("_route_{}", *counter);
+        *counter += 1;
+
+        // _type_N = type.of(step_bind)
+        out.push(Statement::Node(NodeAssign {
+            bind: type_var.clone(),
+            node_id: type_var.clone(),
+            op: "type.of".to_string(),
+            args: vec![Arg::Var { var: step_bind.to_string() }],
+            type_annotation: None,
+        }));
+
+        // Build routing case arms from on blocks
+        let mut route_arms = Vec::new();
+        for on in &on_blocks {
+            let mut arm_body = Vec::new();
+
+            // Bind event value: wire = obj.get(step_bind, "value")
+            arm_body.push(Statement::Node(NodeAssign {
+                bind: on.wire.clone(),
+                node_id: on.wire.clone(),
+                op: "obj.get".to_string(),
+                args: vec![
+                    Arg::Var { var: step_bind.to_string() },
+                    Arg::Lit { lit: serde_json::Value::String("value".to_string()) },
+                ],
+                type_annotation: None,
+            }));
+
+            // Recursively lower nested items in the on block body
+            let nested = lower_step_then_items(&on.body, &on.wire, counter)?;
+            arm_body.extend(nested);
+
+            route_arms.push(CaseArm {
+                pattern: Pattern::Lit(serde_json::Value::String(on.port.clone())),
+                guard: None,
+                body: arm_body,
+            });
+        }
+
+        // Build nested safety checks: type == "dict" → has("action") == true → route
+        let route_case = Statement::Case(CaseBlock {
+            expr: Expr::Var(route_var.clone()),
+            arms: route_arms,
+            else_body: vec![],
+        });
+
+        let has_body = vec![
+            Statement::Node(NodeAssign {
+                bind: route_var.clone(),
+                node_id: route_var,
+                op: "obj.get".to_string(),
+                args: vec![
+                    Arg::Var { var: step_bind.to_string() },
+                    Arg::Lit { lit: serde_json::Value::String("action".to_string()) },
+                ],
+                type_annotation: None,
+            }),
+            route_case,
+        ];
+
+        let has_case = Statement::Case(CaseBlock {
+            expr: Expr::Var(has_var.clone()),
+            arms: vec![CaseArm {
+                pattern: Pattern::Lit(serde_json::Value::Bool(true)),
+                guard: None,
+                body: has_body,
+            }],
+            else_body: vec![],
+        });
+
+        let dict_body = vec![
+            Statement::Node(NodeAssign {
+                bind: has_var.clone(),
+                node_id: has_var,
+                op: "obj.has".to_string(),
+                args: vec![
+                    Arg::Var { var: step_bind.to_string() },
+                    Arg::Lit { lit: serde_json::Value::String("action".to_string()) },
+                ],
+                type_annotation: None,
+            }),
+            has_case,
+        ];
+
+        out.push(Statement::Case(CaseBlock {
+            expr: Expr::Var(type_var),
+            arms: vec![CaseArm {
+                pattern: Pattern::Lit(serde_json::Value::String("dict".to_string())),
+                guard: None,
+                body: dict_body,
+            }],
+            else_body: vec![],
+        }));
+    }
+
+    // Process non-on items sequentially (single on blocks are handled inline here)
+    for item in items {
+        match item {
+            StepThenItem::On(on) if on_blocks.len() < 2 => {
+                // Single on block — lower its body sequentially (no case routing)
+                // Bind event value: wire = obj.get(step_bind, "value")
+                out.push(Statement::Node(NodeAssign {
+                    bind: on.wire.clone(),
+                    node_id: on.wire.clone(),
+                    op: "obj.get".to_string(),
+                    args: vec![
+                        Arg::Var { var: step_bind.to_string() },
+                        Arg::Lit { lit: serde_json::Value::String("value".to_string()) },
+                    ],
+                    type_annotation: None,
+                }));
+                let nested = lower_step_then_items(&on.body, &on.wire, counter)?;
+                out.extend(nested);
+            }
+            StepThenItem::On(_) => { /* multi-on handled above via case routing */ }
+            StepThenItem::Next(n) => {
+                if n.via_callee.is_some() {
+                    // Legacy via handling (single via in sequential context)
+                    if let Some(ref callee) = n.via_callee {
+                        let handler_args: Vec<Arg> =
+                            n.via_inputs.iter().map(|pm| pm.value.clone()).collect();
+                        let via_bind = if let Some(first_out) = n.via_outputs.first() {
+                            first_out.wire.clone()
+                        } else {
+                            n.wire.clone()
+                        };
+                        out.push(Statement::Node(NodeAssign {
+                            bind: via_bind.clone(),
+                            node_id: via_bind,
+                            op: callee.clone(),
+                            args: handler_args,
+                            type_annotation: None,
+                        }));
+                    }
+                } else {
+                    // Simple next — bind step output to wire
+                    if n.wire != step_bind {
+                        out.push(Statement::ExprAssign(ExprAssign {
+                            bind: n.wire.clone(),
+                            type_annotation: None,
+                            expr: Expr::Var(step_bind.to_string()),
+                        }));
+                    }
+                }
+            }
+            StepThenItem::Step(nested_step) => {
+                // Nested step: generate node call + process its then_body
+                let nested_bind = if let Some(first_next) = nested_step.then_body.iter().find_map(|item| {
+                    if let StepThenItem::Next(n) = item { if n.via_callee.is_none() { return Some(&n.wire); } } None
+                }) {
+                    first_next.clone()
+                } else {
+                    let name = format!("_step_{}", *counter);
+                    *counter += 1;
+                    name
+                };
+
+                let args: Vec<Arg> = nested_step.inputs.iter().map(|pm| pm.value.clone()).collect();
+                out.push(Statement::Node(NodeAssign {
+                    bind: nested_bind.clone(),
+                    node_id: nested_bind.clone(),
+                    op: nested_step.callee.clone(),
+                    args,
+                    type_annotation: None,
+                }));
+
+                let nested_stmts = lower_step_then_items(&nested_step.then_body, &nested_bind, counter)?;
+                out.extend(nested_stmts);
+            }
+            StepThenItem::Emit(e) => {
+                out.push(Statement::Emit(Emit {
+                    output: e.port.clone(),
+                    value_expr: Expr::Var(e.wire.clone()),
+                }));
+            }
+            StepThenItem::Fail(f) => {
+                out.push(Statement::Emit(Emit {
+                    output: f.port.clone(),
+                    value_expr: Expr::Var(f.wire.clone()),
+                }));
+            }
+            StepThenItem::Continuation(_) => { /* handled elsewhere */ }
+        }
+    }
+
+    Ok(out)
 }
 
 fn lower_flow_statements(
@@ -299,13 +521,20 @@ fn lower_flow_statements(
     while i < stmts.len() {
         match &stmts[i] {
             FlowStatement::Step(step) => {
-                // Find first Next item for the bind name
-                let bind = if let Some(StepThenItem::Next(first)) = step
-                    .then_body
-                    .iter()
-                    .find(|item| matches!(item, StepThenItem::Next(_)))
-                {
-                    first.wire.clone()
+                // Determine bind name for this step
+                let has_on_blocks = step.then_body.iter().any(|item| matches!(item, StepThenItem::On(_)));
+                let has_via = step.then_body.iter().any(|item| {
+                    matches!(item, StepThenItem::Next(n) if n.via_callee.is_some())
+                });
+
+                let bind = if has_on_blocks || has_via {
+                    let name = format!("_step_{}", *counter);
+                    *counter += 1;
+                    name
+                } else if let Some(first_next) = step.then_body.iter().find_map(|item| {
+                    if let StepThenItem::Next(n) = item { if n.via_callee.is_none() { return Some(&n.wire); } } None
+                }) {
+                    first_next.clone()
                 } else {
                     let name = format!("_step_{}", *counter);
                     *counter += 1;
@@ -316,30 +545,16 @@ fn lower_flow_statements(
 
                 out.push(Statement::Node(NodeAssign {
                     bind: bind.clone(),
-                    node_id: bind,
+                    node_id: bind.clone(),
                     op: step.callee.clone(),
                     args,
                     type_annotation: None,
                 }));
 
-                // Lower then_body items (emit, fail)
-                for item in &step.then_body {
-                    match item {
-                        StepThenItem::Next(_) | StepThenItem::Continuation(_) => {}
-                        StepThenItem::Emit(e) => {
-                            out.push(Statement::Emit(Emit {
-                                output: e.port.clone(),
-                                value_expr: Expr::Var(e.wire.clone()),
-                            }));
-                        }
-                        StepThenItem::Fail(f) => {
-                            out.push(Statement::Emit(Emit {
-                                output: f.port.clone(),
-                                value_expr: Expr::Var(f.wire.clone()),
-                            }));
-                        }
-                    }
-                }
+                // Recursively lower then_body items
+                let lowered = lower_step_then_items(&step.then_body, &bind, counter)?;
+                out.extend(lowered);
+
                 i += 1;
             }
             FlowStatement::Emit(e) => {
@@ -376,12 +591,37 @@ fn lower_flow_statements(
                 }
                 i += 1;
             }
+            FlowStatement::Local(local) => {
+                if let Some(expr) = &local.value {
+                    out.push(Statement::ExprAssign(ExprAssign {
+                        bind: local.bind.clone(),
+                        type_annotation: None,
+                        expr: expr.clone(),
+                    }));
+                } else {
+                    let args: Vec<Arg> = local.args.clone();
+                    let bind = local.bind.clone();
+                    out.push(Statement::Node(NodeAssign {
+                        bind: bind.clone(),
+                        node_id: bind,
+                        op: local.callee.clone(),
+                        args,
+                        type_annotation: None,
+                    }));
+                }
+                i += 1;
+            }
             FlowStatement::SendNowait(sn) => {
                 let args: Vec<Expr> = sn.args.iter().map(|a| Expr::Var(a.clone())).collect();
                 out.push(Statement::SendNowait(SendNowait {
                     target: sn.target.clone(),
                     args,
                 }));
+                i += 1;
+            }
+            FlowStatement::Choose(choose) => {
+                let lowered = lower_branch_blocks(&choose.branches, counter)?;
+                out.extend(lowered);
                 i += 1;
             }
             FlowStatement::Branch(_) => {
@@ -413,25 +653,17 @@ fn lower_branch_chain(
     pos: &mut usize,
     counter: &mut usize,
 ) -> Result<Vec<Statement>, String> {
-    let mut guarded: Vec<(Expr, Vec<Statement>)> = Vec::new();
-    let mut else_body: Vec<Statement> = Vec::new();
+    let mut branches: Vec<FlowBranchBlock> = Vec::new();
     let mut j = 0;
 
     while j < stmts.len() {
         match &stmts[j] {
             FlowStatement::Branch(branch) => {
-                let lowered = lower_flow_statements(&branch.body, counter)?;
-                match &branch.condition {
-                    Some(cond) => {
-                        guarded.push((cond.clone(), lowered));
-                        j += 1;
-                    }
-                    None => {
-                        // Unguarded branch is the else — consumes and terminates the chain
-                        else_body = lowered;
-                        j += 1;
-                        break;
-                    }
+                branches.push(branch.clone());
+                j += 1;
+                if branch.condition.is_none() {
+                    // Unguarded branch is the else — consumes and terminates the chain.
+                    break;
                 }
             }
             _ => break, // Non-branch statement ends the chain
@@ -439,8 +671,24 @@ fn lower_branch_chain(
     }
 
     *pos += j;
+    lower_branch_blocks(&branches, counter)
+}
 
-    // No guarded branches — just inline the else body (single unguarded branch)
+fn lower_branch_blocks(branches: &[FlowBranchBlock], counter: &mut usize) -> Result<Vec<Statement>, String> {
+    let mut guarded: Vec<(Expr, Vec<Statement>)> = Vec::new();
+    let mut else_body: Vec<Statement> = Vec::new();
+    for branch in branches {
+        let lowered = lower_flow_statements(&branch.body, counter)?;
+        match &branch.condition {
+            Some(cond) => guarded.push((cond.clone(), lowered)),
+            None => {
+                else_body = lowered;
+                break;
+            }
+        }
+    }
+
+    // No guarded branches: inline unconditional branch body.
     if guarded.is_empty() {
         return Ok(else_body);
     }
@@ -795,7 +1043,7 @@ impl RuntimeBodyParser {
 
         // Extract op and args from the call expression
         let (source_op, source_args) = match call_expr {
-            Expr::Call { func, args } => {
+            Expr::Call { func, args, .. } => {
                 let old_args: Vec<Arg> = args
                     .iter()
                     .map(|a| match a {
@@ -872,11 +1120,16 @@ impl RuntimeBodyParser {
     fn parse_emit_stmt(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword("emit")?;
         let value_expr = self.parse_pratt_expr(0)?;
+        // Optional `to :port` — allows named event ports in do...done blocks
+        let output = if self.peek_keyword("to") {
+            self.bump(); // consume `to`
+            self.expect_symbol(':')?;
+            self.expect_ident("expected port name after `:`")?
+        } else {
+            self.emit_output_name.clone()
+        };
         self.expect_line_end("expected newline after emit statement")?;
-        Ok(Statement::Emit(Emit {
-            output: self.emit_output_name.clone(),
-            value_expr,
-        }))
+        Ok(Statement::Emit(Emit { output, value_expr }))
     }
 
     fn parse_fail_stmt(&mut self) -> Result<Statement, ParseError> {
@@ -925,10 +1178,27 @@ impl RuntimeBodyParser {
         self.expect_symbol('(')?;
         let args = self.parse_expr_args()?;
         self.expect_symbol(')')?;
-        self.expect_line_end("expected newline after bare op call")?;
+
+        // Check for do...done block before requiring line end
+        let children = self.try_parse_do_block()?;
+        if children.is_none() {
+            self.expect_line_end("expected newline after bare op call")?;
+        } else {
+            // After done, consume optional newline
+            self.skip_newlines();
+        }
 
         let bind = format!("_discard_{}", self.discard_counter);
         self.discard_counter += 1;
+
+        // If has children, always use ExprAssign path (not Node)
+        if children.is_some() {
+            return Ok(Statement::ExprAssign(ExprAssign {
+                bind,
+                type_annotation: None,
+                expr: Expr::Call { func: op, args, children },
+            }));
+        }
 
         // If all args are simple (Var/Lit), produce Statement::Node directly
         let all_simple = args
@@ -955,7 +1225,7 @@ impl RuntimeBodyParser {
         Ok(Statement::ExprAssign(ExprAssign {
             bind,
             type_annotation: None,
-            expr: Expr::Call { func: op, args },
+            expr: Expr::Call { func: op, args, children: None },
         }))
     }
 
@@ -1005,9 +1275,12 @@ impl RuntimeBodyParser {
         let expr = self.parse_pratt_expr(0)?;
         self.expect_line_end("expected newline after assignment")?;
 
-        // Backward compat: if the expression is a simple Call with only Var/Lit args,
-        // produce a Statement::Node to keep the old IR/runtime path.
-        if let Expr::Call { func, args } = &expr {
+        // Backward compat: if the expression is a simple Call with only Var/Lit args
+        // and no children block, produce a Statement::Node to keep the old IR/runtime path.
+        if let Expr::Call { func, args, children, .. } = &expr {
+            if children.is_some() {
+                return Ok(Statement::ExprAssign(ExprAssign { bind, type_annotation, expr }));
+            }
             let all_simple = args
                 .iter()
                 .all(|a| matches!(a, Expr::Var(_) | Expr::Lit(_)));
@@ -1223,6 +1496,10 @@ impl RuntimeBodyParser {
                     self.bump();
                     return Ok(Expr::Lit(json!(v == "true")));
                 }
+                if v == "null" {
+                    self.bump();
+                    return Ok(Expr::Lit(serde_json::Value::Null));
+                }
                 // Parse dotted path (e.g. input.apr)
                 let path = self.parse_var_path("expected expression")?;
                 // Check if it's a function call: path(...)
@@ -1230,12 +1507,45 @@ impl RuntimeBodyParser {
                     self.bump(); // consume '('
                     let args = self.parse_expr_args()?;
                     self.expect_symbol(')')?;
-                    return Ok(Expr::Call { func: path, args });
+                    let children = self.try_parse_do_block()?;
+                    return Ok(Expr::Call { func: path, args, children });
                 }
                 Ok(Expr::Var(path))
             }
             _ => self.err_here("expected expression"),
         }
+    }
+
+    /// If the next token is `do`, parse a `do...done` block and return `Some(stmts)`.
+    /// Otherwise return `None`.
+    fn try_parse_do_block(&mut self) -> Result<Option<Vec<Statement>>, ParseError> {
+        if !self.peek_keyword("do") {
+            return Ok(None);
+        }
+        self.bump(); // consume `do`
+        // Optional block context binding: `do stack`
+        // We only treat it as a binding when it is a single identifier followed by newline.
+        let block_bind = if matches!(self.current().kind, TokenKind::Ident(_))
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+        {
+            Some(self.expect_ident("expected block context identifier after `do`")?)
+        } else {
+            None
+        };
+        self.skip_newlines();
+        let mut body = self.parse_block(&[BodyStop::Done])?;
+        self.expect_keyword("done")?;
+        if let Some(bind) = block_bind {
+            body.insert(0, Statement::ExprAssign(ExprAssign {
+                bind,
+                type_annotation: None,
+                expr: Expr::Lit(json!("__forai_ui_block_ctx__")),
+            }));
+        }
+        Ok(Some(body))
     }
 
     fn parse_expr_args(&mut self) -> Result<Vec<Expr>, ParseError> {
@@ -1653,6 +1963,9 @@ impl FlowBodyParser {
         if self.peek_keyword("state") {
             return self.parse_state_decl();
         }
+        if self.peek_keyword("local") {
+            return self.parse_local_decl();
+        }
         if self.peek_keyword("send") {
             return self.parse_flow_send_nowait();
         }
@@ -1667,10 +1980,13 @@ impl FlowBodyParser {
             let fail = self.parse_flow_fail_inner()?;
             return Ok(FlowStatement::Fail(fail));
         }
+        if self.peek_keyword("choose") {
+            return self.parse_flow_choose();
+        }
         if self.peek_keyword("branch") {
             return self.parse_flow_branch();
         }
-        self.err_here("expected `step`, `state`, `send`, `log`, `emit`, `fail`, or `branch` in flow body")
+        self.err_here("expected `step`, `state`, `local`, `send`, `log`, `emit`, `fail`, `choose`, or `branch` in flow body")
     }
 
     // Parse: state <bind> = <callee>(<arg1>, <arg2>, ...)
@@ -1688,7 +2004,7 @@ impl FlowBodyParser {
                 | TokenKind::Number(_)
                 | TokenKind::Symbol('[')
                 | TokenKind::Symbol('{')
-        ) || matches!(&self.current().kind, TokenKind::Ident(s) if s == "true" || s == "false");
+        ) || matches!(&self.current().kind, TokenKind::Ident(s) if s == "true" || s == "false" || s == "null");
         if is_literal {
             let expr = self.parse_pratt_expr(0)?;
             self.expect_line_end("expected newline after state declaration")?;
@@ -1706,6 +2022,46 @@ impl FlowBodyParser {
         self.expect_symbol(')')?;
         self.expect_line_end("expected newline after state declaration")?;
         Ok(FlowStatement::State(FlowStateDecl {
+            bind,
+            callee,
+            args,
+            value: None,
+            span,
+        }))
+    }
+
+    // Parse: local <bind> = <callee>(<arg1>, <arg2>, ...)
+    //    or: local <bind> = <literal-expr>
+    fn parse_local_decl(&mut self) -> Result<FlowStatement, ParseError> {
+        let span = self.current().span;
+        self.expect_keyword("local")?;
+        let bind = self.expect_ident("expected variable name after `local`")?;
+        self.expect_symbol('=')?;
+        let is_literal = matches!(
+            &self.current().kind,
+            TokenKind::StringLit(_)
+                | TokenKind::StringInterp(_)
+                | TokenKind::Number(_)
+                | TokenKind::Symbol('[')
+                | TokenKind::Symbol('{')
+        ) || matches!(&self.current().kind, TokenKind::Ident(s) if s == "true" || s == "false" || s == "null");
+        if is_literal {
+            let expr = self.parse_pratt_expr(0)?;
+            self.expect_line_end("expected newline after local declaration")?;
+            return Ok(FlowStatement::Local(FlowLocalDecl {
+                bind,
+                callee: String::new(),
+                args: Vec::new(),
+                value: Some(expr),
+                span,
+            }));
+        }
+        let callee = self.parse_var_path("expected callee after `=` in local declaration")?;
+        self.expect_symbol('(')?;
+        let args = self.parse_arg_list(')')?;
+        self.expect_symbol(')')?;
+        self.expect_line_end("expected newline after local declaration")?;
+        Ok(FlowStatement::Local(FlowLocalDecl {
             bind,
             callee,
             args,
@@ -1860,8 +2216,40 @@ impl FlowBodyParser {
                 items.push(StepThenItem::Next(NextWire {
                     port,
                     wire,
+                    via_callee: None,
+                    via_inputs: vec![],
+                    via_outputs: vec![],
                     span: next_span,
                 }));
+                continue;
+            }
+            if self.peek_keyword("on") {
+                let on_span = self.current().span;
+                self.bump(); // consume `on`
+                self.expect_symbol(':')?;
+                let port = self.expect_ident("expected port name after `on :`")?;
+                self.expect_keyword("as")?;
+                let wire = self.expect_ident("expected wire name after `as`")?;
+                self.expect_keyword("then")?;
+                self.expect_line_end("expected newline after `then`")?;
+                let body = self.parse_then_items()?; // RECURSIVE
+                self.expect_keyword("done")?;
+                self.skip_newlines();
+                items.push(StepThenItem::On(FlowOnBlock {
+                    port,
+                    wire,
+                    body,
+                    span: on_span,
+                }));
+                continue;
+            }
+            if self.peek_keyword("step") {
+                let step_span = self.current().span;
+                self.bump(); // consume `step`
+                let step_stmt = self.parse_step_inline(step_span)?;
+                if let FlowStatement::Step(step_block) = step_stmt {
+                    items.push(StepThenItem::Step(step_block));
+                }
                 continue;
             }
             if self.peek_keyword("emit") {
@@ -1892,7 +2280,7 @@ impl FlowBodyParser {
                 }));
                 continue;
             }
-            return self.err_here("expected `next`, `emit`, `fail`, `:event to callee(...)`, or `done` in step then block");
+            return self.err_here("expected `next`, `on`, `step`, `emit`, `fail`, `:event to callee(...)`, or `done` in step then block");
         }
         Ok(items)
     }
@@ -2087,6 +2475,10 @@ impl FlowBodyParser {
 
     fn peek_keyword(&self, keyword: &str) -> bool {
         matches!(&self.current().kind, TokenKind::Ident(s) if s == keyword)
+    }
+
+    fn peek_newline(&self) -> bool {
+        matches!(self.current().kind, TokenKind::Newline)
     }
 
     fn peek_symbol(&self, symbol: char) -> bool {
@@ -2296,12 +2688,16 @@ impl FlowBodyParser {
                     self.bump();
                     return Ok(Expr::Lit(serde_json::json!(v == "true")));
                 }
+                if v == "null" {
+                    self.bump();
+                    return Ok(Expr::Lit(serde_json::Value::Null));
+                }
                 let path = self.parse_var_path("expected expression")?;
                 if self.peek_symbol('(') {
                     self.bump();
                     let args = self.parse_expr_args()?;
                     self.expect_symbol(')')?;
-                    return Ok(Expr::Call { func: path, args });
+                    return Ok(Expr::Call { func: path, args, children: None });
                 }
                 Ok(Expr::Var(path))
             }
@@ -2323,6 +2719,47 @@ impl FlowBodyParser {
         }
     }
 
+    fn parse_flow_choose(&mut self) -> Result<FlowStatement, ParseError> {
+        let span = self.current().span;
+        self.expect_keyword("choose")?;
+        self.expect_line_end("expected newline after `choose`")?;
+
+        let mut branches = Vec::new();
+        let mut saw_default = false;
+
+        loop {
+            self.skip_newlines();
+            if self.at_eof() || self.peek_keyword("done") {
+                break;
+            }
+            if !self.peek_keyword("branch") {
+                return self.err_here("expected `branch` or `done` in choose block");
+            }
+            if saw_default {
+                return self.err_here("bare `branch` must be last in choose block");
+            }
+            let stmt = self.parse_flow_branch()?;
+            let FlowStatement::Branch(branch) = stmt else {
+                unreachable!("parse_flow_branch always returns FlowStatement::Branch");
+            };
+            if branch.condition.is_none() {
+                saw_default = true;
+            }
+            branches.push(branch);
+        }
+
+        if branches.is_empty() {
+            return Err(ParseError {
+                message: "choose block requires at least one branch".to_string(),
+                span,
+            });
+        }
+
+        self.expect_keyword("done")?;
+        self.expect_line_end("expected newline after choose `done`")?;
+        Ok(FlowStatement::Choose(FlowChooseBlock { branches, span }))
+    }
+
     // --- Branch parsing ---
 
     fn parse_flow_branch(&mut self) -> Result<FlowStatement, ParseError> {
@@ -2331,6 +2768,8 @@ impl FlowBodyParser {
 
         let condition = if self.peek_keyword("when") {
             self.bump(); // consume `when`
+            Some(self.parse_pratt_expr(0)?)
+        } else if !self.peek_newline() {
             Some(self.parse_pratt_expr(0)?)
         } else {
             None
@@ -2449,11 +2888,39 @@ impl<'a> TokenParser<'a> {
 
     fn parse_uses(&mut self) -> Result<UsesDecl, ParseError> {
         let span = self.expect_keyword("use")?.span;
-        let name = self.expect_ident_value("expected name after `use`")?;
-        self.expect_keyword("from")?;
-        let path = self.expect_string_lit_value("expected path string after `from`")?;
-        self.expect_line_end("expected newline after use declaration")?;
-        Ok(UsesDecl { name, path, span })
+
+        // Check for destructured import: use { Name1, Name2 } from "path"
+        if self.peek_symbol('{') {
+            self.bump(); // consume '{'
+            let mut imports = Vec::new();
+            loop {
+                let ident = self.expect_ident_value("expected identifier inside `{ ... }`")?;
+                imports.push(ident);
+                if self.peek_symbol(',') {
+                    self.bump(); // consume ','
+                } else {
+                    break;
+                }
+            }
+            self.expect_symbol('}')?;
+            self.expect_keyword("from")?;
+            let path = self.expect_string_lit_value("expected path string after `from`")?;
+            self.expect_line_end("expected newline after use declaration")?;
+            // Derive module name from path (last segment without extension)
+            let name = path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&path)
+                .trim_end_matches(".fa")
+                .to_string();
+            Ok(UsesDecl { name, path, imports, span })
+        } else {
+            let name = self.expect_ident_value("expected name after `use`")?;
+            self.expect_keyword("from")?;
+            let path = self.expect_string_lit_value("expected path string after `from`")?;
+            self.expect_line_end("expected newline after use declaration")?;
+            Ok(UsesDecl { name, path, imports: Vec::new(), span })
+        }
     }
 
     fn expect_string_lit_value(&mut self, message: &str) -> Result<String, ParseError> {
@@ -2502,7 +2969,7 @@ impl<'a> TokenParser<'a> {
         self.expect_keyword("body")?;
         self.expect_line_end("expected newline after `body`")?;
 
-        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if"])?;
+        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if", "on", "do"])?;
 
         Ok(FuncDecl {
             name,
@@ -2526,7 +2993,7 @@ impl<'a> TokenParser<'a> {
         self.expect_keyword("body")?;
         self.expect_line_end("expected newline after `body`")?;
 
-        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if"])?;
+        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if", "on", "do"])?;
 
         Ok(FuncDecl {
             name,
@@ -2554,7 +3021,7 @@ impl<'a> TokenParser<'a> {
         }
         self.expect_keyword("body")?;
         self.expect_line_end("expected newline after `body`")?;
-        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if", "on"])?;
+        let body_text = self.collect_body_text(kw_span, &["case", "loop", "sync", "if", "on", "do"])?;
 
         Ok(FuncDecl {
             name,
@@ -2578,7 +3045,7 @@ impl<'a> TokenParser<'a> {
         self.expect_keyword("body")?;
         self.expect_line_end("expected newline after `body`")?;
 
-        let body_text = self.collect_body_text(kw_span, &["step", "case", "if", "branch"])?;
+        let body_text = self.collect_body_text(kw_span, &["step", "case", "if", "branch", "choose", "on"])?;
 
         Ok(FlowDecl {
             name,
@@ -2669,6 +3136,8 @@ impl<'a> TokenParser<'a> {
         let mut prev_was_else = false;
         let mut at_stmt_start = true; // track if we're at the beginning of a statement
         let mut paren_depth = 0i32; // track ( ) to skip keywords inside function call args
+        let mut prev_was_close_paren = false; // track if previous token was `)`
+        let mut line_has_nesting_kw = false; // track if current line started with a nesting keyword
 
         while !self.at_eof() {
             // Track parenthesis depth to avoid treating `:branch`, `:step` etc. as keywords
@@ -2677,6 +3146,7 @@ impl<'a> TokenParser<'a> {
                     paren_depth += 1;
                     self.bump();
                     prev_was_else = false;
+                    prev_was_close_paren = false;
                     at_stmt_start = false;
                     continue;
                 }
@@ -2684,13 +3154,17 @@ impl<'a> TokenParser<'a> {
                     paren_depth -= 1;
                     self.bump();
                     prev_was_else = false;
+                    prev_was_close_paren = true;
                     at_stmt_start = false;
                     continue;
                 }
                 TokenKind::Newline => {
                     at_stmt_start = true;
+                    line_has_nesting_kw = false;
                     self.bump();
                     prev_was_else = false;
+                    // Don't reset prev_was_close_paren across newlines —
+                    // `via Handler()\nthen` should still count
                     continue;
                 }
                 _ => {}
@@ -2710,6 +3184,17 @@ impl<'a> TokenParser<'a> {
                         return Ok(body_text);
                     }
                     prev_was_else = false;
+                } else if word == "then" && paren_depth == 0 && prev_was_close_paren && !line_has_nesting_kw {
+                    // `then` after `)` on a line without a nesting keyword (e.g., `via Handler(args) then`)
+                    // introduces a nested block with its own `done`.
+                    // `step View() then` has `step` (nesting keyword) so `then` doesn't double-count.
+                    let next_pos = self.pos + 1;
+                    let next_is_eol = next_pos >= self.tokens.len()
+                        || matches!(self.tokens[next_pos].kind, TokenKind::Newline);
+                    if next_is_eol {
+                        depth += 1;
+                    }
+                    prev_was_else = false;
                 } else if word == "if" && nesting_keywords.contains(&"if") && prev_was_else {
                     // "else if" — continuation, not a new nesting level
                     prev_was_else = false;
@@ -2718,6 +3203,9 @@ impl<'a> TokenParser<'a> {
                     prev_was_else = false;
                 } else if nesting_keywords.contains(&word) {
                     depth += 1;
+                    if at_stmt_start {
+                        line_has_nesting_kw = true;
+                    }
                     prev_was_else = false;
                 } else {
                     prev_was_else = word == "else";
@@ -2725,6 +3213,7 @@ impl<'a> TokenParser<'a> {
             } else {
                 prev_was_else = false;
             }
+            prev_was_close_paren = false;
             at_stmt_start = false;
             self.bump();
         }
@@ -5161,6 +5650,37 @@ done
     }
 
     #[test]
+    fn parses_guarded_branch_shorthand() {
+        let src = r#"
+flow TestFlow
+    take input as Foo
+    emit result as Bar
+    fail error as Baz
+body
+    step sources.RandomNum() then
+        next :num to raw
+    done
+    branch raw > 50.0
+        step lib.Square(raw to :num) then
+            next :result to processed
+        done
+        step sinks.Print(processed to :line) done
+    done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 2); // step + branch
+        match &graph.body[1] {
+            FlowStatement::Branch(b) => {
+                assert!(b.condition.is_some());
+                assert_eq!(b.body.len(), 2); // two steps inside branch
+            }
+            other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parses_unguarded_branch() {
         let src = r#"
 flow TestFlow
@@ -5189,6 +5709,180 @@ done
             }
             other => panic!("expected Branch, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_choose_with_fallback() {
+        let src = r#"
+flow TestFlow
+    take req as dict
+    emit result as text
+    fail error as text
+body
+    choose
+        branch route.get("/", req)
+            step routes.Home() done
+        done
+        branch route.get("/about", req)
+            step routes.About() done
+        done
+        branch
+            step routes.NotFound() done
+        done
+    done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 1);
+        match &graph.body[0] {
+            FlowStatement::Choose(choose) => {
+                assert_eq!(choose.branches.len(), 3);
+                assert!(choose.branches[0].condition.is_some());
+                assert!(choose.branches[1].condition.is_some());
+                assert!(choose.branches[2].condition.is_none());
+            }
+            other => panic!("expected Choose, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_nested_choose_inside_branch() {
+        let src = r#"
+flow TestFlow
+    take req as dict
+    emit result as text
+    fail error as text
+body
+    branch route.get("/", req)
+        choose
+            branch true
+                step routes.Home() done
+            done
+        done
+    done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 1);
+        match &graph.body[0] {
+            FlowStatement::Branch(branch) => {
+                assert_eq!(branch.body.len(), 1);
+                assert!(matches!(branch.body[0], FlowStatement::Choose(_)));
+            }
+            other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn choose_requires_at_least_one_branch() {
+        let src = r#"
+flow TestFlow
+    emit result as text
+    fail error as text
+body
+    choose
+    done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let err = parse_flow_graph_from_module_v1(&module).expect_err("choose without branches must fail");
+        assert!(err.contains("choose block requires at least one branch"));
+    }
+
+    #[test]
+    fn choose_requires_default_branch_last() {
+        let src = r#"
+flow TestFlow
+    take req as dict
+    emit result as text
+    fail error as text
+body
+    choose
+        branch
+            step routes.NotFound() done
+        done
+        branch route.get("/", req)
+            step routes.Home() done
+        done
+    done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let err = parse_flow_graph_from_module_v1(&module).expect_err("default branch not last must fail");
+        assert!(err.contains("bare `branch` must be last in choose block"));
+    }
+
+    #[test]
+    fn lower_choose_matches_consecutive_branch_chain() {
+        let src_choose = r#"
+flow TestFlow
+    take req as dict
+    emit result as text
+    fail error as text
+body
+    choose
+        branch route.get("/", req)
+            step routes.Home() then
+                next :result to out
+                emit out to :result
+            done
+        done
+        branch route.get("/about", req)
+            step routes.About() then
+                next :result to out
+                emit out to :result
+            done
+        done
+        branch
+            step routes.NotFound() then
+                next :result to out
+                emit out to :result
+            done
+        done
+    done
+done
+"#;
+
+        let src_branch_chain = r#"
+flow TestFlow
+    take req as dict
+    emit result as text
+    fail error as text
+body
+    branch when route.get("/", req)
+        step routes.Home() then
+            next :result to out
+            emit out to :result
+        done
+    done
+    branch when route.get("/about", req)
+        step routes.About() then
+            next :result to out
+            emit out to :result
+        done
+    done
+    branch
+        step routes.NotFound() then
+            next :result to out
+            emit out to :result
+        done
+    done
+done
+"#;
+
+        let choose_module = parse_module_v1(src_choose).expect("choose module should parse");
+        let choose_graph = parse_flow_graph_from_module_v1(&choose_module).expect("choose graph should parse");
+        let choose_flow = lower_flow_graph_to_flow(&choose_graph).expect("choose lower should succeed");
+
+        let chain_module = parse_module_v1(src_branch_chain).expect("chain module should parse");
+        let chain_graph = parse_flow_graph_from_module_v1(&chain_module).expect("chain graph should parse");
+        let chain_flow = lower_flow_graph_to_flow(&chain_graph).expect("chain lower should succeed");
+
+        let choose_body = serde_json::to_value(&choose_flow.body).expect("serialize choose body");
+        let chain_body = serde_json::to_value(&chain_flow.body).expect("serialize chain body");
+        assert_eq!(choose_body, chain_body);
     }
 
     #[test]
@@ -6126,6 +6820,1057 @@ done
                 }
             }
             other => panic!("expected Case, got: {other:?}"),
+        }
+    }
+
+    // --- UI do...done block parsing tests ---
+
+    #[test]
+    fn parse_ui_block_bare_call() {
+        let src = r#"
+docs UiTest
+  Test UI block parsing.
+done
+
+func UiTest
+  take x as text
+  emit result as text
+body
+  ui.vstack(10) do
+    ui.text("hello")
+  done
+  emit result
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        // First statement should be an ExprAssign with Expr::Call that has children
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                assert!(ea.bind.starts_with("_discard_"));
+                match &ea.expr {
+                    Expr::Call { func, children, .. } => {
+                        assert_eq!(func, "ui.vstack");
+                        assert!(children.is_some(), "expected children in do...done block");
+                        let kids = children.as_ref().unwrap();
+                        assert_eq!(kids.len(), 1, "expected 1 child statement");
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ui_block_assignment() {
+        let src = r#"
+docs UiAssign
+  Test UI block in assignment.
+done
+
+func UiAssign
+  take count as long
+  emit view as text
+body
+  tree = ui.screen() do
+    ui.text("hello")
+  done
+  emit view
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                assert_eq!(ea.bind, "tree");
+                match &ea.expr {
+                    Expr::Call { func, children, .. } => {
+                        assert_eq!(func, "ui.screen");
+                        assert!(children.is_some());
+                        assert_eq!(children.as_ref().unwrap().len(), 1);
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_ui_blocks() {
+        let src = r#"
+docs Nested
+  Test nested UI blocks.
+done
+
+func Nested
+  take x as text
+  emit result as text
+body
+  tree = ui.screen() do
+    ui.vstack(20) do
+      ui.text("hello")
+      ui.text("world")
+    done
+  done
+  emit result
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                assert_eq!(ea.bind, "tree");
+                match &ea.expr {
+                    Expr::Call { func, children, .. } => {
+                        assert_eq!(func, "ui.screen");
+                        let kids = children.as_ref().unwrap();
+                        assert_eq!(kids.len(), 1);
+                        // The child should be a bare call with its own children
+                        match &kids[0] {
+                            Statement::ExprAssign(inner_ea) => {
+                                match &inner_ea.expr {
+                                    Expr::Call { func, children, .. } => {
+                                        assert_eq!(func, "ui.vstack");
+                                        let inner_kids = children.as_ref().unwrap();
+                                        assert_eq!(inner_kids.len(), 2, "vstack should have 2 text children");
+                                    }
+                                    other => panic!("expected inner Call, got: {other:?}"),
+                                }
+                            }
+                            other => panic!("expected inner ExprAssign, got: {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ui_block_with_context_binding() {
+        let src = r##"
+docs Ctx
+  Test do-block context binding.
+done
+
+func Ctx
+  emit result as dict
+body
+  tree = ui.vstack(8) do stack
+    stack.padding(12)
+    stack.backgroundColor("#333")
+    ui.text("hello")
+  done
+  emit tree
+done
+"##;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => match &ea.expr {
+                Expr::Call { func, children, .. } => {
+                    assert_eq!(func, "ui.vstack");
+                    let kids = children.as_ref().expect("expected children");
+                    assert!(matches!(
+                        &kids[0],
+                        Statement::ExprAssign(ExprAssign {
+                            bind,
+                            expr: Expr::Lit(v),
+                            ..
+                        }) if bind == "stack" && v == "__forai_ui_block_ctx__"
+                    ));
+                    assert!(matches!(&kids[1], Statement::Node(NodeAssign { op, .. }) if op == "stack.padding"));
+                    assert!(matches!(&kids[2], Statement::Node(NodeAssign { op, .. }) if op == "stack.backgroundColor"));
+                }
+                other => panic!("expected Call, got: {other:?}"),
+            },
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_emit_inside_ui_block() {
+        let src = r#"
+docs EmitBlock
+  Test emit inside UI block.
+done
+
+func EmitBlock
+  take x as text
+  emit on_click as bool
+body
+  ui.button("Click") do
+    v = true
+    emit v
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                match &ea.expr {
+                    Expr::Call { func, children, .. } => {
+                        assert_eq!(func, "ui.button");
+                        let kids = children.as_ref().unwrap();
+                        assert_eq!(kids.len(), 2, "should have assignment + emit");
+                        // Second child should be an Emit
+                        assert!(matches!(&kids[1], Statement::Emit(_)));
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_empty_do_block() {
+        let src = r#"
+docs Empty
+  Test empty do block.
+done
+
+func Empty
+  take x as text
+  emit result as text
+body
+  ui.vstack() do
+  done
+  emit result
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                match &ea.expr {
+                    Expr::Call { children, .. } => {
+                        let kids = children.as_ref().unwrap();
+                        assert_eq!(kids.len(), 0, "empty do...done should produce 0 children");
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn do_as_variable_name_not_confused() {
+        // `do` should only trigger block parsing after a Call's `)`
+        // Using `do` as a plain identifier should work fine elsewhere
+        let src = r#"
+docs DoVar
+  Test do as variable.
+done
+
+func DoVar
+  take x as text
+  emit result as text
+body
+  result = str.upper(x)
+  emit result
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+        // Should parse without errors; `do` never appears here
+        assert_eq!(flow.body.len(), 2);
+    }
+
+    #[test]
+    fn parse_5_level_nested_ui_blocks() {
+        let src = r#"
+docs Deep
+  Test deeply nested UI blocks.
+done
+
+func Deep
+  take x as text
+  emit result as text
+body
+  tree = ui.screen() do
+    ui.zstack() do
+      ui.vstack() do
+        ui.hstack() do
+          ui.text("deep")
+        done
+      done
+    done
+  done
+  emit result
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        // Verify 5 levels parsed: screen > zstack > vstack > hstack > text
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                match &ea.expr {
+                    Expr::Call { func, children, .. } => {
+                        assert_eq!(func, "ui.screen");
+                        let l1 = children.as_ref().unwrap();
+                        assert_eq!(l1.len(), 1);
+                        // Level 2: zstack
+                        if let Statement::ExprAssign(ea2) = &l1[0] {
+                            if let Expr::Call { func: f2, children: c2, .. } = &ea2.expr {
+                                assert_eq!(f2, "ui.zstack");
+                                let l2 = c2.as_ref().unwrap();
+                                // Level 3: vstack
+                                if let Statement::ExprAssign(ea3) = &l2[0] {
+                                    if let Expr::Call { func: f3, children: c3, .. } = &ea3.expr {
+                                        assert_eq!(f3, "ui.vstack");
+                                        let l3 = c3.as_ref().unwrap();
+                                        // Level 4: hstack
+                                        if let Statement::ExprAssign(ea4) = &l3[0] {
+                                            if let Expr::Call { func: f4, children: c4, .. } = &ea4.expr {
+                                                assert_eq!(f4, "ui.hstack");
+                                                let l4 = c4.as_ref().unwrap();
+                                                assert_eq!(l4.len(), 1, "hstack has 1 child (text)");
+                                            } else { panic!("expected hstack Call"); }
+                                        } else { panic!("expected hstack ExprAssign"); }
+                                    } else { panic!("expected vstack Call"); }
+                                } else { panic!("expected vstack ExprAssign"); }
+                            } else { panic!("expected zstack Call"); }
+                        } else { panic!("expected zstack ExprAssign"); }
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    // --- emit to :port tests ---
+
+    #[test]
+    fn parse_emit_to_port_in_do_block() {
+        let src = r#"
+docs BtnEmit
+  Test emit to port inside do block.
+done
+
+func BtnEmit
+  take x as text
+  emit view as dict
+body
+  btn = ui.button("+") do
+    emit true to :on_inc
+  done
+  emit btn
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                match &ea.expr {
+                    Expr::Call { children, .. } => {
+                        let kids = children.as_ref().unwrap();
+                        match &kids[0] {
+                            Statement::Emit(e) => {
+                                assert_eq!(e.output, "on_inc", "emit should use the named port");
+                            }
+                            other => panic!("expected Emit, got: {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_emit_without_port_unchanged() {
+        let src = r#"
+docs Plain
+  Test bare emit uses func port.
+done
+
+func Plain
+  take x as text
+  emit result as text
+body
+  emit x
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "result", "bare emit should use func's declared port");
+            }
+            other => panic!("expected Emit, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_emit_to_port_multiple() {
+        let src = r#"
+docs Multi
+  Test multiple emit to port.
+done
+
+func Multi
+  take x as text
+  emit view as dict
+body
+  btn = ui.button("+") do
+    emit true to :on_inc
+    emit true to :on_focus
+  done
+  emit btn
+done
+"#;
+        let module = parse_module_v1(src).expect("parse");
+        let flow = parse_runtime_func_decl_v1(
+            match &module.decls[1] {
+                TopDecl::Func(f) => f,
+                _ => panic!("expected func"),
+            },
+        )
+        .expect("compile");
+
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                match &ea.expr {
+                    Expr::Call { children, .. } => {
+                        let kids = children.as_ref().unwrap();
+                        assert_eq!(kids.len(), 2);
+                        match &kids[0] {
+                            Statement::Emit(e) => assert_eq!(e.output, "on_inc"),
+                            other => panic!("expected Emit, got: {other:?}"),
+                        }
+                        match &kids[1] {
+                            Statement::Emit(e) => assert_eq!(e.output, "on_focus"),
+                            other => panic!("expected Emit, got: {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Call, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ExprAssign, got: {other:?}"),
+        }
+    }
+
+    // --- local declaration tests ---
+
+    #[test]
+    fn parses_local_decl_literal() {
+        let src = r#"
+flow Counter
+body
+  local count = 0
+  step Display(count to :count) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 2);
+        match &graph.body[0] {
+            FlowStatement::Local(l) => {
+                assert_eq!(l.bind, "count");
+                assert!(matches!(&l.value, Some(Expr::Lit(v)) if v == 0));
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    #[test]
+    fn parses_local_decl_op_call() {
+        let src = r#"
+flow App
+body
+  local items = list.new()
+  step Display(items to :items) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        match &graph.body[0] {
+            FlowStatement::Local(l) => {
+                assert_eq!(l.bind, "items");
+                assert_eq!(l.callee, "list.new");
+                assert!(l.value.is_none());
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    #[test]
+    fn local_and_state_coexist() {
+        let src = r#"
+flow App
+body
+  state counter = 0
+  local total = 0
+  step Display(counter to :count) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        assert_eq!(graph.body.len(), 3);
+        assert!(matches!(&graph.body[0], FlowStatement::State(_)));
+        assert!(matches!(&graph.body[1], FlowStatement::Local(_)));
+        assert!(matches!(&graph.body[2], FlowStatement::Step(_)));
+    }
+
+    #[test]
+    fn local_lowers_to_expr_assign() {
+        let src = r#"
+flow App
+body
+  local total = 0
+  step Display(total to :count) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+        assert_eq!(flow.body.len(), 2);
+        match &flow.body[0] {
+            Statement::ExprAssign(ea) => {
+                assert_eq!(ea.bind, "total");
+            }
+            _ => panic!("expected ExprAssign from local lowering"),
+        }
+    }
+
+    // --- on block declaration tests ---
+
+    #[test]
+    fn parses_on_block_single() {
+        let src = r#"
+flow App
+body
+  state counter = 0
+  step CounterView(counter to :count) then
+    on :inc as val then
+        step Increment(counter to :count) then
+            next :count to counter
+        done
+    done
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        match &graph.body[1] {
+            FlowStatement::Step(step) => {
+                assert_eq!(step.then_body.len(), 1);
+                match &step.then_body[0] {
+                    StepThenItem::On(on) => {
+                        assert_eq!(on.port, "inc");
+                        assert_eq!(on.wire, "val");
+                        assert_eq!(on.body.len(), 1);
+                        match &on.body[0] {
+                            StepThenItem::Step(nested) => {
+                                assert_eq!(nested.callee, "Increment");
+                            }
+                            _ => panic!("expected nested Step"),
+                        }
+                    }
+                    _ => panic!("expected On"),
+                }
+            }
+            _ => panic!("expected Step"),
+        }
+    }
+
+    #[test]
+    fn parses_on_block_multiple() {
+        let src = r#"
+flow App
+body
+  state counter = 0
+  step FormView(counter to :count) then
+    on :valid as form_data then
+        step Validate(counter to :input) then
+            next :output to validated
+        done
+    done
+    on :error as error_data then
+        step HandleError(counter to :input) then
+            next :output to error_msg
+        done
+    done
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        match &graph.body[1] {
+            FlowStatement::Step(step) => {
+                assert_eq!(step.then_body.len(), 2);
+                match &step.then_body[0] {
+                    StepThenItem::On(on) => {
+                        assert_eq!(on.port, "valid");
+                        assert_eq!(on.wire, "form_data");
+                    }
+                    _ => panic!("expected On"),
+                }
+                match &step.then_body[1] {
+                    StepThenItem::On(on) => {
+                        assert_eq!(on.port, "error");
+                        assert_eq!(on.wire, "error_data");
+                    }
+                    _ => panic!("expected On"),
+                }
+            }
+            _ => panic!("expected Step"),
+        }
+    }
+
+    #[test]
+    fn parses_next_without_via_unchanged() {
+        let src = r#"
+flow App
+body
+  step Display(x to :input) then
+    next :result to res
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        match &graph.body[0] {
+            FlowStatement::Step(step) => {
+                match &step.then_body[0] {
+                    StepThenItem::Next(next) => {
+                        assert_eq!(next.port, "result");
+                        assert_eq!(next.wire, "res");
+                        assert!(next.via_callee.is_none());
+                        assert!(next.via_inputs.is_empty());
+                        assert!(next.via_outputs.is_empty());
+                    }
+                    _ => panic!("expected Next"),
+                }
+            }
+            _ => panic!("expected Step"),
+        }
+    }
+
+    // --- state/local metadata in lowered Flow ---
+
+    #[test]
+    fn lowered_flow_collects_state_and_local_names() {
+        let src = r#"
+flow App
+body
+  state counter = 0
+  state name = "hello"
+  local total = 0
+  step Display(counter to :count) done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+        assert_eq!(flow.state_names, vec!["counter", "name"]);
+        assert_eq!(flow.local_names, vec!["total"]);
+    }
+
+    #[test]
+    fn lowered_func_has_empty_state_local() {
+        let src = r#"
+docs Foo
+  Test func.
+done
+func Foo
+  take x as long
+  emit result as long
+body
+  result = x + 1
+  emit result
+done
+"#;
+        let flow = parse_runtime_flow_v1(src).expect("flow should parse");
+        assert!(flow.state_names.is_empty());
+        assert!(flow.local_names.is_empty());
+    }
+
+    // --- on/step lowering tests ---
+
+    #[test]
+    fn on_with_nested_step_lowers_to_sequential() {
+        // Single on block with nested step → sequential (no case routing)
+        let src = r#"
+flow TestFlow
+  take input as Foo
+  emit result as Bar
+body
+  step CounterView(input to :count) then
+    on :inc as val then
+        step Increment(input to :count) then
+            next :count to counter
+        done
+    done
+    emit counter to :result
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // Parent step + obj.get (event value bind) + nested step + emit = 4
+        assert_eq!(flow.body.len(), 4, "body: {:?}", flow.body);
+
+        match &flow.body[0] {
+            Statement::Node(n) => {
+                assert!(n.bind.starts_with("_step_"), "parent bind should be temp, got: {}", n.bind);
+                assert_eq!(n.op, "CounterView");
+            }
+            other => panic!("expected Statement::Node for parent step, got: {:?}", other),
+        }
+
+        // Event value binding: val = obj.get(_step_N, "value")
+        match &flow.body[1] {
+            Statement::Node(n) => {
+                assert_eq!(n.bind, "val");
+                assert_eq!(n.op, "obj.get");
+            }
+            other => panic!("expected Statement::Node for event bind, got: {:?}", other),
+        }
+
+        match &flow.body[2] {
+            Statement::Node(n) => {
+                assert_eq!(n.bind, "counter");
+                assert_eq!(n.op, "Increment");
+            }
+            other => panic!("expected Statement::Node for nested step, got: {:?}", other),
+        }
+
+        match &flow.body[3] {
+            Statement::Emit(e) => {
+                assert_eq!(e.output, "result");
+            }
+            other => panic!("expected Statement::Emit, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multiple_on_blocks_lower_to_case_routing() {
+        let src = r#"
+flow TestFlow
+  take input as Foo
+  emit result as Bar
+body
+  step View(input to :data) then
+    on :valid as form_data then
+        step Validate(input to :input) then
+            next :output to validated
+        done
+    done
+    on :error as error_data then
+        step HandleError(input to :input) then
+            next :output to error_msg
+        done
+    done
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // step Node + type.of Node + outer safety Case = 3
+        assert_eq!(flow.body.len(), 3, "expected step + type_check + case, got: {:?}", flow.body);
+
+        // Step call
+        match &flow.body[0] {
+            Statement::Node(n) => {
+                assert!(n.bind.starts_with("_step_"), "step bind should be temp");
+                assert_eq!(n.op, "View");
+            }
+            other => panic!("expected step Node, got: {:?}", other),
+        }
+
+        // Type check: _type_N = type.of(_step_N)
+        match &flow.body[1] {
+            Statement::Node(n) => {
+                assert!(n.bind.starts_with("_type_"), "type bind should be _type_N");
+                assert_eq!(n.op, "type.of");
+            }
+            other => panic!("expected type.of Node, got: {:?}", other),
+        }
+
+        // Outer safety case wraps the routing
+        match &flow.body[2] {
+            Statement::Case(case) => {
+                assert_eq!(case.arms.len(), 1, "single arm for 'dict' type check");
+                match &case.arms[0].pattern {
+                    Pattern::Lit(serde_json::Value::String(s)) => assert_eq!(s, "dict"),
+                    other => panic!("expected 'dict' pattern, got: {:?}", other),
+                }
+                assert!(case.arms[0].body.len() >= 2, "dict arm should have has check + case");
+            }
+            other => panic!("expected Case statement, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn on_with_nested_step_counter_ui_pattern() {
+        let src = r#"
+flow Main
+body
+  state counter = 0
+  step View(counter to :count) then
+    on :on_inc as inc then
+        step Update(counter to :count, "inc" to :type) then
+            next :count to counter
+        done
+    done
+    on :on_dec as dec then
+        step Update(counter to :count, "dec" to :type) then
+            next :count to counter
+        done
+    done
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // Init (counter=0) + step + type.of + outer safety Case = 4
+        assert_eq!(flow.body.len(), 4, "body: {:?}", flow.body);
+        assert_eq!(flow.state_names, vec!["counter"]);
+
+        // Step call
+        match &flow.body[1] {
+            Statement::Node(n) => {
+                assert!(n.bind.starts_with("_step_"), "step bind should be temp");
+            }
+            other => panic!("expected step Node, got: {:?}", other),
+        }
+
+        // Type check
+        match &flow.body[2] {
+            Statement::Node(n) => {
+                assert_eq!(n.op, "type.of");
+            }
+            other => panic!("expected type.of Node, got: {:?}", other),
+        }
+
+        // Outer safety case contains the routing logic
+        match &flow.body[3] {
+            Statement::Case(_) => { /* routing wrapped in safety checks */ }
+            other => panic!("expected Case, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn step_without_on_bind_unchanged() {
+        let src = r#"
+flow TestFlow
+  take input as Foo
+  emit result as Bar
+body
+  step AddTwo(input to :input) then
+    next :result to added
+    emit added to :result
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // 2 statements: Node + emit
+        assert_eq!(flow.body.len(), 2);
+
+        match &flow.body[0] {
+            Statement::Node(n) => {
+                assert_eq!(n.bind, "added", "non-on step should bind directly to wire name");
+                assert_eq!(n.op, "AddTwo");
+            }
+            other => panic!("expected Statement::Node, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_step_in_on_block() {
+        // Full step → on → step → next pattern
+        let src = r#"
+flow TestFlow
+  take input as Foo
+  emit result as Bar
+body
+  step Parent(input to :data) then
+    on :action_a as a_val then
+        step ChildA(a_val to :input) then
+            next :output to a_result
+        done
+        emit a_result to :result
+    done
+    on :action_b as b_val then
+        step ChildB(b_val to :input) then
+            next :output to b_result
+        done
+        emit b_result to :result
+    done
+  done
+done
+"#;
+        let module = parse_module_v1(src).expect("module should parse");
+        let graph = parse_flow_graph_from_module_v1(&module).expect("flow graph should parse");
+        let flow = lower_flow_graph_to_flow(&graph).expect("lowering should succeed");
+
+        // step + type.of + case = 3
+        assert_eq!(flow.body.len(), 3, "body: {:?}", flow.body);
+
+        // Verify step call
+        match &flow.body[0] {
+            Statement::Node(n) => {
+                assert_eq!(n.op, "Parent");
+            }
+            other => panic!("expected Parent step, got: {:?}", other),
+        }
+
+        // Verify case routing exists with 2 arms (inside safety wrappers)
+        match &flow.body[2] {
+            Statement::Case(outer) => {
+                // outer is dict type check
+                assert_eq!(outer.arms.len(), 1);
+                // Inside: has check → route case
+                let dict_body = &outer.arms[0].body;
+                assert!(dict_body.len() >= 2);
+                match &dict_body[1] {
+                    Statement::Case(has_case) => {
+                        let has_body = &has_case.arms[0].body;
+                        assert!(has_body.len() >= 2);
+                        match &has_body[1] {
+                            Statement::Case(route_case) => {
+                                assert_eq!(route_case.arms.len(), 2, "should have 2 routing arms");
+                                // Each arm should have: obj.get (wire bind) + nested step Node + emit
+                                assert!(route_case.arms[0].body.len() >= 3,
+                                    "arm should have wire bind + step + emit, got: {:?}", route_case.arms[0].body);
+                            }
+                            other => panic!("expected route Case, got: {:?}", other),
+                        }
+                    }
+                    other => panic!("expected has Case, got: {:?}", other),
+                }
+            }
+            other => panic!("expected outer Case, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn use_named_imports() {
+        let src = "use { View, Loop } from \"./app\"\n";
+        let module = parse_module_v1(src).unwrap();
+        assert_eq!(module.decls.len(), 1);
+        match &module.decls[0] {
+            TopDecl::Uses(u) => {
+                assert_eq!(u.name, "app");
+                assert_eq!(u.path, "./app");
+                assert_eq!(u.imports, vec!["View", "Loop"]);
+            }
+            other => panic!("expected Uses, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn use_named_import_single() {
+        let src = "use { Round } from \"./round.fa\"\n";
+        let module = parse_module_v1(src).unwrap();
+        match &module.decls[0] {
+            TopDecl::Uses(u) => {
+                assert_eq!(u.name, "round");
+                assert_eq!(u.path, "./round.fa");
+                assert_eq!(u.imports, vec!["Round"]);
+            }
+            other => panic!("expected Uses, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn use_whole_module_has_empty_imports() {
+        let src = "use app from \"./app\"\n";
+        let module = parse_module_v1(src).unwrap();
+        match &module.decls[0] {
+            TopDecl::Uses(u) => {
+                assert_eq!(u.name, "app");
+                assert_eq!(u.path, "./app");
+                assert!(u.imports.is_empty());
+            }
+            other => panic!("expected Uses, got: {:?}", other),
         }
     }
 }

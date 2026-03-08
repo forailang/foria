@@ -1,0 +1,33 @@
+docs InitState
+    Loads all stdlib ops and builds the initial application state.
+    Returns a dict with all_ops, selected index, scroll offsets,
+    detail info, and active panel.
+done
+
+func InitState
+    emit state as dict
+body
+    namespaces = docs.namespaces()
+    all_ops = list.new()
+    loop namespaces as ns
+        ns_name = obj.get(ns, "namespace")
+        ops = docs.ops(ns_name)
+        loop ops as op
+            full_name = obj.get(op, "full_name")
+            all_ops = list.append(all_ops, full_name)
+        done
+    done
+    detail = docs.detail(all_ops[0])
+    state = {all_ops: all_ops, selected: 0, scroll_top: 0, detail: detail, detail_scroll: 0, panel: "list"}
+    emit state
+done
+
+test InitState
+    it "builds initial state"
+        state = InitState()
+        ops = obj.get(state, "all_ops")
+        must list.len(ops) > 0
+        must obj.get(state, "selected") == 0
+        must obj.get(state, "panel") == "list"
+    done
+done

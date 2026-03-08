@@ -20,6 +20,11 @@ Scope: Compiler/runtime contract for `.fa` files in `/Users/bal/labs/forai/dataf
 - Imports use `use Name from "path"` syntax:
   - `use auth from "./auth"` (directory) → call as `auth.Login(...)`
   - `use Round from "./round.fa"` (file) → call as `Round(...)`
+- Named imports use `use { Name1, Name2 } from "path"` syntax:
+  - `use { View, Update } from "./app"` → call as `View(...)`, `Update(...)`
+  - `use { Round } from "./round.fa"` → call as `Round(...)`
+  - Only the listed names are registered, without a module prefix.
+  - Both import styles can coexist in the same file.
 - Paths are relative to the importing `.fa` file's own directory, not the project root.
 - External package imports use `use Name from "<dep-key>"` where `<dep-key>` matches a key in `forai.json` `dependencies`.
 - Project manifest (`forai.json`) fields:
@@ -109,7 +114,8 @@ top_decl         = uses_decl
                  | test_decl ;
 
 (* --- Imports --- *)
-uses_decl        = "use" IDENT "from" STRING_LIT ;
+uses_decl        = "use" IDENT "from" STRING_LIT
+                 | "use" "{" IDENT { "," IDENT } "}" "from" STRING_LIT ;
 
 (* --- Documentation --- *)
 docs_decl        = "docs" IDENT NEWLINE docs_body "done" ;
@@ -278,6 +284,7 @@ flow_stmt_block  = { flow_stmt } ;
 flow_stmt        = step_block
                  | state_decl
                  | on_block
+                 | choose_stmt
                  | branch_stmt
                  | flow_send_stmt
                  | flow_emit_stmt
@@ -321,9 +328,14 @@ flow_fail_stmt   = "fail" IDENT "to" ":" IDENT NEWLINE ;
 flow_send_stmt   = "send" "nowait" dotted_ident "(" ident_list ")" NEWLINE ;
 
 (* Branch: conditional sub-pipeline *)
-branch_stmt      = "branch" [ "when" expr ] NEWLINE
+branch_stmt      = "branch" [ "when" expr | expr ] NEWLINE
                    flow_stmt_block
                    "done" ;
+
+(* Choose: explicit first-match branch chain *)
+choose_stmt      = "choose" NEWLINE
+                   branch_stmt { branch_stmt }
+                   "done" NEWLINE ;
 ```
 
 ## 6. Resolved Decisions
@@ -414,6 +426,12 @@ branch_stmt      = "branch" [ "when" expr ] NEWLINE
 - `use Name from "path"` imports a module by file or directory path.
 - Directory imports: calls use qualified names `Name.FuncName(...)`.
 - File imports: calls use the bound name directly `Name(...)`.
+- `use { Name1, Name2 } from "path"` imports specific items without a module prefix.
+  - From directories: registers only the listed funcs/flows/sinks as bare names.
+  - From files: registers the single export under each listed name.
+  - The module name is derived from the last path segment (without `.fa` extension).
+  - Named imports do not register the qualified `module.Name` form.
+  - Both import styles can be used in the same file.
 - Module directories contain `.fa` files; each file defines one `func`, `flow`, or `sink`.
 - Paths resolve relative to the importing file's directory, not the project root.
 - Circular dependencies are detected and rejected.
@@ -745,7 +763,8 @@ send nowait workflow.RunJobLoop(conn)
 
 ### 10.6 Branch
 ```
-branch when raw > 50.0
+choose
+branch raw > 50.0
     step lib.Square(raw to :num) then
         next :result to processed
     done
@@ -757,12 +776,16 @@ branch
         next :result to doubled
     done
 done
+done
 ```
-- `branch when <expr>` runs its body only when the expression evaluates to `true`.
+- `branch <expr>` runs its body only when the expression evaluates to `true`.
+- `branch when <expr>` remains valid and equivalent to `branch <expr>`.
 - `branch` (unguarded) always runs its body.
-- Multiple branches are independent — all whose conditions are true fire.
+- Inside `choose`, branches are first-match-wins: once one guarded branch matches, later branches are skipped.
+- A bare `branch` inside `choose` is the default/fallback branch and must be last.
+- Outside `choose`, standalone branches remain independent: all whose conditions are true fire.
 - Branches don't merge back — they are one-way sub-pipelines.
-- The body may contain any flow statement: `step`, `emit`, `fail`, nested `branch`, etc.
+- The body may contain any flow statement: `step`, `emit`, `fail`, nested `choose`, nested `branch`, etc.
 - Guarded branches lower to `case` at compile time; unguarded branches inline their body directly.
 
 ## 11. Type System

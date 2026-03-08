@@ -1,17 +1,60 @@
-use app from "./app"
+use { InitState, View, Update } from "./app"
 
 docs main
-    Example pipeline passing data from source, through flows, manipulating it with funcs, to a sink.
+    Stdlib documentation browser with two-panel terminal UI.
+    Left panel lists all ops, right panel shows details.
+    Arrow keys scroll, Tab switches panels, Enter selects, q quits.
 done
 
 flow main
 body
-    step app.Start() done
+    state state = null
+
+    step InitState() then
+        next :state to state
+    done
+
+    step View(state to :state) then
+        on :on_up as _ then
+            step Update(state to :state, "up" to :action) then
+                next :state to state
+            done
+        done
+        on :on_down as _ then
+            step Update(state to :state, "down" to :action) then
+                next :state to state
+            done
+        done
+        on :on_tab as _ then
+            step Update(state to :state, "tab" to :action) then
+                next :state to state
+            done
+        done
+        on :on_enter as _ then
+            step Update(state to :state, "enter" to :action) then
+                next :state to state
+            done
+        done
+        on :on_page_up as _ then
+            step Update(state to :state, "page_up" to :action) then
+                next :state to state
+            done
+        done
+        on :on_page_down as _ then
+            step Update(state to :state, "page_down" to :action) then
+                next :state to state
+            done
+        done
+    done
 done
 
 test main
-    mock app.Start => true
-    it "works"
+    mock InitState => {all_ops: ["str.len"], selected: 0, scroll_top: 0, detail: {}, detail_scroll: 0, panel: "list"}
+    mock View => {type: "action", action: "on_up", value: true}
+    mock Update => {all_ops: ["str.len"], selected: 0, scroll_top: 0, detail: {}, detail_scroll: 0, panel: "list"}
+    it "runs"
         _ = main()
+        ok = true
+        must ok == true
     done
 done

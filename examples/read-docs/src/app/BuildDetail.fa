@@ -1,0 +1,81 @@
+docs BuildDetail
+    Builds the right panel detail text lines from a selected op's info.
+    Returns a list of ui.text nodes showing name, summary, args, and return type.
+    Applies scroll offset and limits to panel height.
+done
+
+func BuildDetail
+    take detail as dict
+    take detail_scroll as long
+    take panel_height as long
+    emit lines as list
+body
+    lines = list.new()
+    name = obj.get(detail, "full_name")
+    summary = obj.get(detail, "summary")
+
+    # Title with bold+cyan
+    title = ui.text(name)
+    title_props = obj.get(title, "props")
+    title_props = obj.set(title_props, "bold", true)
+    title_props = obj.set(title_props, "color", "cyan")
+    title = obj.set(title, "props", title_props)
+    lines = list.append(lines, title)
+
+    lines = list.append(lines, ui.text(""))
+    lines = list.append(lines, ui.text(summary))
+    lines = list.append(lines, ui.text(""))
+
+    args = obj.get(detail, "args")
+    if list.len(args) > 0
+        hdr = ui.text("Arguments:")
+        hdr_props = obj.get(hdr, "props")
+        hdr_props = obj.set(hdr_props, "bold", true)
+        hdr = obj.set(hdr, "props", hdr_props)
+        lines = list.append(lines, hdr)
+        loop args as a
+            a_name = obj.get(a, "name")
+            a_type = obj.get(a, "type")
+            a_desc = obj.get(a, "description")
+            line = "  #{a_name} (#{a_type}) - #{a_desc}"
+            lines = list.append(lines, ui.text(line))
+        done
+        lines = list.append(lines, ui.text(""))
+    done
+
+    returns = obj.get(detail, "returns")
+    ret_type = obj.get(returns, "type")
+    ret_desc = obj.get(returns, "description")
+    ret_hdr = ui.text("Returns:")
+    ret_hdr_props = obj.get(ret_hdr, "props")
+    ret_hdr_props = obj.set(ret_hdr_props, "bold", true)
+    ret_hdr = obj.set(ret_hdr, "props", ret_hdr_props)
+    lines = list.append(lines, ret_hdr)
+    lines = list.append(lines, ui.text("  #{ret_type} - #{ret_desc}"))
+
+    has_errors = obj.has(detail, "errors")
+    if has_errors == true
+        errors = obj.get(detail, "errors")
+        lines = list.append(lines, ui.text(""))
+        lines = list.append(lines, ui.text("Errors:"))
+        lines = list.append(lines, ui.text("  #{errors}"))
+    done
+
+    # Apply scroll offset and limit using list.slice
+    end_idx = detail_scroll + panel_height
+    visible = list.slice(lines, detail_scroll, end_idx)
+    emit visible
+done
+
+test BuildDetail
+    it "builds detail lines"
+        detail = {full_name: "str.len", summary: "Get string length", args: [{name: "text", type: "text", description: "input string"}], returns: {type: "long", description: "length"}}
+        lines = BuildDetail(detail, 0, 20)
+        must list.len(lines) > 0
+    done
+    it "handles op with errors"
+        detail = {full_name: "file.read", summary: "Read file", args: [{name: "path", type: "text", description: "file path"}], returns: {type: "text", description: "contents"}, errors: "File not found"}
+        lines = BuildDetail(detail, 0, 20)
+        must list.len(lines) > 0
+    done
+done

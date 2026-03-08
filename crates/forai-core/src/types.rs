@@ -264,6 +264,20 @@ fn builtin_types() -> HashMap<String, TypeDef> {
         },
     );
 
+    // UiNode — the universal UI tree node
+    types.insert(
+        "UiNode".to_string(),
+        TypeDef::Struct {
+            open: true,
+            fields: vec![
+                field("type", "text", true),
+                field("props", "dict", true),
+                field("children", "list", false),
+                field("events", "dict", false),
+            ],
+        },
+    );
+
     types
 }
 
@@ -294,6 +308,7 @@ pub fn is_builtin_type(name: &str) -> bool {
             | "WebSocketMessage"
             | "ErrorObject"
             | "URLParts"
+            | "UiNode"
     )
 }
 

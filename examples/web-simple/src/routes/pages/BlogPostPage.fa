@@ -1,10 +1,11 @@
 docs BlogPostPage
-    Renders a single blog post as HTML.
+    Builds a single blog post page as a UI tree and returns HTML.
 done
 
 type BlogPost
     slug text
     title text :required => true
+    summary text
     content text :required => true
 done
 
@@ -16,6 +17,9 @@ docs BlogPost
     done
     docs title
         Display title.
+    done
+    docs summary
+        Short description.
     done
     docs content
         Post body text.
@@ -29,13 +33,18 @@ func BlogPostPage
 body
     title = obj.get(post, "title")
     content = obj.get(post, "content")
-    html = "<article><h2>#{title}</h2><p>#{content}</p><p><a href=\"/blog\">Back to posts</a></p></article>"
+    tree = ui.vstack(16) do
+        ui.text(title, 22)
+        ui.text(content)
+        ui.text("/blog")
+    done
+    html = ui.to_html(tree)
     emit html
 done
 
 test BlogPostPage
-    it "works"
-        post = obj("title", "Test", "content", "Content here")
+    it "renders post title and content"
+        post = {title: "Test", content: "Content here"}
         r = BlogPostPage(post)
         must str.contains(r, "Test")
         must str.contains(r, "Content here")

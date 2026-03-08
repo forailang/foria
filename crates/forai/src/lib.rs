@@ -36,9 +36,13 @@ pub mod typecheck {
 pub mod types;
 
 // Local modules needed by forai-runner
+pub mod doc;
 pub mod ffi_manager;
 pub mod host_native;
 pub mod runtime;
+pub mod stdlib_docs;
+pub mod ui_layout;
+pub mod ui_render;
 
 pub mod deps {
     pub mod semver;

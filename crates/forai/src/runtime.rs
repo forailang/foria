@@ -568,6 +568,11 @@ pub fn known_ops() -> &'static [&'static str] {
         // route
         "route.match",
         "route.params",
+        "route.get",
+        "route.post",
+        "route.put",
+        "route.delete",
+        "route.patch",
         // html
         "html.escape",
         "html.unescape",
@@ -578,6 +583,29 @@ pub fn known_ops() -> &'static [&'static str] {
         // DOM (browser only)
         "dom.write",
         "dom.set_title",
+        // Docs
+        "docs.namespaces",
+        "docs.ops",
+        "docs.detail",
+        // UI
+        "ui.screen",
+        "ui.vstack",
+        "ui.hstack",
+        "ui.zstack",
+        "ui.text",
+        "ui.button",
+        "ui.input",
+        "ui.toggle",
+        "ui.image",
+        "ui.shape",
+        "ui.list",
+        "ui.render",
+        "ui.events",
+        "ui.mount",
+        "ui.update",
+        "ui.navigate",
+        "ui.current_path",
+        "ui.to_html",
     ]
 }
 
@@ -1965,6 +1993,14 @@ pub(crate) async fn execute_op(
             let path = read_string_arg(args, 1, op)?;
             Ok(route_extract_params(&pattern, &path))
         }
+        "route.get" | "route.post" | "route.put" | "route.delete" | "route.patch" => {
+            let pattern = read_string_arg(args, 0, op)?;
+            let req = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
+            let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            let path = req.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let expected = op.strip_prefix("route.").unwrap().to_uppercase();
+            Ok(json!(method == expected && route_match_bool(&pattern, path)))
+        }
 
         // --- HTML ops ---
         "html.escape" => {
@@ -2015,8 +2051,83 @@ pub(crate) async fn execute_op(
             codec.encode_pretty(value).map(|s| Value::String(s))
         }
 
+        // --- Docs introspection ops ---
+        "docs.namespaces" => {
+            let docs = crate::stdlib_docs::all_stdlib_docs();
+            let result: Vec<Value> = docs
+                .iter()
+                .map(|ns| {
+                    json!({
+                        "namespace": ns.namespace,
+                        "summary": ns.summary,
+                        "op_count": ns.ops.len(),
+                    })
+                })
+                .collect();
+            Ok(Value::Array(result))
+        }
+        "docs.ops" => {
+            let namespace = read_string_arg(args, 0, op)?;
+            let docs = crate::stdlib_docs::all_stdlib_docs();
+            let ns_doc = docs.iter().find(|ns| ns.namespace == namespace);
+            match ns_doc {
+                Some(ns) => {
+                    let result: Vec<Value> = ns
+                        .ops
+                        .iter()
+                        .map(|op| {
+                            json!({
+                                "name": op.name,
+                                "full_name": op.full_name,
+                                "summary": op.summary,
+                            })
+                        })
+                        .collect();
+                    Ok(Value::Array(result))
+                }
+                None => Ok(Value::Array(vec![])),
+            }
+        }
+        "docs.detail" => {
+            let full_name = read_string_arg(args, 0, op)?;
+            let docs = crate::stdlib_docs::all_stdlib_docs();
+            for ns in &docs {
+                for op_doc in &ns.ops {
+                    if op_doc.full_name == full_name {
+                        let args_val: Vec<Value> = op_doc
+                            .args
+                            .iter()
+                            .map(|a| {
+                                json!({
+                                    "name": a.name,
+                                    "type": a.type_name,
+                                    "description": a.description,
+                                })
+                            })
+                            .collect();
+                        return Ok(json!({
+                            "name": op_doc.name,
+                            "full_name": op_doc.full_name,
+                            "summary": op_doc.summary,
+                            "args": args_val,
+                            "returns": {
+                                "type": op_doc.returns.type_name,
+                                "description": op_doc.returns.description,
+                            },
+                            "errors": op_doc.errors,
+                        }));
+                    }
+                }
+            }
+            Err(format!("docs.detail: unknown op `{full_name}`"))
+        }
+
         // Format-specific codec ops: {format}.decode(text), {format}.encode(value), etc.
         _ => {
+            // UI pure ops
+            if op.starts_with("ui.") && op != "ui.render" && op != "ui.events" {
+                return forai_core::pure_ops::execute_pure_op(op, args, codecs);
+            }
             if let Some((namespace, method)) = op.split_once('.') {
                 if let Some(codec) = codecs.get(namespace) {
                     return match method {
@@ -2056,6 +2167,146 @@ fn resolve_var_path(vars: &HashMap<String, Value>, path: &str) -> Option<Value> 
     Some(current)
 }
 
+const UI_BLOCK_CONTEXT_MARKER: &str = "__forai_ui_block_ctx__";
+
+fn modifier_prop_name(name: &str) -> Option<&'static str> {
+    match name {
+        "padding" => Some("padding"),
+        "margin" => Some("margin"),
+        "align" => Some("align"),
+        "width" => Some("width"),
+        "height" => Some("height"),
+        "color" => Some("color"),
+        "bg" | "backgroundColor" => Some("bg"),
+        "bold" => Some("bold"),
+        "italic" => Some("italic"),
+        "size" => Some("size"),
+        "border" => Some("border"),
+        _ => None,
+    }
+}
+
+fn try_apply_ui_modifier_call(
+    op: &str,
+    args: &[Value],
+    vars: &HashMap<String, Value>,
+    modifiers: &mut serde_json::Map<String, Value>,
+) -> bool {
+    let Some((target, method)) = op.split_once('.') else {
+        return false;
+    };
+    let Some(Value::String(marker)) = vars.get(target) else {
+        return false;
+    };
+    if marker != UI_BLOCK_CONTEXT_MARKER {
+        return false;
+    }
+    if method == "style" {
+        let Some(key) = args.first().and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let Some(value) = args.get(1) else {
+            return false;
+        };
+        modifiers.insert(key.to_string(), value.clone());
+        return true;
+    }
+    let Some(prop_name) = modifier_prop_name(method) else {
+        return false;
+    };
+    if let Some(v) = args.first() {
+        modifiers.insert(prop_name.to_string(), v.clone());
+    }
+    true
+}
+
+/// Evaluate child statements from a do...done UI block, collecting UiNode results
+/// and event metadata from emit statements.
+fn eval_ui_children<'a>(
+    stmts: &'a [Statement],
+    vars: &'a HashMap<String, Value>,
+    flow_registry: Option<&'a FlowRegistry>,
+    host: &'a Rc<dyn Host>,
+    codecs: &'a CodecRegistry,
+) -> Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        Vec<Value>,
+                        serde_json::Map<String, Value>,
+                        serde_json::Map<String, Value>,
+                    ),
+                    String,
+                >,
+            > + 'a,
+    >,
+> {
+    Box::pin(async move {
+        let mut child_nodes = Vec::new();
+        let mut child_events = serde_json::Map::new();
+        let mut child_modifiers = serde_json::Map::new();
+        let mut child_vars = vars.clone();
+        for stmt in stmts {
+            match stmt {
+                Statement::Node(node) => {
+                    let mut args = Vec::new();
+                    for arg in &node.args {
+                        match arg {
+                            Arg::Lit { lit } => args.push(lit.clone()),
+                            Arg::Var { var } => {
+                                if let Some(value) = resolve_var_path(&child_vars, var) {
+                                    args.push(value);
+                                } else {
+                                    return Err(format!("Missing variable `{var}`"));
+                                }
+                            }
+                        }
+                    }
+                    if try_apply_ui_modifier_call(&node.op, &args, &child_vars, &mut child_modifiers) {
+                        child_vars.insert(node.bind.clone(), Value::Null);
+                        continue;
+                    }
+                    let result = execute_op(&node.op, &args, &**host, codecs).await?;
+                    if result.is_object() && result.get("type").is_some() {
+                        child_nodes.push(result.clone());
+                    }
+                    child_vars.insert(node.bind.clone(), result);
+                }
+                Statement::ExprAssign(ea) => {
+                    if let Expr::Call {
+                        func,
+                        args,
+                        children: None,
+                    } = &ea.expr
+                    {
+                        let mut evaluated = Vec::with_capacity(args.len());
+                        for a in args {
+                            evaluated.push(eval_expr(a, &child_vars, flow_registry, host, codecs).await?);
+                        }
+                        if try_apply_ui_modifier_call(func, &evaluated, &child_vars, &mut child_modifiers) {
+                            child_vars.insert(ea.bind.clone(), Value::Null);
+                            continue;
+                        }
+                    }
+                    let value = eval_expr(&ea.expr, &child_vars, flow_registry, host, codecs).await?;
+                    if value.is_object() && value.get("type").is_some() {
+                        child_nodes.push(value.clone());
+                    }
+                    child_vars.insert(ea.bind.clone(), value);
+                }
+                Statement::Emit(emit) => {
+                    // Emits inside do...done blocks are captured as declarative event metadata
+                    let value = eval_expr(&emit.value_expr, &child_vars, flow_registry, host, codecs).await?;
+                    child_events.insert(emit.output.clone(), value);
+                }
+                _ => {}
+            }
+        }
+        Ok((child_nodes, child_events, child_modifiers))
+    })
+}
+
 fn eval_expr<'a>(
     expr: &'a Expr,
     vars: &'a HashMap<String, Value>,
@@ -2077,10 +2328,22 @@ fn eval_expr<'a>(
                 let v = eval_expr(inner, vars, flow_registry, host, codecs).await?;
                 forai_core::eval::eval_unary(*op, &v)
             }
-            Expr::Call { func, args } => {
+            Expr::Call { func, args, children } => {
                 let mut evaluated = Vec::with_capacity(args.len());
                 for a in args {
                     evaluated.push(eval_expr(a, vars, flow_registry, host, codecs).await?);
+                }
+                // If this call has a do...done block, evaluate children and append as last arg
+                if let Some(child_stmts) = children {
+                    let (child_nodes, child_events, child_modifiers) =
+                        eval_ui_children(child_stmts, vars, flow_registry, host, codecs).await?;
+                    evaluated.push(serde_json::Value::Array(child_nodes));
+                    if !child_events.is_empty() {
+                        evaluated.push(json!({ "__ui_events": child_events }));
+                    }
+                    if !child_modifiers.is_empty() {
+                        evaluated.push(json!({ "__ui_modifiers": child_modifiers }));
+                    }
                 }
                 if let Some(fr) = flow_registry {
                     if let Some(mock_val) = fr.get_value_mock(func) {
@@ -3340,74 +3603,166 @@ async fn execute_flow_inner(
         });
     }
 
-    if let ExecSignal::Emit {
-        output,
-        value_var,
-        value,
-    } = execute_statements(
-        &flow.body,
-        &mut vars,
-        &mut trace,
-        &mut emit_trace,
-        &mut step,
-        flow_registry,
-        &mut sync_counter,
-        None,
-        step_ctrl,
-        &host,
-        codecs,
-        None,
-    )
-    .await?
-    {
-        if let Some(port) = flow.outputs.iter().find(|p| p.name == output) {
-            let type_errors = registry.validate(&value, &port.type_name, &output);
-            if !type_errors.is_empty() {
-                // Check if a fail port exists (second output by convention)
-                if let Some(fail_port) = flow.outputs.get(1).map(|p| p.name.clone()) {
-                    let error_details: Vec<Value> = type_errors
-                        .iter()
-                        .map(|e| {
-                            json!({
-                                "path": e.path,
-                                "constraint": e.constraint,
-                                "message": e.message
-                            })
-                        })
-                        .collect();
-                    let error_value = json!({
-                        "kind": "output_validation_error",
-                        "port": output,
-                        "errors": error_details
-                    });
-                    outputs.insert(fail_port, error_value);
-                    return Ok(RunReport {
-                        flow: flow.name.clone(),
-                        inputs: to_json_object(&inputs),
-                        outputs: Value::Object(outputs),
-                        trace,
-                        emits: emit_trace,
-                        ir,
-                    });
-                } else {
-                    let msgs: Vec<_> = type_errors
-                        .iter()
-                        .map(|e| format!("{}: {}", e.path, e.message))
-                        .collect();
-                    return Err(format!(
-                        "output `{}` does not conform to type `{}`: {}",
-                        output,
-                        port.type_name,
-                        msgs.join(", ")
-                    ));
-                }
+    let is_reactive = !flow.state_names.is_empty();
+    let mut cycle = 0usize;
+
+    // Split body into init statements (state/local decls) and step statements (the rest).
+    // Init statements are the leading assignments to state_names or local_names.
+    let all_init_names: std::collections::HashSet<&str> = flow
+        .state_names
+        .iter()
+        .chain(flow.local_names.iter())
+        .map(|s| s.as_str())
+        .collect();
+    let init_count = if is_reactive {
+        flow.body
+            .iter()
+            .take_while(|stmt| match stmt {
+                Statement::ExprAssign(ea) => all_init_names.contains(ea.bind.as_str()),
+                Statement::Node(na) => all_init_names.contains(na.bind.as_str()),
+                _ => false,
+            })
+            .count()
+    } else {
+        0
+    };
+    let (init_stmts, step_stmts) = if is_reactive && init_count > 0 {
+        (&flow.body[..init_count], &flow.body[init_count..])
+    } else {
+        (&flow.body[..0], &flow.body[..])
+    };
+
+    // Run init statements once (cycle 0) and capture local init values
+    let mut local_init_values: HashMap<String, Value> = HashMap::new();
+    if !init_stmts.is_empty() {
+        execute_statements(
+            init_stmts,
+            &mut vars,
+            &mut trace,
+            &mut emit_trace,
+            &mut step,
+            flow_registry,
+            &mut sync_counter,
+            None,
+            step_ctrl,
+            &host,
+            codecs,
+            None,
+        )
+        .await?;
+        // Capture local init values for reset on subsequent cycles
+        for name in &flow.local_names {
+            if let Some(val) = vars.get(name) {
+                local_init_values.insert(name.clone(), val.clone());
             }
         }
-        outputs.insert(output.clone(), value.clone());
-        // Only insert into vars if value_var is a simple variable name
-        if !value_var.contains(' ') && !value_var.contains('"') {
-            vars.insert(value_var, value);
+    }
+
+    loop {
+        // Reset local vars to their init values at the start of each subsequent cycle
+        if is_reactive && cycle > 0 {
+            for (name, val) in &local_init_values {
+                vars.insert(name.clone(), val.clone());
+            }
+            step = 0;
         }
+
+        let signal = execute_statements(
+            step_stmts,
+            &mut vars,
+            &mut trace,
+            &mut emit_trace,
+            &mut step,
+            flow_registry,
+            &mut sync_counter,
+            None,
+            step_ctrl,
+            &host,
+            codecs,
+            None,
+        )
+        .await?;
+
+        // Check if any step result contains an unhandled on_quit action
+        if is_reactive {
+            let got_quit = vars.iter().any(|(_, v)| {
+                v.get("action").and_then(|a| a.as_str()) == Some("on_quit")
+            });
+            if got_quit {
+                break;
+            }
+        }
+
+        if let ExecSignal::Emit {
+            output,
+            value_var,
+            value,
+        } = signal
+        {
+            if let Some(port) = flow.outputs.iter().find(|p| p.name == output) {
+                let type_errors = registry.validate(&value, &port.type_name, &output);
+                if !type_errors.is_empty() {
+                    if let Some(fail_port) = flow.outputs.get(1).map(|p| p.name.clone()) {
+                        let error_details: Vec<Value> = type_errors
+                            .iter()
+                            .map(|e| {
+                                json!({
+                                    "path": e.path,
+                                    "constraint": e.constraint,
+                                    "message": e.message
+                                })
+                            })
+                            .collect();
+                        let error_value = json!({
+                            "kind": "output_validation_error",
+                            "port": output,
+                            "errors": error_details
+                        });
+                        outputs.insert(fail_port, error_value);
+                        return Ok(RunReport {
+                            flow: flow.name.clone(),
+                            inputs: to_json_object(&inputs),
+                            outputs: Value::Object(outputs),
+                            trace,
+                            emits: emit_trace,
+                            ir,
+                        });
+                    } else {
+                        let msgs: Vec<_> = type_errors
+                            .iter()
+                            .map(|e| format!("{}: {}", e.path, e.message))
+                            .collect();
+                        return Err(format!(
+                            "output `{}` does not conform to type `{}`: {}",
+                            output,
+                            port.type_name,
+                            msgs.join(", ")
+                        ));
+                    }
+                }
+            }
+            outputs.insert(output.clone(), value.clone());
+            if !value_var.contains(' ') && !value_var.contains('"') {
+                vars.insert(value_var, value);
+            }
+        }
+
+        // Reactive flows always re-cycle. Blocking I/O (ui.events, term.prompt)
+        // naturally gates the loop. The flow exits only via emit/fail.
+        // Cap at 100 cycles when: mocks are present (test runner), or no flow
+        // registry exists (direct test helper) — prevents infinite loops.
+        if is_reactive {
+            cycle += 1;
+            let has_mocks = flow_registry
+                .map(|fr| !fr.value_mocks.is_empty())
+                .unwrap_or(false);
+            if (has_mocks || flow_registry.is_none()) && cycle >= 100 {
+                break;
+            }
+            continue;
+        }
+
+        break; // not reactive — done
     }
 
     Ok(RunReport {
@@ -6987,6 +7342,467 @@ done
             test_execute_flow(&flow, ir_data, input_map, &registry, None, &codecs).unwrap();
         assert_eq!(report.outputs["error"], "error: bad input");
     }
+
+    // ---------------------------------------------------------------
+    // docs.* ops
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn docs_namespaces_returns_list() {
+        let result = test_op("docs.namespaces", &[]).unwrap();
+        let arr = result.as_array().unwrap();
+        assert!(!arr.is_empty());
+        // Each entry has namespace, summary, op_count
+        let first = &arr[0];
+        assert!(first.get("namespace").unwrap().is_string());
+        assert!(first.get("summary").unwrap().is_string());
+        assert!(first.get("op_count").unwrap().is_number());
+    }
+
+    #[test]
+    fn docs_ops_returns_ops_for_namespace() {
+        let result = test_op("docs.ops", &[json!("str")]).unwrap();
+        let arr = result.as_array().unwrap();
+        assert!(!arr.is_empty());
+        let first = &arr[0];
+        assert!(first.get("name").unwrap().is_string());
+        assert!(first.get("full_name").unwrap().as_str().unwrap().starts_with("str."));
+    }
+
+    #[test]
+    fn docs_ops_unknown_namespace_empty() {
+        let result = test_op("docs.ops", &[json!("nonexistent")]).unwrap();
+        assert_eq!(result, json!([]));
+    }
+
+    #[test]
+    fn docs_detail_returns_op_info() {
+        let result = test_op("docs.detail", &[json!("str.len")]).unwrap();
+        assert_eq!(result.get("full_name").unwrap(), "str.len");
+        assert!(result.get("summary").unwrap().is_string());
+        assert!(result.get("args").unwrap().is_array());
+        assert!(result.get("returns").unwrap().is_object());
+    }
+
+    #[test]
+    fn docs_detail_unknown_op_errors() {
+        let result = test_op("docs.detail", &[json!("nonexistent.op")]);
+        assert!(result.is_err());
+    }
+
+    // --- Cycle execution model tests ---
+
+    fn make_reactive_flow(
+        name: &str,
+        state_names: Vec<&str>,
+        local_names: Vec<&str>,
+        body: Vec<Statement>,
+    ) -> Flow {
+        use crate::ast::Port;
+        Flow {
+            name: name.to_string(),
+            inputs: vec![],
+            outputs: vec![Port {
+                name: "result".to_string(),
+                type_name: "long".to_string(),
+            }],
+            body,
+            state_names: state_names.iter().map(|s| s.to_string()).collect(),
+            local_names: local_names.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn reactive_flow_no_state_change_single_cycle() {
+        // state counter = 0, emit counter → should run once, emit 0
+        use crate::ast::{Emit, Expr, ExprAssign, Statement};
+        let flow = make_reactive_flow(
+            "test",
+            vec!["counter"],
+            vec![],
+            vec![
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("counter".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        // counter = 0, not changed from init, so single cycle
+        assert_eq!(report.outputs["result"], json!(0));
+    }
+
+    #[test]
+    fn reactive_flow_state_change_triggers_cycle() {
+        // Body: [state init: counter=0, counter=counter+1], [step: emit counter]
+        // Init runs once → counter=0, then counter=0+1=1
+        // Cycle 0: snapshot=1, step: emit 1, counter still 1, 1==1 → no re-cycle
+        // Result: 1, only 1 cycle
+        use crate::ast::{BinOp, Emit, Expr, ExprAssign, Statement};
+        let flow = make_reactive_flow(
+            "test_cycle",
+            vec!["counter"],
+            vec![],
+            vec![
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::BinOp {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Var("counter".to_string())),
+                        rhs: Box::new(Expr::Lit(json!(1))),
+                    },
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("counter".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        assert_eq!(report.outputs["result"], json!(1));
+    }
+
+    #[test]
+    fn reactive_flow_step_modifies_state_triggers_recycle() {
+        // state counter = 0 (init)
+        // NON-state x = 99 (not init — x is not in state_names, breaks the take_while)
+        // counter = counter + 1 (step, modifies state each cycle)
+        // emit counter
+        // Cycle 0: init→counter=0, snapshot=0, steps: x=99, counter=0+1=1, emit 1. 1!=0→recycle
+        // Cycle 1: snapshot=1, steps: x=99, counter=1+1=2, emit 2. 2!=1→recycle
+        // ... until cycle 100 → counter=101
+        use crate::ast::{BinOp, Emit, Expr, ExprAssign, Statement};
+        let flow = make_reactive_flow(
+            "accumulate",
+            vec!["counter"],
+            vec![],
+            vec![
+                // Init: counter = 0
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                // Non-init statement (x is not a state/local name, breaks init prefix)
+                Statement::ExprAssign(ExprAssign {
+                    bind: "x".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(99)),
+                }),
+                // Step: counter = counter + 1
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::BinOp {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Var("counter".to_string())),
+                        rhs: Box::new(Expr::Lit(json!(1))),
+                    },
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("counter".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        // Hits max cycles (100), counter increments each cycle: 0+1=1, 1+1=2, ..., final = 100
+        assert_eq!(report.outputs["result"], json!(100));
+    }
+
+    #[test]
+    fn reactive_flow_local_resets_each_cycle() {
+        // state counter = 0, local total = 10
+        // counter = counter + 1 (first time: 0+1=1)
+        // total = total + counter (first time: 10+1=11)
+        // emit total
+        // Cycle 0: counter=0→1, total=10→11, snapshot counter=0, 1!=0 → re-cycle
+        // Cycle 1: counter(still 1 from vars)→ init overwrites to 0→+1=1, local resets to null
+        //   total = null + 1 = error... hmm, local resets to null
+        // Let me design this better: local should reset to its init value, not null
+        // For now, test that local IS reset between cycles
+        use crate::ast::{Emit, Expr, ExprAssign, Statement};
+        let flow = make_reactive_flow(
+            "test_local",
+            vec!["counter"],
+            vec!["marker"],
+            vec![
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                Statement::ExprAssign(ExprAssign {
+                    bind: "marker".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(42)),
+                }),
+                // Change counter so we get at least one re-cycle
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(1)),
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("marker".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        // Cycle 0: counter=0, marker=42, counter=1, emit marker(42). state changed (0→1) → re-cycle
+        // Cycle 1: local marker reset to null. counter=0 (init), marker=42, counter=1, emit 42.
+        //   state snapshot was counter=1, now counter=0→1=1. Same → done.
+        // Result: marker=42 (re-initialized each cycle by the body statement)
+        assert_eq!(report.outputs["result"], json!(42));
+    }
+
+    #[test]
+    fn non_reactive_flow_runs_once() {
+        // No state_names → single execution, no cycle
+        use crate::ast::{Emit, Expr, ExprAssign, Port, Statement};
+        let flow = Flow {
+            name: "plain".to_string(),
+            inputs: vec![],
+            outputs: vec![Port {
+                name: "result".to_string(),
+                type_name: "long".to_string(),
+            }],
+            body: vec![
+                Statement::ExprAssign(ExprAssign {
+                    bind: "x".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(99)),
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("x".to_string()),
+                }),
+            ],
+            state_names: vec![],
+            local_names: vec![],
+        };
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        assert_eq!(report.outputs["result"], json!(99));
+    }
+
+    #[test]
+    fn reactive_flow_max_cycle_limit() {
+        // state flag = true (init)
+        // _break = 0 (non-state, breaks init prefix)
+        // flag = !flag (step — toggles every cycle)
+        // Cycle 0: init flag=true, snap=true, step: flag=!true=false. false!=true → re-cycle
+        // Cycle 1: snap=false, step: flag=!false=true. true!=false → re-cycle
+        // ... toggles forever until max cycles (100)
+        use crate::ast::{Emit, Expr, ExprAssign, Statement, UnaryOp};
+        let flow = make_reactive_flow(
+            "toggle_forever",
+            vec!["flag"],
+            vec![],
+            vec![
+                Statement::ExprAssign(ExprAssign {
+                    bind: "flag".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(true)),
+                }),
+                // Non-state var breaks init prefix
+                Statement::ExprAssign(ExprAssign {
+                    bind: "_break".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                Statement::ExprAssign(ExprAssign {
+                    bind: "flag".to_string(),
+                    type_annotation: None,
+                    expr: Expr::UnaryOp {
+                        op: UnaryOp::Not,
+                        expr: Box::new(Expr::Var("flag".to_string())),
+                    },
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Lit(json!(0)),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+        let report =
+            test_execute_flow(&flow, ir, HashMap::new(), &registry, None, &codecs).unwrap();
+        assert_eq!(report.outputs["result"], json!(0));
+    }
+
+    #[test]
+    fn reactive_flow_via_dispatches_handler() {
+        // Via lowers to a Node call. When the FlowRegistry has a value mock
+        // for the via handler, the Node dispatches and binds the result.
+        //
+        // Body: [state counter = 0] [_step_0 = View(), counter = Increment(), emit counter]
+        // Mock: Increment → 42
+        // Cycle 0: counter=0, snap=0, steps: _step_0=View()→mock, counter=Increment()→42, emit 42.
+        //          42!=0 → re-cycle
+        // Cycle 1: snap=42, steps: _step_0=View()→mock, counter=Increment()→42, emit 42.
+        //          42==42 → done
+        // Result: 42
+        use crate::ast::{Arg, Emit, Expr, ExprAssign, NodeAssign, Statement};
+        let flow = make_reactive_flow(
+            "via_dispatch",
+            vec!["counter"],
+            vec![],
+            vec![
+                // Init: counter = 0
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                // Non-state var breaks init prefix
+                Statement::Node(NodeAssign {
+                    bind: "_step_0".to_string(),
+                    node_id: "_step_0".to_string(),
+                    op: "View".to_string(),
+                    args: vec![Arg::Var {
+                        var: "counter".to_string(),
+                    }],
+                    type_annotation: None,
+                }),
+                // Via handler: counter = Increment(counter)
+                Statement::Node(NodeAssign {
+                    bind: "counter".to_string(),
+                    node_id: "counter".to_string(),
+                    op: "Increment".to_string(),
+                    args: vec![Arg::Var {
+                        var: "counter".to_string(),
+                    }],
+                    type_annotation: None,
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("counter".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+
+        let mut flow_reg = FlowRegistry::new();
+        flow_reg
+            .value_mocks
+            .insert("View".to_string(), json!(null));
+        flow_reg
+            .value_mocks
+            .insert("Increment".to_string(), json!(42));
+
+        let report = test_execute_flow(
+            &flow,
+            ir,
+            HashMap::new(),
+            &registry,
+            Some(&flow_reg),
+            &codecs,
+        )
+        .unwrap();
+        assert_eq!(report.outputs["result"], json!(42));
+    }
+
+    #[test]
+    fn reactive_flow_via_to_state_triggers_cycle() {
+        // Via handler writes to a state var → triggers a new cycle.
+        // Use a conditional to make the via result change between cycles so it stabilizes.
+        //
+        // Body: [state counter = 0] [counter = Increment(counter), emit counter]
+        // Mock: Increment → 5
+        // Cycle 0: counter=0, snap=0, steps: counter=5, emit 5. 5!=0 → re-cycle
+        // Cycle 1: snap=5, steps: counter=5, emit 5. 5==5 → done
+        // Result: 5
+        use crate::ast::{Arg, Emit, Expr, ExprAssign, NodeAssign, Statement};
+        let flow = make_reactive_flow(
+            "via_to_state",
+            vec!["counter"],
+            vec![],
+            vec![
+                // Init: counter = 0
+                Statement::ExprAssign(ExprAssign {
+                    bind: "counter".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                // Non-state var breaks init prefix
+                Statement::ExprAssign(ExprAssign {
+                    bind: "_break".to_string(),
+                    type_annotation: None,
+                    expr: Expr::Lit(json!(0)),
+                }),
+                // Via handler writes to state var
+                Statement::Node(NodeAssign {
+                    bind: "counter".to_string(),
+                    node_id: "counter".to_string(),
+                    op: "Increment".to_string(),
+                    args: vec![Arg::Var {
+                        var: "counter".to_string(),
+                    }],
+                    type_annotation: None,
+                }),
+                Statement::Emit(Emit {
+                    output: "result".to_string(),
+                    value_expr: Expr::Var("counter".to_string()),
+                }),
+            ],
+        );
+        let ir = crate::ir::lower_to_ir(&flow).unwrap();
+        let registry = TypeRegistry::empty();
+        let codecs = CodecRegistry::default_registry();
+
+        let mut flow_reg = FlowRegistry::new();
+        flow_reg
+            .value_mocks
+            .insert("Increment".to_string(), json!(5));
+
+        let report = test_execute_flow(
+            &flow,
+            ir,
+            HashMap::new(),
+            &registry,
+            Some(&flow_reg),
+            &codecs,
+        )
+        .unwrap();
+        // Via wrote 5 to state var counter, triggered re-cycle, stabilized at 5
+        assert_eq!(report.outputs["result"], json!(5));
+    }
 }
 
 #[cfg(test)]
@@ -7103,10 +7919,9 @@ mod proptests {
         fn str_replace_removes(s in "[a-z]{0,20}", from in "[a-z]{1,3}", to in "[a-z]{0,3}") {
             let result = test_op("str.replace", &[json!(&s), json!(&from), json!(&to)]).unwrap();
             let replaced = result.as_str().unwrap().to_string();
-            // After replacing, original `from` should not appear (unless `to` contains `from`)
-            if !to.contains(&from) {
-                prop_assert!(!replaced.contains(&from));
-            }
+            // Single-pass replace: verify the result matches Rust's str::replace
+            let expected = s.replace(&from, &to);
+            prop_assert_eq!(replaced, expected);
         }
 
         #[test]

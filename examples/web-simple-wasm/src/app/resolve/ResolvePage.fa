@@ -1,0 +1,54 @@
+use pages from "../pages"
+
+docs ResolvePageResult
+    Page selection result with title and ui node.
+
+    docs title
+        Selected page title.
+    done
+
+    docs node
+        Selected page content node.
+    done
+done
+
+type ResolvePageResult
+    title text
+    node dict
+done
+
+docs ResolvePage
+    Resolves a route path to a page title and ui node.
+done
+
+func ResolvePage
+    take path as text
+    emit result as ResolvePageResult
+body
+    if str.contains(path, "about")
+        emit {title: "About", node: pages.About()}
+    else if str.contains(path, "blog")
+        emit {title: "Blog", node: pages.Blog()}
+    else if str.len(path) <= 1
+        emit {title: "Home", node: pages.Home()}
+    else
+        emit {title: "Not Found", node: pages.NotFound(path)}
+    done
+done
+
+test ResolvePage
+    mock pages.About => ui.text("about")
+    mock pages.Blog => ui.text("blog")
+    mock pages.Home => ui.text("home")
+    mock pages.NotFound => ui.text("missing")
+    it "routes root to home"
+        r = ResolvePage("/")
+        t = obj.get(r, "title")
+        must t == "Home"
+    done
+    it "routes about path"
+        r = ResolvePage("/about")
+        t = obj.get(r, "title")
+        must t == "About"
+    done
+done

@@ -1,0 +1,23 @@
+docs Home
+    Home page content as a UiNode tree.
+done
+
+func Home
+    emit result as dict
+body
+    tree = ui.vstack(10) do stack
+    stack.padding(8)
+    ui.text("A modern pipeline language for building reactive applications.", 18)
+    ui.text("This is the browser/WASM version of web-simple.")
+    ui.text("Use the navigation buttons above to switch pages.")
+done
+emit tree
+done
+
+test Home
+    it "returns a ui tree"
+        v = Home()
+        t = obj.get(v, "type")
+        must t == "vstack"
+    done
+done

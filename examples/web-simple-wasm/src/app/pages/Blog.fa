@@ -1,0 +1,26 @@
+docs Blog
+    Blog list page content as a UiNode tree.
+done
+
+func Blog
+    emit result as dict
+body
+    tree = ui.vstack(8) do stack
+    stack.padding(8)
+    ui.text("Latest posts", 18) do title
+    title.bold(true)
+done
+ui.text("Building a Website with forai")
+ui.text("Designing Reactive Flows")
+ui.text("UI Trees Across Targets")
+done
+emit tree
+done
+
+test Blog
+    it "returns a ui tree"
+        v = Blog()
+        t = obj.get(v, "type")
+        must t == "vstack"
+    done
+done

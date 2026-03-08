@@ -1,0 +1,46 @@
+docs BuildList
+    Builds the left panel list items from all ops and selection state.
+    Returns a list of ui.text nodes, highlighting the selected item.
+done
+
+func BuildList
+    take all_ops as list
+    take selected as long
+    take scroll_top as long
+    take panel_height as long
+    emit items as list
+body
+    end_idx = scroll_top + panel_height
+    visible = list.slice(all_ops, scroll_top, end_idx)
+    items = list.new()
+    loop visible as op_name with index i
+        idx = scroll_top + i
+        item = ui.text("  #{op_name}")
+        if idx == selected
+            item = ui.text("> #{op_name}")
+            item_props = obj.get(item, "props")
+            item_props = obj.set(item_props, "reverse", true)
+            item = obj.set(item, "props", item_props)
+        done
+        items = list.append(items, item)
+    done
+    emit items
+done
+
+test BuildList
+    it "builds items for visible range"
+        ops = ["str.len", "str.upper", "str.lower"]
+        items = BuildList(ops, 0, 0, 10)
+        must list.len(items) == 3
+    done
+    it "highlights selected item"
+        ops = ["str.len", "str.upper"]
+        items = BuildList(ops, 1, 0, 10)
+        must list.len(items) == 2
+    done
+    it "respects scroll offset"
+        ops = ["a", "b", "c", "d"]
+        items = BuildList(ops, 2, 1, 2)
+        must list.len(items) == 2
+    done
+done

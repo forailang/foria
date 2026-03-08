@@ -323,6 +323,15 @@ pub fn op_signature(op: &str) -> Option<OpSignature> {
         "url.query_parse" => sig(vec![Text], Dict),
         "url.encode" | "url.decode" => sig(vec![Text], Text),
 
+        // ── UI ops ──
+        "ui.screen" | "ui.vstack" | "ui.hstack" | "ui.zstack" | "ui.text" | "ui.button"
+        | "ui.input" | "ui.toggle" => sig(vec![], Struct("UiNode".into())),
+        "ui.render" | "ui.update" => sig(vec![Any], Bool),
+        "ui.mount" => sig(vec![Any, opt(Text)], Bool),
+        "ui.navigate" => sig(vec![Text], Bool),
+        "ui.current_path" => sig(vec![], Text),
+        "ui.events" => sig(vec![], Dict),
+
         _ => return None,
     };
     Some(sig)

@@ -48,6 +48,7 @@ pub enum TopDecl {
 #[allow(dead_code)]
 pub struct UsesDecl {
     pub module: String,
+    pub imports: Vec<String>, // named imports; empty = import whole module
     pub span: Span,
 }
 
@@ -349,8 +350,19 @@ pub struct ContinuationWire {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+pub struct FlowOnBlock {
+    pub port: String,
+    pub wire: String,
+    pub body: Vec<StepThenItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum StepThenItem {
     Next(NextWire),
+    On(FlowOnBlock),
+    Step(StepBlock),
     Continuation(ContinuationWire),
     Emit(FlowEmitStmt),
     Fail(FlowEmitStmt),
@@ -416,4 +428,8 @@ pub struct Flow {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub body: Vec<Statement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<String>,
 }

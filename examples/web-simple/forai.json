@@ -1,9 +1,242 @@
 {
-  "name": "web-simple",
-  "version": "0.1.0",
-  "description": "Simple web server with routing, blog pages, and contact form",
-  "main": "src/main.fa",
-  "build": {
-    "targets": ["native"]
-  }
+  "forai_ir": "0.1",
+  "flow": "main",
+  "inputs": [],
+  "outputs": [],
+  "nodes": [
+    {
+      "id": "conn_id",
+      "op": "obj.get",
+      "bind": "conn_id",
+      "args": [
+        {
+          "var": "req"
+        },
+        {
+          "lit": "conn_id"
+        }
+      ],
+      "when": "source_loop(sources.Requests as req)"
+    },
+    {
+      "id": "path",
+      "op": "obj.get",
+      "bind": "path",
+      "args": [
+        {
+          "var": "req"
+        },
+        {
+          "lit": "path"
+        }
+      ],
+      "when": "source_loop(sources.Requests as req)"
+    },
+    {
+      "id": "_step_0",
+      "op": "routes.Home",
+      "bind": "_step_0",
+      "args": [
+        {
+          "var": "conn_id"
+        }
+      ],
+      "when": "(source_loop(sources.Requests as req)) and (case(route.get(\"/\", req) == true))"
+    },
+    {
+      "id": "_step_1",
+      "op": "routes.About",
+      "bind": "_step_1",
+      "args": [
+        {
+          "var": "conn_id"
+        }
+      ],
+      "when": "((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case(route.get(\"/about\", req) == true))"
+    },
+    {
+      "id": "_step_2",
+      "op": "routes.BlogList",
+      "bind": "_step_2",
+      "args": [
+        {
+          "var": "conn_id"
+        }
+      ],
+      "when": "(((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case(route.get(\"/blog\", req) == true))"
+    },
+    {
+      "id": "blog_params",
+      "op": "route.params",
+      "bind": "blog_params",
+      "args": [
+        {
+          "lit": "/blog/:slug"
+        },
+        {
+          "var": "path"
+        }
+      ],
+      "when": "((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case(route.get(\"/blog/:slug\", req) == true))"
+    },
+    {
+      "id": "_step_3",
+      "op": "routes.BlogPost",
+      "bind": "_step_3",
+      "args": [
+        {
+          "var": "conn_id"
+        },
+        {
+          "var": "blog_params"
+        }
+      ],
+      "when": "((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case(route.get(\"/blog/:slug\", req) == true))"
+    },
+    {
+      "id": "_step_4",
+      "op": "routes.ContactSubmit",
+      "bind": "_step_4",
+      "args": [
+        {
+          "var": "req"
+        }
+      ],
+      "when": "(((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case_else(route.get(\"/blog/:slug\", req)))) and (case(route.post(\"/contact\", req) == true))"
+    },
+    {
+      "id": "_step_5",
+      "op": "routes.NotFound",
+      "bind": "_step_5",
+      "args": [
+        {
+          "var": "conn_id"
+        }
+      ],
+      "when": "(((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case_else(route.get(\"/blog/:slug\", req)))) and (case_else(route.post(\"/contact\", req)))"
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "kind": "source_event",
+        "id": "req"
+      },
+      "to": {
+        "kind": "node",
+        "id": "conn_id",
+        "port": "arg0"
+      },
+      "when": "source_loop(sources.Requests as req)"
+    },
+    {
+      "from": {
+        "kind": "source_event",
+        "id": "req"
+      },
+      "to": {
+        "kind": "node",
+        "id": "path",
+        "port": "arg0"
+      },
+      "when": "source_loop(sources.Requests as req)"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "conn_id"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_0",
+        "port": "arg0"
+      },
+      "when": "(source_loop(sources.Requests as req)) and (case(route.get(\"/\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "conn_id"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_1",
+        "port": "arg0"
+      },
+      "when": "((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case(route.get(\"/about\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "conn_id"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_2",
+        "port": "arg0"
+      },
+      "when": "(((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case(route.get(\"/blog\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "path"
+      },
+      "to": {
+        "kind": "node",
+        "id": "blog_params",
+        "port": "arg1"
+      },
+      "when": "((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case(route.get(\"/blog/:slug\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "conn_id"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_3",
+        "port": "arg0"
+      },
+      "when": "((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case(route.get(\"/blog/:slug\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "blog_params"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_3",
+        "port": "arg1"
+      },
+      "when": "((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case(route.get(\"/blog/:slug\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "source_event",
+        "id": "req"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_4",
+        "port": "arg0"
+      },
+      "when": "(((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case_else(route.get(\"/blog/:slug\", req)))) and (case(route.post(\"/contact\", req) == true))"
+    },
+    {
+      "from": {
+        "kind": "node",
+        "id": "conn_id"
+      },
+      "to": {
+        "kind": "node",
+        "id": "_step_5",
+        "port": "arg0"
+      },
+      "when": "(((((source_loop(sources.Requests as req)) and (case_else(route.get(\"/\", req)))) and (case_else(route.get(\"/about\", req)))) and (case_else(route.get(\"/blog\", req)))) and (case_else(route.get(\"/blog/:slug\", req)))) and (case_else(route.post(\"/contact\", req)))"
+    }
+  ],
+  "emits": []
 }

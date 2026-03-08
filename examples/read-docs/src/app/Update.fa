@@ -1,0 +1,123 @@
+docs Update
+    Pure state reducer for the stdlib browser.
+    Takes current state and an action name, returns updated state.
+    Actions: tab, up, down, enter, page_up, page_down.
+done
+
+func Update
+    take state as dict
+    take action as text
+    emit state as dict
+body
+    all_ops = obj.get(state, "all_ops")
+    selected = obj.get(state, "selected")
+    scroll_top = obj.get(state, "scroll_top")
+    detail = obj.get(state, "detail")
+    detail_scroll = obj.get(state, "detail_scroll")
+    panel = obj.get(state, "panel")
+    total = list.len(all_ops)
+
+    case action
+        when "tab"
+            if panel == "list"
+                panel = "detail"
+            else
+                panel = "list"
+            done
+        when "up"
+            if panel == "list"
+                if selected > 0
+                    selected = selected - 1
+                    if selected < scroll_top
+                        scroll_top = selected
+                    done
+                    detail = docs.detail(all_ops[selected])
+                    detail_scroll = 0
+                done
+            else
+                if detail_scroll > 0
+                    detail_scroll = detail_scroll - 1
+                done
+            done
+        when "down"
+            if panel == "list"
+                if selected < total - 1
+                    selected = selected + 1
+                    size = term.size()
+                    screen_h = obj.get(size, "rows")
+                    visible_end = scroll_top + screen_h - 1
+                    if selected >= visible_end
+                        scroll_top = scroll_top + 1
+                    done
+                    detail = docs.detail(all_ops[selected])
+                    detail_scroll = 0
+                done
+            else
+                detail_scroll = detail_scroll + 1
+            done
+        when "enter"
+            if panel == "list"
+                detail_scroll = 0
+                panel = "detail"
+            done
+        when "page_up"
+            if panel == "list"
+                selected = selected - 10
+                if selected < 0
+                    selected = 0
+                done
+                scroll_top = selected
+                detail = docs.detail(all_ops[selected])
+                detail_scroll = 0
+            else
+                detail_scroll = detail_scroll - 10
+                if detail_scroll < 0
+                    detail_scroll = 0
+                done
+            done
+        when "page_down"
+            if panel == "list"
+                selected = selected + 10
+                if selected >= total
+                    selected = total - 1
+                done
+                size = term.size()
+                screen_h = obj.get(size, "rows")
+                visible_end = scroll_top + screen_h - 1
+                if selected >= visible_end
+                    scroll_top = selected - screen_h + 2
+                    if scroll_top < 0
+                        scroll_top = 0
+                    done
+                done
+                detail = docs.detail(all_ops[selected])
+                detail_scroll = 0
+            else
+                detail_scroll = detail_scroll + 10
+            done
+    done
+
+    result = {all_ops: all_ops, selected: selected, scroll_top: scroll_top, detail: detail, detail_scroll: detail_scroll, panel: panel}
+    emit result
+done
+
+test Update
+    mock docs.detail => {full_name: "str.len", summary: "Length", args: [], returns: {type: "long", description: "len"}}
+    mock term.size => {rows: 24, cols: 80}
+
+    it "switches panel on tab"
+        state = {all_ops: ["str.len"], selected: 0, scroll_top: 0, detail: {}, detail_scroll: 0, panel: "list"}
+        result = Update(state, "tab")
+        must obj.get(result, "panel") == "detail"
+    done
+    it "moves selection down"
+        state = {all_ops: ["str.len", "str.upper"], selected: 0, scroll_top: 0, detail: {}, detail_scroll: 0, panel: "list"}
+        result = Update(state, "down")
+        must obj.get(result, "selected") == 1
+    done
+    it "moves selection up"
+        state = {all_ops: ["str.len", "str.upper"], selected: 1, scroll_top: 0, detail: {}, detail_scroll: 0, panel: "list"}
+        result = Update(state, "up")
+        must obj.get(result, "selected") == 0
+    done
+done

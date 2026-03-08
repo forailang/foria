@@ -94,7 +94,7 @@ fn expr_to_text(expr: &Expr) -> String {
             };
             format!("({}{})", op_str, expr_to_text(inner))
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_text).collect();
             format!("{}({})", func, arg_strs.join(", "))
         }

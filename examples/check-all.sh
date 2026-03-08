@@ -29,6 +29,7 @@ FAILURES=()
 examples=(
   browser-demo
   cli-ports
+  counter-ui
   ffi-test
   github-stats
   pipeline

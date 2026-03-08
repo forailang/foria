@@ -15,7 +15,9 @@ import { handleTimeOp } from "./ops/time.js";
 import { handleWsOp } from "./ops/ws.js";
 import { handleTermOp, type TermCallbacks } from "./ops/term.js";
 
-export interface DispatcherOptions extends TermCallbacks {}
+export interface DispatcherOptions extends TermCallbacks {
+  onUiEvent?: () => unknown | Promise<unknown>;
+}
 
 export function createDispatcher(sab: SharedArrayBuffer, opts: DispatcherOptions = {}) {
   let running = false;
@@ -59,7 +61,7 @@ export function createDispatcher(sab: SharedArrayBuffer, opts: DispatcherOptions
 
       // Dispatch to the appropriate handler
       try {
-        const result = await dispatchOp(op, args);
+        const result = await dispatchOp(op, args, opts);
         const json = JSON.stringify(result);
         writeResponse(sab, json, false);
       } catch (e) {
@@ -85,7 +87,7 @@ export function createDispatcher(sab: SharedArrayBuffer, opts: DispatcherOptions
   };
 }
 
-async function dispatchOp(op: string, args: unknown[]): Promise<unknown> {
+async function dispatchOp(op: string, args: unknown[], opts: DispatcherOptions): Promise<unknown> {
   if (op.startsWith("http.") && !op.startsWith("http.server.")) {
     return handleHttpOp(op, args);
   }
@@ -98,5 +100,34 @@ async function dispatchOp(op: string, args: unknown[]): Promise<unknown> {
   if (op === "term.prompt") {
     return handleTermOp(op, args);
   }
-  throw new Error(`unknown op routed to dispatcher: ${op}`);
+  if (op === "ui.events") {
+    if (!opts.onUiEvent) {
+      throw new Error("ui.events: no browser UI event source configured");
+    }
+    return opts.onUiEvent();
+  }
+  if (op === "ui.current_path") {
+    if (typeof window === "undefined") return "/";
+    return window.location.pathname || "/";
+  }
+  const browserUnsupported: Record<string, string> = {
+    "ui.render": "use ui.mount/ui.update in browser apps",
+    "term.read_key": "use ui.events() for browser input",
+    "term.move_to": "terminal cursor control is not available in browser mode",
+    "term.color": "terminal color control is not available in browser mode",
+  };
+  if (browserUnsupported[op]) {
+    throw new Error(`browser mode: \`${op}\` is not supported (${browserUnsupported[op]})`);
+  }
+  if (
+    op.startsWith("file.") ||
+    op.startsWith("exec.") ||
+    op.startsWith("db.") ||
+    op.startsWith("http.server.") ||
+    op.startsWith("env.") ||
+    op.startsWith("ffi.")
+  ) {
+    throw new Error(`browser mode: \`${op}\` is not supported in this target`);
+  }
+  throw new Error(`browser mode: unsupported op \`${op}\``);
 }

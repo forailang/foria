@@ -1,5 +1,6 @@
 docs BlogListPage
-    Renders the blog listing HTML from a list of post dicts.
+    Builds the blog listing page as a UI tree and returns HTML.
+    Shows each post with title and summary.
 done
 
 func BlogListPage
@@ -7,25 +8,32 @@ func BlogListPage
     emit result as text
     fail error as text
 body
-    html = "<ul>"
+    html = ""
     loop posts as post
         slug = obj.get(post, "slug")
         title = obj.get(post, "title")
-        html = html + "<li><a href=\"/blog/#{slug}\">#{title}</a></li>"
+        summary = obj.get(post, "summary") ?? ""
+        card = ui.vstack(6) do
+            ui.text(title, 18)
+            ui.text(summary)
+            ui.text("/blog/#{slug}")
+        done
+        html = html + ui.to_html(card)
     done
-    html = html + "</ul>"
+    header = ui.text("Latest posts from the forai blog.", 18)
+    html = ui.to_html(header) + html
     emit html
 done
 
 test BlogListPage
-    it "works"
-        p1 = obj("slug", "a", "title", "A")
-        p2 = obj("slug", "b", "title", "B")
+    it "renders post titles and slugs"
+        p1 = {slug: "a", title: "A", summary: "First"}
+        p2 = {slug: "b", title: "B", summary: "Second"}
         posts = pair(p1, p2)
         r = BlogListPage(posts)
-        must str.contains(r, "/blog/a")
-        must str.contains(r, "/blog/b")
         must str.contains(r, "A")
         must str.contains(r, "B")
+        must str.contains(r, "/blog/a")
+        must str.contains(r, "/blog/b")
     done
 done

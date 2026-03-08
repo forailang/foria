@@ -1,5 +1,6 @@
 docs Layout
-    Wraps page content in the full HTML layout with navigation and CSS.
+    Wraps page content in the full HTML document with navigation and CSS.
+    Content is an HTML string produced by ui.to_html from a UI tree.
 done
 
 func Layout
@@ -14,27 +15,46 @@ body
         <html>
         <head>
             <meta charset="utf-8">
-            <title>{{title}}</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>{{title}} &mdash; forai</title>
             <style>
+                * { box-sizing: border-box; margin: 0; padding: 0; }
                 body {
-                    font-family: system-ui, sans-serif;
-                    max-width: 600px;
-                    margin: 40px auto;
-                    padding: 0 20px;
-                    color: #333;
+                    font-family: system-ui, -apple-system, sans-serif;
+                    max-width: 720px;
+                    margin: 0 auto;
+                    padding: 24px 20px;
+                    color: #1a1a1a;
+                    line-height: 1.6;
+                    background: #fafafa;
                 }
                 nav {
-                    border-bottom: 1px solid #ddd;
-                    padding-bottom: 10px;
-                    margin-bottom: 24px;
+                    display: flex;
+                    gap: 20px;
+                    border-bottom: 2px solid #e0e0e0;
+                    padding-bottom: 12px;
+                    margin-bottom: 32px;
                 }
                 nav a {
-                    margin-right: 16px;
                     text-decoration: none;
-                    color: #0066cc;
+                    color: #0055aa;
+                    font-weight: 500;
                 }
                 nav a:hover { text-decoration: underline; }
-                h1 { margin-top: 0; }
+                h1 {
+                    font-size: 28px;
+                    margin-bottom: 24px;
+                    color: #111;
+                }
+                .content span { display: block; margin-bottom: 4px; }
+                .content div { margin-bottom: 8px; }
+                footer {
+                    margin-top: 48px;
+                    padding-top: 16px;
+                    border-top: 1px solid #e0e0e0;
+                    color: #888;
+                    font-size: 14px;
+                }
             </style>
         </head>
         <body>
@@ -44,7 +64,8 @@ body
                 <a href="/blog">Blog</a>
             </nav>
             <h1>{{title}}</h1>
-            {{{content}}}
+            <div class="content">{{{content}}}</div>
+            <footer>Built with forai &mdash; pipeline-first application language</footer>
         </body>
         </html>
     """, data)
@@ -52,10 +73,11 @@ body
 done
 
 test Layout
-    it "works"
-        r = Layout("Test", "hello world")
+    it "wraps content in html document"
+        r = Layout("Test", "<span>hello world</span>")
         must str.contains(r, "Test")
         must str.contains(r, "hello world")
         must str.contains(r, "/blog")
+        must str.contains(r, "footer")
     done
 done

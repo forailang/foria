@@ -531,11 +531,25 @@ user = db.GetUser(conn, user_id)
 result = Round(value)
 ```
 
+**Named imports** — import specific items from a module without the namespace prefix:
+
+```
+use { View, Update } from "./app"    # import View and Update directly
+use { Round } from "./round.fa"      # import a single-file export by name
+
+# Call without prefix:
+result = View(count)
+updated = Update(count, "inc")
+```
+
+Named imports register only the listed names — `View` and `Update` are available directly, but `app.View` is not. Both import styles can be used in the same file.
+
 Rules:
 - One func/flow/sink per file. Name must match filename (`func Foo` in `Foo.fa`)
 - `use ... from "..."` paths are relative to the importing file's directory
 - `server/Start.fa` with `use db from "./db"` looks for `server/db/`, not top-level `db/`
 - Directory imports register as `name.FuncName`; file imports register as `name` directly
+- Named imports (`use { ... } from`) register only the listed names without prefix
 
 ### Packages and Dependencies
 
@@ -602,6 +616,32 @@ Only `lib` packages can be imported as dependencies. The `main` field points to 
 **Lockfile:** After resolving dependencies, the compiler writes `forai.lock` (JSON) to the project root. This pins exact versions and git SHAs for reproducible builds. Commit `forai.lock` to version control.
 
 **Transitive dependencies:** Libraries can declare their own dependencies. The compiler resolves the full dependency tree, detecting version conflicts and circular dependencies.
+
+### Build Targets (`forai.json`)
+
+Apps can configure build outputs with `build.targets` in `forai.json`:
+
+```json
+{
+  "name": "web-simple-wasm",
+  "main": "src/main.fa",
+  "build": {
+    "out": "dist",
+    "targets": ["wasm", "browser"]
+  }
+}
+```
+
+Target behavior:
+
+| Target | Output | Description |
+|--------|--------|-------------|
+| `wasm` | `<out>/<name>.wasm` | Builds the WASM artifact with embedded program bundle |
+| `browser` | `<out>/browser/` | Produces browser runtime assets (`forai-browser.js`, wasm, bootstrap `index.html`) |
+| `bundle` | `<out>/<name>` | Native executable bundle (depends on `wasm`) |
+| `native` | `<out>/<name>` | Native v3 bundle |
+
+`forai build` always runs fmt + docs + tests before writing target artifacts.
 
 ### Types
 
@@ -960,7 +1000,7 @@ Use `db.open` for connections (returns `db_conn`), `db.exec` for writes, `db.que
 2. **`emit`/`fail`/`return` take variables only** — `emit true` fails; use `ok = true` then `emit ok`
 3. **Loop collection must be a variable** — `loop list.range(0,5) as i` fails; assign the range first
 4. **`exec.run` needs separate command and args** — `exec.run("ls -la")` fails; use `exec.run("ls", ["-la"])`
-5. **`uses` is relative to the file** — not the project root
+5. **`use` is relative to the file** — not the project root
 6. **One callable per file** — name must match filename
 7. **Docs are mandatory** — compiler rejects missing `docs` blocks
 8. **Flows don't compute** — no `+`, no `str.upper`, no function calls except `step` invocations
