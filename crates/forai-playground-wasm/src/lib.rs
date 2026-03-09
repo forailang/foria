@@ -1,6 +1,6 @@
-use wasm_bindgen::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
 
 use forai_core::sync_host::SyncHost;
 use serde_json::{Value, json};
@@ -85,17 +85,20 @@ pub fn compile(files_json: &str, entry_point: &str) -> String {
                     "type_registry": types_json,
                     "flow_registry": registry_json,
                 }
-            }).to_string()
+            })
+            .to_string()
         }
         Err(errors) => {
             let errs: Vec<Value> = errors
                 .iter()
-                .map(|e| json!({
-                    "file": e.file,
-                    "line": e.line,
-                    "col": e.col,
-                    "message": e.message,
-                }))
+                .map(|e| {
+                    json!({
+                        "file": e.file,
+                        "line": e.line,
+                        "col": e.col,
+                        "message": e.message,
+                    })
+                })
                 .collect();
             json!({ "errors": errs }).to_string()
         }
@@ -124,12 +127,14 @@ pub fn execute(files_json: &str, entry_point: &str) -> String {
         Err(errors) => {
             let errs: Vec<Value> = errors
                 .iter()
-                .map(|e| json!({
-                    "file": e.file,
-                    "line": e.line,
-                    "col": e.col,
-                    "message": e.message,
-                }))
+                .map(|e| {
+                    json!({
+                        "file": e.file,
+                        "line": e.line,
+                        "col": e.col,
+                        "message": e.message,
+                    })
+                })
                 .collect();
             return json!({ "compile_errors": errs }).to_string();
         }
@@ -147,22 +152,20 @@ pub fn execute(files_json: &str, entry_point: &str) -> String {
         &codecs,
         &host,
     ) {
-        Ok(result) => {
-            json!({
-                "ok": {
-                    "prints": host.take_prints(),
-                    "logs": host.take_logs(),
-                    "outputs": result.outputs,
-                }
-            }).to_string()
-        }
-        Err(e) => {
-            json!({
-                "error": e,
+        Ok(result) => json!({
+            "ok": {
                 "prints": host.take_prints(),
                 "logs": host.take_logs(),
-            }).to_string()
-        }
+                "outputs": result.outputs,
+            }
+        })
+        .to_string(),
+        Err(e) => json!({
+            "error": e,
+            "prints": host.take_prints(),
+            "logs": host.take_logs(),
+        })
+        .to_string(),
     }
 }
 
@@ -188,12 +191,14 @@ pub fn execute_stepping(files_json: &str, entry_point: &str) -> String {
         Err(errors) => {
             let errs: Vec<Value> = errors
                 .iter()
-                .map(|e| json!({
-                    "file": e.file,
-                    "line": e.line,
-                    "col": e.col,
-                    "message": e.message,
-                }))
+                .map(|e| {
+                    json!({
+                        "file": e.file,
+                        "line": e.line,
+                        "col": e.col,
+                        "message": e.message,
+                    })
+                })
                 .collect();
             return json!({ "compile_errors": errs }).to_string();
         }
@@ -211,23 +216,21 @@ pub fn execute_stepping(files_json: &str, entry_point: &str) -> String {
         &codecs,
         &host,
     ) {
-        Ok((result, snapshots)) => {
-            json!({
-                "ok": {
-                    "snapshots": snapshots,
-                    "prints": host.take_prints(),
-                    "logs": host.take_logs(),
-                    "outputs": result.outputs,
-                }
-            }).to_string()
-        }
-        Err(e) => {
-            json!({
-                "error": e,
+        Ok((result, snapshots)) => json!({
+            "ok": {
+                "snapshots": snapshots,
                 "prints": host.take_prints(),
                 "logs": host.take_logs(),
-            }).to_string()
-        }
+                "outputs": result.outputs,
+            }
+        })
+        .to_string(),
+        Err(e) => json!({
+            "error": e,
+            "prints": host.take_prints(),
+            "logs": host.take_logs(),
+        })
+        .to_string(),
     }
 }
 
@@ -266,7 +269,8 @@ impl SyncHost for PlaygroundHost {
         match op {
             // Terminal output — capture
             "term.print" => {
-                let text = args.first()
+                let text = args
+                    .first()
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -286,11 +290,13 @@ impl SyncHost for PlaygroundHost {
             // Logging — capture with level + forward to browser console
             "log.debug" | "log.info" | "log.warn" | "log.error" | "log.trace" => {
                 let level = op.strip_prefix("log.").unwrap_or("info");
-                let message = args.first()
+                let message = args
+                    .first()
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let context_str = args.get(1)
+                let context_str = args
+                    .get(1)
                     .map(|v| match v {
                         Value::String(s) => s.clone(),
                         other => other.to_string(),
@@ -311,41 +317,61 @@ impl SyncHost for PlaygroundHost {
             op if op.starts_with("file.") => {
                 Err(format!("{op} is not available in the playground"))
             }
-            op if op.starts_with("db.") => {
-                Err(format!("{op} is not available in the playground"))
-            }
+            op if op.starts_with("db.") => Err(format!("{op} is not available in the playground")),
             op if op.starts_with("exec.") => {
                 Err(format!("{op} is not available in the playground"))
             }
-            op if op.starts_with("env.") => {
-                Err(format!("{op} is not available in the playground"))
-            }
-            op if op.starts_with("http.server.") || op.starts_with("http.respond.") || op == "accept" => {
+            op if op.starts_with("env.") => Err(format!("{op} is not available in the playground")),
+            op if op.starts_with("http.server.")
+                || op.starts_with("http.respond.")
+                || op == "accept" =>
+            {
                 Err(format!("{op} is not available in the playground"))
             }
             // HTTP client ops — synchronous XHR in Web Worker
-            "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete" | "http.request" => {
+            "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete"
+            | "http.request" => {
                 let (method, url, body, options) = match op {
                     "http.get" => {
-                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let url = args
+                            .first()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let options = args.get(1).cloned();
                         ("GET".to_string(), url, None, options)
                     }
                     "http.post" | "http.put" | "http.patch" => {
                         let m = op.strip_prefix("http.").unwrap().to_uppercase();
-                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let url = args
+                            .first()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let body = args.get(1).cloned();
                         let options = args.get(2).cloned();
                         (m, url, body, options)
                     }
                     "http.delete" => {
-                        let url = args.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let url = args
+                            .first()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let options = args.get(1).cloned();
                         ("DELETE".to_string(), url, None, options)
                     }
                     "http.request" => {
-                        let m = args.first().and_then(|v| v.as_str()).unwrap_or("GET").to_string();
-                        let url = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let m = args
+                            .first()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("GET")
+                            .to_string();
+                        let url = args
+                            .get(1)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let options = args.get(2).cloned();
                         let body = options.as_ref().and_then(|o| o.get("body").cloned());
                         (m, url, body, options)
@@ -378,12 +404,10 @@ impl SyncHost for PlaygroundHost {
                     Ok(parsed)
                 }
             }
-            op if op.starts_with("ws.") => {
-                Err(format!("{op} is not available in the playground (no network access)"))
-            }
-            op if op.starts_with("ffi.") => {
-                Err(format!("{op} is not available in the playground"))
-            }
+            op if op.starts_with("ws.") => Err(format!(
+                "{op} is not available in the playground (no network access)"
+            )),
+            op if op.starts_with("ffi.") => Err(format!("{op} is not available in the playground")),
 
             _ => Err(format!("unknown I/O op: {op}")),
         }
@@ -391,7 +415,6 @@ impl SyncHost for PlaygroundHost {
 
     fn cleanup(&self) {}
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -451,6 +474,9 @@ mod tests {
             "expected error for unavailable op, got: {result}"
         );
         let error = parsed["error"].as_str().unwrap();
-        assert!(error.contains("not available"), "error should mention not available: {error}");
+        assert!(
+            error.contains("not available"),
+            "error should mention not available: {error}"
+        );
     }
 }

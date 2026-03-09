@@ -205,7 +205,9 @@ fn keyword_hover(word: &str) -> Option<Hover> {
         "type" => "Declares a struct or scalar type with optional constraints",
         "data" => "Declares a data type",
         "enum" => "Declares an enumeration type with string variants",
-        "use" => "Imports a module — `use Name from \"./path\"` (file or directory, relative to this file)",
+        "use" => {
+            "Imports a module — `use Name from \"./path\"` (file or directory, relative to this file)"
+        }
         "case" => "Pattern matching: `case value` with `when` arms and `else`",
         "loop" => "Iteration: `loop items as item` or bare `loop` with `break`",
         "sync" => "Concurrent execution: runs body statements in parallel via join_all",

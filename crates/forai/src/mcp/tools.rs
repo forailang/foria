@@ -310,9 +310,14 @@ async fn tool_check(args: &Value) -> CallToolResult {
                             file_ok = false;
                         }
                         Ok(flow) => {
-                            if let Err(e) =
-                                crate::typecheck::typecheck_func(&f.name, &f.takes, &flow.body, &f.emits, &f.fails, &type_registry)
-                            {
+                            if let Err(e) = crate::typecheck::typecheck_func(
+                                &f.name,
+                                &f.takes,
+                                &flow.body,
+                                &f.emits,
+                                &f.fails,
+                                &type_registry,
+                            ) {
                                 diagnostics.push(format!("{}:{e}", file.display()));
                                 file_ok = false;
                             }
@@ -327,38 +332,36 @@ async fn tool_check(args: &Value) -> CallToolResult {
                         }
                     }
                 }
-                crate::ast::TopDecl::Flow(f) => {
-                    match crate::parser::parse_flow_graph_decl_v1(f) {
+                crate::ast::TopDecl::Flow(f) => match crate::parser::parse_flow_graph_decl_v1(f) {
+                    Err(e) => {
+                        diagnostics.push(format!(
+                            "{}: flow `{}` parse error: {e}",
+                            file.display(),
+                            f.name
+                        ));
+                        file_ok = false;
+                    }
+                    Ok(graph) => match crate::parser::lower_flow_graph_to_flow(&graph) {
                         Err(e) => {
                             diagnostics.push(format!(
-                                "{}: flow `{}` parse error: {e}",
+                                "{}: flow `{}` lower error: {e}",
                                 file.display(),
                                 f.name
                             ));
                             file_ok = false;
                         }
-                        Ok(graph) => match crate::parser::lower_flow_graph_to_flow(&graph) {
-                            Err(e) => {
+                        Ok(flow) => {
+                            if let Err(e) = forai_core::ir::lower_to_ir(&flow) {
                                 diagnostics.push(format!(
-                                    "{}: flow `{}` lower error: {e}",
+                                    "{}: flow `{}` IR error: {e}",
                                     file.display(),
                                     f.name
                                 ));
                                 file_ok = false;
                             }
-                            Ok(flow) => {
-                                if let Err(e) = forai_core::ir::lower_to_ir(&flow) {
-                                    diagnostics.push(format!(
-                                        "{}: flow `{}` IR error: {e}",
-                                        file.display(),
-                                        f.name
-                                    ));
-                                    file_ok = false;
-                                }
-                            }
-                        },
-                    }
-                }
+                        }
+                    },
+                },
                 _ => {}
             }
         }
@@ -574,10 +577,11 @@ async fn tool_run(args: &Value) -> CallToolResult {
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
-    let (flow, ir, registry, flow_registry, _ffi_registry) = match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
-        Ok(v) => v,
-        Err(e) => return CallToolResult::error(e),
-    };
+    let (flow, ir, registry, flow_registry, _ffi_registry) =
+        match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
+            Ok(v) => v,
+            Err(e) => return CallToolResult::error(e),
+        };
 
     let inputs = if !cli_args.is_empty() {
         match crate::runtime::load_inputs_from_args(&flow, &cli_args) {
@@ -688,10 +692,11 @@ async fn tool_debug_snapshot(args: &Value) -> CallToolResult {
         .unwrap_or_default();
     let timeout_secs: Option<f64> = args.get("timeout").and_then(|v| v.as_f64());
 
-    let (flow, ir, registry, flow_registry, _ffi_registry) = match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
-        Ok(v) => v,
-        Err(e) => return CallToolResult::error(e),
-    };
+    let (flow, ir, registry, flow_registry, _ffi_registry) =
+        match crate::compile_source(&source, &crate::deps::ResolvedDeps::empty()) {
+            Ok(v) => v,
+            Err(e) => return CallToolResult::error(e),
+        };
 
     let inputs = if !cli_args.is_empty() {
         match crate::runtime::load_inputs_from_args(&flow, &cli_args) {
@@ -897,8 +902,8 @@ fn collect_fa_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 async fn tool_example_search(args: &Value) -> CallToolResult {
-    let base_url = std::env::var("FORAI_API_URL")
-        .unwrap_or_else(|_| "https://forailang.com".to_string());
+    let base_url =
+        std::env::var("FORAI_API_URL").unwrap_or_else(|_| "https://forailang.com".to_string());
 
     let mut params = Vec::new();
     if let Some(q) = get_string_arg(args, "query") {

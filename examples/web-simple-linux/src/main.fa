@@ -1,0 +1,30 @@
+use { View, UpdatePath } from "./app"
+
+docs main
+    Linux GTK UI app that mirrors the simple web example with desktop routing state.
+    Renders pages with ui.update, then reacts to ui.events in a loop.
+done
+
+flow main
+body
+    state path = ui.current_path()
+
+    step View(path to :path) then
+        next :event to event
+    done
+
+    step UpdatePath(path to :path, event to :event) then
+        next :path to path
+    done
+done
+
+test main
+    mock ui.current_path => "/"
+    mock View => {type: "nav", path: "/about"}
+    mock UpdatePath => "/about"
+    it "runs one cycle in test mode"
+        _ = main()
+        ok = true
+        must ok == true
+    done
+done

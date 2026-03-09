@@ -20,70 +20,215 @@ pub struct CompileError {
 
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{} {}", self.file, self.line, self.col, self.message)
+        write!(
+            f,
+            "{}:{}:{} {}",
+            self.file, self.line, self.col, self.message
+        )
     }
 }
 
 /// Complete list of known runtime ops (pure + I/O + codec).
 /// Computed once and cached for the lifetime of the process.
 static KNOWN_OPS: LazyLock<HashSet<String>> = LazyLock::new(|| {
-    let mut ops: HashSet<String> = crate::pure_ops::known_ops().iter().map(|s| s.to_string()).collect();
+    let mut ops: HashSet<String> = crate::pure_ops::known_ops()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     // I/O ops (from host.rs and runtime)
     for op in &[
-        "http.extract_path", "http.extract_params",
-        "auth.extract_email", "auth.extract_password", "auth.validate_email",
-        "auth.validate_password", "db.query_user_by_email", "db.query_credentials",
-        "db.open", "db.exec", "db.query", "db.close",
-        "auth.verify_password", "auth.sample_checks", "auth.pass_through",
-        "http.error_response", "http.response",
-        "http.get", "http.post", "http.put", "http.patch", "http.delete", "http.request",
-        "http.server.listen", "http.server.accept", "http.server.respond", "http.server.close",
-        "http.respond.html", "http.respond.json", "http.respond.text", "http.respond.file",
+        "http.extract_path",
+        "http.extract_params",
+        "auth.extract_email",
+        "auth.extract_password",
+        "auth.validate_email",
+        "auth.validate_password",
+        "db.query_user_by_email",
+        "db.query_credentials",
+        "db.open",
+        "db.exec",
+        "db.query",
+        "db.close",
+        "auth.verify_password",
+        "auth.sample_checks",
+        "auth.pass_through",
+        "http.error_response",
+        "http.response",
+        "http.get",
+        "http.post",
+        "http.put",
+        "http.patch",
+        "http.delete",
+        "http.request",
+        "http.server.listen",
+        "http.server.accept",
+        "http.server.respond",
+        "http.server.close",
+        "http.respond.html",
+        "http.respond.json",
+        "http.respond.text",
+        "http.respond.file",
         "accept",
-        "ws.connect", "ws.send", "ws.recv", "ws.close",
-        "headers.new", "headers.set", "headers.get", "headers.delete",
-        "math.floor", "math.round",
-        "time.sleep", "time.tick", "time.split_hms",
-        "fmt.pad_hms", "fmt.wrap_field",
-        "date.now", "date.now_tz", "date.from_unix_ms", "date.from_parts",
-        "date.from_parts_tz", "date.from_iso", "date.from_epoch",
-        "date.to_unix_ms", "date.to_parts", "date.to_iso", "date.to_epoch",
-        "date.weekday", "date.with_tz", "date.add", "date.add_days", "date.diff", "date.compare",
-        "stamp.now", "stamp.from_ns", "stamp.from_epoch",
-        "stamp.to_ns", "stamp.to_ms", "stamp.to_date", "stamp.to_epoch",
-        "stamp.add", "stamp.diff", "stamp.compare",
-        "trange.new", "trange.start", "trange.end", "trange.duration_ms",
-        "trange.contains", "trange.overlaps", "trange.shift",
-        "list.range", "list.new", "list.append", "list.len", "list.contains",
-        "list.slice", "list.indices",
-        "obj.new", "obj.set", "obj.get", "obj.has", "obj.delete", "obj.keys", "obj.merge",
-        "term.print", "term.prompt", "term.clear", "term.size", "term.cursor",
-        "term.move_to", "term.color", "term.read_key",
-        "file.read", "file.write", "file.append", "file.delete", "file.exists",
-        "file.list", "file.mkdir", "file.copy", "file.move", "file.size", "file.is_dir",
-        "str.len", "str.upper", "str.lower", "str.trim", "str.trim_start", "str.trim_end",
-        "str.split", "str.join", "str.replace", "str.contains", "str.starts_with",
-        "str.ends_with", "str.slice", "str.index_of", "str.repeat",
-        "type.of", "to.text", "to.long", "to.real", "to.bool",
-        "env.get", "env.set", "env.has", "env.list", "env.remove",
+        "ws.connect",
+        "ws.send",
+        "ws.recv",
+        "ws.close",
+        "headers.new",
+        "headers.set",
+        "headers.get",
+        "headers.delete",
+        "math.floor",
+        "math.round",
+        "time.sleep",
+        "time.tick",
+        "time.split_hms",
+        "fmt.pad_hms",
+        "fmt.wrap_field",
+        "date.now",
+        "date.now_tz",
+        "date.from_unix_ms",
+        "date.from_parts",
+        "date.from_parts_tz",
+        "date.from_iso",
+        "date.from_epoch",
+        "date.to_unix_ms",
+        "date.to_parts",
+        "date.to_iso",
+        "date.to_epoch",
+        "date.weekday",
+        "date.with_tz",
+        "date.add",
+        "date.add_days",
+        "date.diff",
+        "date.compare",
+        "stamp.now",
+        "stamp.from_ns",
+        "stamp.from_epoch",
+        "stamp.to_ns",
+        "stamp.to_ms",
+        "stamp.to_date",
+        "stamp.to_epoch",
+        "stamp.add",
+        "stamp.diff",
+        "stamp.compare",
+        "trange.new",
+        "trange.start",
+        "trange.end",
+        "trange.duration_ms",
+        "trange.contains",
+        "trange.overlaps",
+        "trange.shift",
+        "list.range",
+        "list.new",
+        "list.append",
+        "list.len",
+        "list.contains",
+        "list.slice",
+        "list.indices",
+        "obj.new",
+        "obj.set",
+        "obj.get",
+        "obj.has",
+        "obj.delete",
+        "obj.keys",
+        "obj.merge",
+        "term.print",
+        "term.prompt",
+        "term.clear",
+        "term.size",
+        "term.cursor",
+        "term.move_to",
+        "term.color",
+        "term.read_key",
+        "file.read",
+        "file.write",
+        "file.append",
+        "file.delete",
+        "file.exists",
+        "file.list",
+        "file.mkdir",
+        "file.copy",
+        "file.move",
+        "file.size",
+        "file.is_dir",
+        "str.len",
+        "str.upper",
+        "str.lower",
+        "str.trim",
+        "str.trim_start",
+        "str.trim_end",
+        "str.split",
+        "str.join",
+        "str.replace",
+        "str.contains",
+        "str.starts_with",
+        "str.ends_with",
+        "str.slice",
+        "str.index_of",
+        "str.repeat",
+        "type.of",
+        "to.text",
+        "to.long",
+        "to.real",
+        "to.bool",
+        "env.get",
+        "env.set",
+        "env.has",
+        "env.list",
+        "env.remove",
         "exec.run",
-        "regex.match", "regex.find", "regex.find_all", "regex.replace",
-        "regex.replace_all", "regex.split",
-        "random.int", "random.float", "random.uuid", "random.choice", "random.shuffle",
-        "hash.sha256", "hash.sha512", "hash.hmac",
-        "base64.encode", "base64.decode", "base64.encode_url", "base64.decode_url",
-        "crypto.hash_password", "crypto.verify_password",
-        "crypto.sign_token", "crypto.verify_token", "crypto.random_bytes",
-        "log.debug", "log.info", "log.warn", "log.error", "log.trace",
-        "error.new", "error.wrap", "error.code", "error.message",
-        "cookie.parse", "cookie.get", "cookie.set", "cookie.delete",
-        "url.parse", "url.query_parse", "url.encode", "url.decode",
-        "route.match", "route.params",
-        "html.escape", "html.unescape",
+        "regex.match",
+        "regex.find",
+        "regex.find_all",
+        "regex.replace",
+        "regex.replace_all",
+        "regex.split",
+        "random.int",
+        "random.float",
+        "random.uuid",
+        "random.choice",
+        "random.shuffle",
+        "hash.sha256",
+        "hash.sha512",
+        "hash.hmac",
+        "base64.encode",
+        "base64.decode",
+        "base64.encode_url",
+        "base64.decode_url",
+        "crypto.hash_password",
+        "crypto.verify_password",
+        "crypto.sign_token",
+        "crypto.verify_token",
+        "crypto.random_bytes",
+        "log.debug",
+        "log.info",
+        "log.warn",
+        "log.error",
+        "log.trace",
+        "error.new",
+        "error.wrap",
+        "error.code",
+        "error.message",
+        "cookie.parse",
+        "cookie.get",
+        "cookie.set",
+        "cookie.delete",
+        "url.parse",
+        "url.query_parse",
+        "url.encode",
+        "url.decode",
+        "route.match",
+        "route.params",
+        "html.escape",
+        "html.unescape",
         "tmpl.render",
         "ffi.available",
-        "dom.write", "dom.set_title",
-        "ui.mount", "ui.update", "ui.navigate", "ui.current_path",
+        "dom.write",
+        "dom.set_title",
+        "ui.mount",
+        "ui.update",
+        "ui.navigate",
+        "ui.current_path",
     ] {
         ops.insert(op.to_string());
     }
@@ -204,9 +349,7 @@ pub fn compile_project(
     let unknown: Vec<_> = ops
         .iter()
         .filter(|op| {
-            !known.contains(op.as_str())
-                && !flow_registry.is_flow(op)
-                && !op.starts_with("ffi.")
+            !known.contains(op.as_str()) && !flow_registry.is_flow(op) && !op.starts_with("ffi.")
         })
         .collect();
     if !unknown.is_empty() {
@@ -291,9 +434,8 @@ fn load_virtual_module(
     };
 
     if let Some(src) = files.get(&file_key) {
-        let program = compile_single_virtual_file(
-            name, &file_key, src, files, known, registry, loading_set,
-        )?;
+        let program =
+            compile_single_virtual_file(name, &file_key, src, files, known, registry, loading_set)?;
         registry.insert(name.to_string(), program);
     } else {
         // Try as a directory — find all files with this path prefix
@@ -354,8 +496,12 @@ fn compile_single_virtual_file(
     parent_registry: &mut FlowRegistry,
     loading_set: &mut HashSet<String>,
 ) -> Result<FlowProgram, String> {
-    let module = parser::parse_module_v1(src)
-        .map_err(|e| format!("{}: parse error at {}:{}: {}", file_path, e.span.line, e.span.col, e.message))?;
+    let module = parser::parse_module_v1(src).map_err(|e| {
+        format!(
+            "{}: parse error at {}:{}: {}",
+            file_path, e.span.line, e.span.col, e.message
+        )
+    })?;
 
     let filename = file_path.rsplit('/').next();
     if let Err(errors) = sema::validate_module(&module, filename) {
@@ -388,19 +534,35 @@ fn compile_single_virtual_file(
     // Find the callable
     let result = module.decls.iter().find_map(|decl| match decl {
         TopDecl::Func(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, parent_registry,
+            f,
+            &type_registry,
+            file_path,
+            known,
+            parent_registry,
             DeclKind::Func,
         )),
         TopDecl::Sink(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, parent_registry,
+            f,
+            &type_registry,
+            file_path,
+            known,
+            parent_registry,
             DeclKind::Sink,
         )),
         TopDecl::Source(f) => Some(compile_virtual_func(
-            f, &type_registry, file_path, known, parent_registry,
+            f,
+            &type_registry,
+            file_path,
+            known,
+            parent_registry,
             DeclKind::Source,
         )),
         TopDecl::Flow(f) => Some(compile_virtual_flow(
-            f, &type_registry, file_path, known, parent_registry,
+            f,
+            &type_registry,
+            file_path,
+            known,
+            parent_registry,
         )),
         _ => None,
     });
@@ -424,23 +586,34 @@ fn compile_virtual_func(
     let flow = parser::parse_runtime_func_decl_v1(func_decl)
         .map_err(|e| format!("{}: func `{}` parse error: {e}", file_path, func_decl.name))?;
 
-    typecheck::typecheck_func_with_flows(&func_decl.name, &func_decl.takes, &flow.body, &func_decl.emits, &func_decl.fails, registry, Some(flow_registry))
-        .map_err(|e| format!("{}: {e}", file_path))?;
+    typecheck::typecheck_func_with_flows(
+        &func_decl.name,
+        &func_decl.takes,
+        &flow.body,
+        &func_decl.emits,
+        &func_decl.fails,
+        registry,
+        Some(flow_registry),
+    )
+    .map_err(|e| format!("{}: {e}", file_path))?;
 
     let mut ops = Vec::new();
     collect_ops(&flow.body, &mut ops);
     let unknown: Vec<_> = ops
         .iter()
         .filter(|op| {
-            !known.contains(op.as_str())
-                && !flow_registry.is_flow(op)
-                && !op.starts_with("ffi.")
+            !known.contains(op.as_str()) && !flow_registry.is_flow(op) && !op.starts_with("ffi.")
         })
         .collect();
     if !unknown.is_empty() {
         return Err(unknown
             .iter()
-            .map(|op| format!("{}: func `{}` uses unknown op `{}`", file_path, func_decl.name, op))
+            .map(|op| {
+                format!(
+                    "{}: func `{}` uses unknown op `{}`",
+                    file_path, func_decl.name, op
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"));
     }
@@ -491,21 +664,28 @@ fn compile_virtual_flow(
     let unknown: Vec<_> = ops
         .iter()
         .filter(|op| {
-            !known.contains(op.as_str())
-                && !flow_registry.is_flow(op)
-                && !op.starts_with("ffi.")
+            !known.contains(op.as_str()) && !flow_registry.is_flow(op) && !op.starts_with("ffi.")
         })
         .collect();
     if !unknown.is_empty() {
         return Err(unknown
             .iter()
-            .map(|op| format!("{}: flow `{}` uses unknown op `{}`", file_path, flow_decl.name, op))
+            .map(|op| {
+                format!(
+                    "{}: flow `{}` uses unknown op `{}`",
+                    file_path, flow_decl.name, op
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"));
     }
 
-    let ir_val = ir::lower_to_ir(&flow)
-        .map_err(|e| format!("{}: flow `{}` IR lower error: {e}", file_path, flow_decl.name))?;
+    let ir_val = ir::lower_to_ir(&flow).map_err(|e| {
+        format!(
+            "{}: flow `{}` IR lower error: {e}",
+            file_path, flow_decl.name
+        )
+    })?;
 
     let emit_name = flow.outputs.first().map(|p| p.name.clone());
     let fail_name = flow.outputs.get(1).map(|p| p.name.clone());
@@ -579,7 +759,11 @@ fn collect_expr_ops(expr: &Expr, out: &mut Vec<String>) {
                 collect_expr_ops(v, out);
             }
         }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             collect_expr_ops(cond, out);
             collect_expr_ops(then_expr, out);
             collect_expr_ops(else_expr, out);
@@ -602,10 +786,7 @@ fn collect_expr_ops(expr: &Expr, out: &mut Vec<String>) {
 /// Transform source-call steps into SourceLoop blocks.
 /// All statements after the source call become the loop body,
 /// and nested sources are recursively transformed.
-fn transform_source_steps(
-    stmts: &[Statement],
-    source_names: &HashSet<String>,
-) -> Vec<Statement> {
+fn transform_source_steps(stmts: &[Statement], source_names: &HashSet<String>) -> Vec<Statement> {
     let source_idx = stmts.iter().position(|s| {
         if let Statement::Node(n) = s {
             source_names.contains(&n.op)

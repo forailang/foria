@@ -45,13 +45,24 @@ fn color_from_name(name: &str) -> Option<Color> {
 
 /// Emit style commands for a node's props (color, bg, bold, italic, reverse).
 /// Returns true if any style was emitted (so caller knows to reset).
-fn emit_style_commands(props: &serde_json::Map<String, Value>, cmds: &mut Vec<DrawCommand>) -> bool {
+fn emit_style_commands(
+    props: &serde_json::Map<String, Value>,
+    cmds: &mut Vec<DrawCommand>,
+) -> bool {
     let mut styled = false;
-    if let Some(color) = props.get("color").and_then(|v| v.as_str()).and_then(color_from_name) {
+    if let Some(color) = props
+        .get("color")
+        .and_then(|v| v.as_str())
+        .and_then(color_from_name)
+    {
         cmds.push(DrawCommand::SetColor(color));
         styled = true;
     }
-    if let Some(bg) = props.get("bg").and_then(|v| v.as_str()).and_then(color_from_name) {
+    if let Some(bg) = props
+        .get("bg")
+        .and_then(|v| v.as_str())
+        .and_then(color_from_name)
+    {
         cmds.push(DrawCommand::SetBgColor(bg));
         styled = true;
     }
@@ -59,11 +70,19 @@ fn emit_style_commands(props: &serde_json::Map<String, Value>, cmds: &mut Vec<Dr
         cmds.push(DrawCommand::SetAttribute(Attribute::Bold));
         styled = true;
     }
-    if props.get("italic").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if props
+        .get("italic")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         cmds.push(DrawCommand::SetAttribute(Attribute::Italic));
         styled = true;
     }
-    if props.get("reverse").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if props
+        .get("reverse")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         cmds.push(DrawCommand::SetAttribute(Attribute::Reverse));
         styled = true;
     }
@@ -87,7 +106,7 @@ pub fn render_to_commands(nodes: &[PositionedNode]) -> Vec<DrawCommand> {
             "screen" => {
                 cmds.push(DrawCommand::Clear);
             }
-            "text" => {
+            "text" | "html" => {
                 if let Some(ref text) = node.text {
                     // Wrap text at available width
                     let width = node.rect.width as usize;
@@ -244,20 +263,26 @@ mod tests {
     fn text_node_at_position() {
         let nodes = vec![make_positioned("text", 5, 3, 80, 1, Some("hello"))];
         let cmds = render_to_commands(&nodes);
-        assert_eq!(cmds, vec![
-            DrawCommand::MoveTo(5, 3),
-            DrawCommand::Print("hello".into()),
-        ]);
+        assert_eq!(
+            cmds,
+            vec![
+                DrawCommand::MoveTo(5, 3),
+                DrawCommand::Print("hello".into()),
+            ]
+        );
     }
 
     #[test]
     fn button_at_origin() {
         let nodes = vec![make_positioned("button", 0, 0, 6, 1, Some("[ OK ]"))];
         let cmds = render_to_commands(&nodes);
-        assert_eq!(cmds, vec![
-            DrawCommand::MoveTo(0, 0),
-            DrawCommand::Print("[ OK ]".into()),
-        ]);
+        assert_eq!(
+            cmds,
+            vec![
+                DrawCommand::MoveTo(0, 0),
+                DrawCommand::Print("[ OK ]".into()),
+            ]
+        );
     }
 
     #[test]
@@ -271,12 +296,15 @@ mod tests {
     fn text_wrapping_in_render() {
         let nodes = vec![make_positioned("text", 0, 0, 5, 2, Some("HelloWorld"))];
         let cmds = render_to_commands(&nodes);
-        assert_eq!(cmds, vec![
-            DrawCommand::MoveTo(0, 0),
-            DrawCommand::Print("Hello".into()),
-            DrawCommand::MoveTo(0, 1),
-            DrawCommand::Print("World".into()),
-        ]);
+        assert_eq!(
+            cmds,
+            vec![
+                DrawCommand::MoveTo(0, 0),
+                DrawCommand::Print("Hello".into()),
+                DrawCommand::MoveTo(0, 1),
+                DrawCommand::Print("World".into()),
+            ]
+        );
     }
 
     #[test]
@@ -302,10 +330,10 @@ mod tests {
     fn toggle_render() {
         let nodes = vec![make_positioned("toggle", 2, 5, 5, 1, Some("[x]"))];
         let cmds = render_to_commands(&nodes);
-        assert_eq!(cmds, vec![
-            DrawCommand::MoveTo(2, 5),
-            DrawCommand::Print("[x]".into()),
-        ]);
+        assert_eq!(
+            cmds,
+            vec![DrawCommand::MoveTo(2, 5), DrawCommand::Print("[x]".into()),]
+        );
     }
 
     fn make_positioned_with_props(
@@ -318,7 +346,12 @@ mod tests {
         props: serde_json::Map<String, Value>,
     ) -> PositionedNode {
         PositionedNode {
-            rect: Rect { x, y, width: w, height: h },
+            rect: Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
             node_type: node_type.into(),
             props,
             text: text.map(|s| s.to_string()),
@@ -331,7 +364,15 @@ mod tests {
         let mut props = serde_json::Map::new();
         props.insert("color".into(), json!("green"));
         props.insert("value".into(), json!("ok"));
-        let nodes = vec![make_positioned_with_props("text", 0, 0, 80, 1, Some("ok"), props)];
+        let nodes = vec![make_positioned_with_props(
+            "text",
+            0,
+            0,
+            80,
+            1,
+            Some("ok"),
+            props,
+        )];
         let cmds = render_to_commands(&nodes);
         assert_eq!(cmds[0], DrawCommand::SetColor(Color::Green));
         assert_eq!(cmds[1], DrawCommand::MoveTo(0, 0));
@@ -346,7 +387,15 @@ mod tests {
         let mut props = serde_json::Map::new();
         props.insert("reverse".into(), json!(true));
         props.insert("value".into(), json!("sel"));
-        let nodes = vec![make_positioned_with_props("text", 0, 0, 80, 1, Some("sel"), props)];
+        let nodes = vec![make_positioned_with_props(
+            "text",
+            0,
+            0,
+            80,
+            1,
+            Some("sel"),
+            props,
+        )];
         let cmds = render_to_commands(&nodes);
         assert_eq!(cmds[0], DrawCommand::SetAttribute(Attribute::Reverse));
         assert_eq!(cmds[1], DrawCommand::MoveTo(0, 0));
@@ -362,7 +411,15 @@ mod tests {
         props.insert("bg".into(), json!("blue"));
         props.insert("bold".into(), json!(true));
         props.insert("value".into(), json!("hi"));
-        let nodes = vec![make_positioned_with_props("text", 0, 0, 80, 1, Some("hi"), props)];
+        let nodes = vec![make_positioned_with_props(
+            "text",
+            0,
+            0,
+            80,
+            1,
+            Some("hi"),
+            props,
+        )];
         let cmds = render_to_commands(&nodes);
         assert_eq!(cmds[0], DrawCommand::SetBgColor(Color::Blue));
         assert_eq!(cmds[1], DrawCommand::SetAttribute(Attribute::Bold));
@@ -378,7 +435,15 @@ mod tests {
         let mut props = serde_json::Map::new();
         props.insert("italic".into(), json!(true));
         props.insert("value".into(), json!("slant"));
-        let nodes = vec![make_positioned_with_props("text", 0, 0, 80, 1, Some("slant"), props)];
+        let nodes = vec![make_positioned_with_props(
+            "text",
+            0,
+            0,
+            80,
+            1,
+            Some("slant"),
+            props,
+        )];
         let cmds = render_to_commands(&nodes);
         assert_eq!(cmds[0], DrawCommand::SetAttribute(Attribute::Italic));
         assert_eq!(cmds[1], DrawCommand::MoveTo(0, 0));

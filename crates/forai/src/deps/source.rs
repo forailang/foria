@@ -7,7 +7,10 @@ pub enum DepSource {
     /// Local filesystem path: value is "file:../some/path"
     File { path: String },
     /// Arbitrary git URL: value is "git+https://host/repo.git#^1.0.0"
-    Git { url: String, version_req: VersionReq },
+    Git {
+        url: String,
+        version_req: VersionReq,
+    },
 }
 
 impl DepSource {
@@ -17,9 +20,7 @@ impl DepSource {
         if value.starts_with("file:") {
             let path = value.strip_prefix("file:").unwrap().to_string();
             if path.is_empty() {
-                return Err(format!(
-                    "empty path in file dependency for '{dep_name}'"
-                ));
+                return Err(format!("empty path in file dependency for '{dep_name}'"));
             }
             return Ok(DepSource::File { path });
         }
@@ -34,14 +35,10 @@ impl DepSource {
                 )
             })?;
             if url.is_empty() {
-                return Err(format!(
-                    "empty URL in git dependency for '{dep_name}'"
-                ));
+                return Err(format!("empty URL in git dependency for '{dep_name}'"));
             }
             let version_req = VersionReq::parse(version_part).map_err(|e| {
-                format!(
-                    "cannot parse version requirement '{version_part}' for '{dep_name}': {e}"
-                )
+                format!("cannot parse version requirement '{version_part}' for '{dep_name}': {e}")
             })?;
             return Ok(DepSource::Git {
                 url: url.to_string(),
@@ -51,9 +48,7 @@ impl DepSource {
 
         // Default: semver range (for @user/repo GitHub shorthand)
         let version_req = VersionReq::parse(value).map_err(|e| {
-            format!(
-                "cannot parse version requirement '{value}' for '{dep_name}': {e}"
-            )
+            format!("cannot parse version requirement '{value}' for '{dep_name}': {e}")
         })?;
         Ok(DepSource::GitHub { version_req })
     }

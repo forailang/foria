@@ -276,15 +276,9 @@ impl FfiManager {
 fn load_library(lib_name: &str) -> Result<libloading::Library, String> {
     // Try platform-specific library names
     let candidates = if cfg!(target_os = "macos") {
-        vec![
-            format!("lib{lib_name}.dylib"),
-            lib_name.to_string(),
-        ]
+        vec![format!("lib{lib_name}.dylib"), lib_name.to_string()]
     } else if cfg!(target_os = "windows") {
-        vec![
-            format!("{lib_name}.dll"),
-            lib_name.to_string(),
-        ]
+        vec![format!("{lib_name}.dll"), lib_name.to_string()]
     } else {
         vec![
             format!("lib{lib_name}.so.6"),
@@ -321,9 +315,7 @@ fn load_library(lib_name: &str) -> Result<libloading::Library, String> {
 }
 
 /// Build an FfiRegistry from parsed extern blocks in a module AST.
-pub fn build_ffi_registry(
-    module: &forai_core::ast::ModuleAst,
-) -> FfiRegistry {
+pub fn build_ffi_registry(module: &forai_core::ast::ModuleAst) -> FfiRegistry {
     let mut registry = FfiRegistry::new();
     for decl in &module.decls {
         if let forai_core::ast::TopDecl::Extern(eb) = decl {
@@ -391,15 +383,13 @@ mod proptests {
     }
 
     fn arb_extern_block() -> impl Strategy<Value = ExternBlock> {
-        (
-            "[a-z_]{1,15}",
-            prop::collection::vec(arb_extern_fn(), 0..8),
-        )
-            .prop_map(|(lib_name, fns)| ExternBlock {
+        ("[a-z_]{1,15}", prop::collection::vec(arb_extern_fn(), 0..8)).prop_map(
+            |(lib_name, fns)| ExternBlock {
                 lib_name,
                 fns,
                 span: Span { line: 0, col: 0 },
-            })
+            },
+        )
     }
 
     fn arb_module_with_externs() -> impl Strategy<Value = ModuleAst> {
@@ -594,13 +584,7 @@ mod proptests {
     #[test]
     fn call_rejects_missing_library() {
         let mut mgr = FfiManager::new();
-        let result = mgr.call(
-            "nonexistent_lib_xyz_99",
-            "some_fn",
-            &[],
-            &[],
-            None,
-        );
+        let result = mgr.call("nonexistent_lib_xyz_99", "some_fn", &[], &[], None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
     }

@@ -148,13 +148,27 @@ mod tests {
     #[test]
     fn parse_semver_basic() {
         let v = SemVer::parse("1.2.3").unwrap();
-        assert_eq!(v, SemVer { major: 1, minor: 2, patch: 3 });
+        assert_eq!(
+            v,
+            SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
+        );
     }
 
     #[test]
     fn parse_semver_with_v_prefix() {
         let v = SemVer::parse("v1.2.3").unwrap();
-        assert_eq!(v, SemVer { major: 1, minor: 2, patch: 3 });
+        assert_eq!(
+            v,
+            SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
+        );
     }
 
     #[test]
@@ -177,56 +191,116 @@ mod tests {
 
     #[test]
     fn semver_display() {
-        let v = SemVer { major: 1, minor: 2, patch: 3 };
+        let v = SemVer {
+            major: 1,
+            minor: 2,
+            patch: 3,
+        };
         assert_eq!(format!("{v}"), "1.2.3");
     }
 
     #[test]
     fn parse_version_req_exact() {
         let req = VersionReq::parse("1.2.3").unwrap();
-        assert_eq!(req, VersionReq::Exact(SemVer { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            req,
+            VersionReq::Exact(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_with_v_prefix() {
         let req = VersionReq::parse("v1.2.3").unwrap();
-        assert_eq!(req, VersionReq::Exact(SemVer { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            req,
+            VersionReq::Exact(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_caret() {
         let req = VersionReq::parse("^1.2.3").unwrap();
-        assert_eq!(req, VersionReq::Caret(SemVer { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            req,
+            VersionReq::Caret(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_tilde() {
         let req = VersionReq::parse("~1.2.3").unwrap();
-        assert_eq!(req, VersionReq::Tilde(SemVer { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            req,
+            VersionReq::Tilde(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_gte() {
         let req = VersionReq::parse(">=1.0.0").unwrap();
-        assert_eq!(req, VersionReq::Gte(SemVer { major: 1, minor: 0, patch: 0 }));
+        assert_eq!(
+            req,
+            VersionReq::Gte(SemVer {
+                major: 1,
+                minor: 0,
+                patch: 0
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_gt() {
         let req = VersionReq::parse(">1.0.0").unwrap();
-        assert_eq!(req, VersionReq::Gt(SemVer { major: 1, minor: 0, patch: 0 }));
+        assert_eq!(
+            req,
+            VersionReq::Gt(SemVer {
+                major: 1,
+                minor: 0,
+                patch: 0
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_lte() {
         let req = VersionReq::parse("<=2.0.0").unwrap();
-        assert_eq!(req, VersionReq::Lte(SemVer { major: 2, minor: 0, patch: 0 }));
+        assert_eq!(
+            req,
+            VersionReq::Lte(SemVer {
+                major: 2,
+                minor: 0,
+                patch: 0
+            })
+        );
     }
 
     #[test]
     fn parse_version_req_lt() {
         let req = VersionReq::parse("<2.0.0").unwrap();
-        assert_eq!(req, VersionReq::Lt(SemVer { major: 2, minor: 0, patch: 0 }));
+        assert_eq!(
+            req,
+            VersionReq::Lt(SemVer {
+                major: 2,
+                minor: 0,
+                patch: 0
+            })
+        );
     }
 
     // --- Matching tests ---
@@ -311,9 +385,18 @@ mod tests {
 
     #[test]
     fn version_req_display() {
-        assert_eq!(format!("{}", VersionReq::parse("^1.2.3").unwrap()), "^1.2.3");
-        assert_eq!(format!("{}", VersionReq::parse("~0.1.0").unwrap()), "~0.1.0");
-        assert_eq!(format!("{}", VersionReq::parse(">=1.0.0").unwrap()), ">=1.0.0");
+        assert_eq!(
+            format!("{}", VersionReq::parse("^1.2.3").unwrap()),
+            "^1.2.3"
+        );
+        assert_eq!(
+            format!("{}", VersionReq::parse("~0.1.0").unwrap()),
+            "~0.1.0"
+        );
+        assert_eq!(
+            format!("{}", VersionReq::parse(">=1.0.0").unwrap()),
+            ">=1.0.0"
+        );
         assert_eq!(format!("{}", VersionReq::parse("1.0.0").unwrap()), "1.0.0");
     }
 }
@@ -324,8 +407,11 @@ mod proptests {
     use proptest::prelude::*;
 
     fn arb_semver() -> impl Strategy<Value = SemVer> {
-        (0u64..1000, 0u64..1000, 0u64..1000)
-            .prop_map(|(major, minor, patch)| SemVer { major, minor, patch })
+        (0u64..1000, 0u64..1000, 0u64..1000).prop_map(|(major, minor, patch)| SemVer {
+            major,
+            minor,
+            patch,
+        })
     }
 
     proptest! {

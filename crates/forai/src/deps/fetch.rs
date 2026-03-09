@@ -40,9 +40,7 @@ pub fn list_available_versions_from_url(url: &str, label: &str) -> Result<Vec<Se
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "failed to list versions for '{label}': {stderr}"
-        ));
+        return Err(format!("failed to list versions for '{label}': {stderr}"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -88,12 +86,8 @@ pub fn fetch_from_url(
 
     // Ensure parent dir exists
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "failed to create cache directory {}: {e}",
-                parent.display()
-            )
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create cache directory {}: {e}", parent.display()))?;
     }
 
     // Shallow clone at the specific tag
@@ -113,9 +107,7 @@ pub fn fetch_from_url(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = std::fs::remove_dir_all(&dest);
-        return Err(format!(
-            "failed to fetch '{label}' {tag}: {stderr}"
-        ));
+        return Err(format!("failed to fetch '{label}' {tag}: {stderr}"));
     }
 
     // Get the commit SHA before removing .git

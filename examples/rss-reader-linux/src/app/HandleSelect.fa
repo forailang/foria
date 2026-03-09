@@ -1,0 +1,18 @@
+docs HandleSelect
+    Updates the selected article ID and status text.
+done
+
+func HandleSelect
+    take value as text
+    take selected_id as text
+    emit selected_id as text
+body
+    emit value to :selected_id
+done
+
+test HandleSelect
+    it "sets selected id"
+        result = HandleSelect("simon-3", "")
+        must result == "simon-3"
+    done
+done

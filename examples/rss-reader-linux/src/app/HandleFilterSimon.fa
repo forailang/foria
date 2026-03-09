@@ -1,0 +1,16 @@
+docs HandleFilterSimon
+    Sets filter to show simonwillison.net feeds.
+done
+
+func HandleFilterSimon
+    emit filter as text
+body
+    emit "simon" to :filter
+done
+
+test HandleFilterSimon
+    it "returns simon"
+        result = HandleFilterSimon()
+        must result == "simon"
+    done
+done

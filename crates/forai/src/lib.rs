@@ -41,6 +41,9 @@ pub mod ffi_manager;
 pub mod host_native;
 pub mod runtime;
 pub mod stdlib_docs;
+pub mod ui_gtk;
+#[cfg(feature = "linux-gtk")]
+pub mod ui_gtk_backend;
 pub mod ui_layout;
 pub mod ui_render;
 

@@ -19,8 +19,8 @@ mod loader;
 // Compiler-only modules (not in core)
 mod cli;
 mod config;
-mod deps;
 mod debugger;
+mod deps;
 mod doc;
 mod ffi_manager;
 mod formatter;
@@ -36,6 +36,9 @@ mod sema {
 }
 mod stdlib_docs;
 mod tester;
+mod ui_gtk;
+#[cfg(feature = "linux-gtk")]
+mod ui_gtk_backend;
 mod ui_layout;
 mod ui_render;
 mod typecheck {
@@ -177,10 +180,17 @@ fn create_native_bundle(wasm_path: &Path, out_path: &Path) -> Result<(), String>
 const BUNDLE_V3_MAGIC: &[u8; 16] = b"FORAI_BUNDLE_V3\0";
 const BUNDLE_V3_FLAGS_COMPRESSED: u8 = 0x01;
 
-fn create_native_v3_bundle(bundle_json: &[u8], out_path: &Path) -> Result<(), String> {
-    let runner_path = find_runner_binary()?;
-    let runner_bytes = fs::read(&runner_path)
-        .map_err(|e| format!("failed to read runner binary {}: {e}", runner_path.display()))?;
+fn create_native_v3_bundle_with_runner(
+    bundle_json: &[u8],
+    out_path: &Path,
+    runner_path: &Path,
+) -> Result<(), String> {
+    let runner_bytes = fs::read(&runner_path).map_err(|e| {
+        format!(
+            "failed to read runner binary {}: {e}",
+            runner_path.display()
+        )
+    })?;
 
     // Write runner binary to output
     fs::write(out_path, &runner_bytes)
@@ -258,6 +268,11 @@ fn create_native_v3_bundle(bundle_json: &[u8], out_path: &Path) -> Result<(), St
     Ok(())
 }
 
+fn create_native_v3_bundle(bundle_json: &[u8], out_path: &Path) -> Result<(), String> {
+    let runner_path = find_runner_binary()?;
+    create_native_v3_bundle_with_runner(bundle_json, out_path, &runner_path)
+}
+
 fn find_runner_binary() -> Result<PathBuf, String> {
     // 1. Environment variable
     if let Ok(path) = std::env::var("FORAI_RUNNER") {
@@ -278,14 +293,14 @@ fn find_runner_binary() -> Result<PathBuf, String> {
     }
 
     // 3. Workspace target directory (development builds)
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/release/forai-runner");
+    let dev_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/forai-runner");
     if dev_path.exists() {
         return Ok(dev_path);
     }
 
-    let dev_debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/debug/forai-runner");
+    let dev_debug =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/forai-runner");
     if dev_debug.exists() {
         return Ok(dev_debug);
     }
@@ -314,6 +329,31 @@ fn build_runner_binary() -> Result<PathBuf, String> {
         Ok(runner_path)
     } else {
         Err("forai-runner build succeeded but output file not found".to_string())
+    }
+}
+
+fn build_runner_binary_with_features(features: &[&str]) -> Result<PathBuf, String> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    eprintln!(
+        "  linux-ui building runner (features: {})...",
+        features.join(",")
+    );
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["build", "-p", "forai-runner", "--release", "--features"]);
+    cmd.arg(features.join(","));
+    let output = cmd
+        .current_dir(&workspace_root)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !output.status.success() {
+        return Err("cargo build failed for forai-runner with requested features".to_string());
+    }
+    let runner_path = workspace_root.join("target/release/forai-runner");
+    if runner_path.exists() {
+        Ok(runner_path)
+    } else {
+        Err("forai-runner feature build succeeded but output file not found".to_string())
     }
 }
 
@@ -377,7 +417,16 @@ fn format_unknown_op(file: &Path, op: &str) -> String {
 pub(crate) fn compile_source(
     source_path: &PathBuf,
     resolved_deps: &deps::ResolvedDeps,
-) -> Result<(Flow, Ir, TypeRegistry, FlowRegistry, ffi_manager::FfiRegistry), String> {
+) -> Result<
+    (
+        Flow,
+        Ir,
+        TypeRegistry,
+        FlowRegistry,
+        ffi_manager::FfiRegistry,
+    ),
+    String,
+> {
     if source_path.extension().and_then(|s| s.to_str()) != Some("fa") {
         return Err(format!(
             "Source must use the .fa extension, got `{}`",
@@ -422,7 +471,11 @@ pub(crate) fn compile_source(
     let flow_registry = loader::build_flow_registry(source_path, &module, resolved_deps)?;
 
     let mut ffi_registry = ffi_manager::build_ffi_registry(&module);
-    ffi_registry.merge(loader::collect_imported_ffi(source_path, &module, resolved_deps));
+    ffi_registry.merge(loader::collect_imported_ffi(
+        source_path,
+        &module,
+        resolved_deps,
+    ));
 
     let flow = parser::parse_runtime_func_from_module_v1(&module)
         .map_err(|e| format!("{}:{e}", source_path.display()))?;
@@ -574,7 +627,14 @@ fn build_wasm_runtime() -> Result<PathBuf, String> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     eprintln!("  wasm     building runtime...");
     let output = std::process::Command::new("cargo")
-        .args(["build", "-p", "forai-wasm", "--target", "wasm32-wasip1", "--release"])
+        .args([
+            "build",
+            "-p",
+            "forai-wasm",
+            "--target",
+            "wasm32-wasip1",
+            "--release",
+        ])
         .current_dir(&workspace_root)
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -619,14 +679,18 @@ fn find_browser_js() -> Result<PathBuf, String> {
     // 4. Auto-build the browser JS runtime
     match build_browser_js() {
         Ok(p) => Ok(p),
-        Err(e) => Err(format!("Browser JS runtime not found and auto-build failed: {e}")),
+        Err(e) => Err(format!(
+            "Browser JS runtime not found and auto-build failed: {e}"
+        )),
     }
 }
 
 fn build_browser_js() -> Result<PathBuf, String> {
     let browser_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser");
     if !browser_dir.join("package.json").exists() {
-        return Err("Browser JS runtime not found and browser/ directory not available".to_string());
+        return Err(
+            "Browser JS runtime not found and browser/ directory not available".to_string(),
+        );
     }
     eprintln!("  browser  building JS runtime...");
     let output = std::process::Command::new("npm")
@@ -646,7 +710,12 @@ fn build_browser_js() -> Result<PathBuf, String> {
     }
 }
 
-fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str, project_root: &Path) -> Result<(), String> {
+fn create_browser_target(
+    wasm_path: &Path,
+    browser_dir: &Path,
+    name: &str,
+    project_root: &Path,
+) -> Result<(), String> {
     // Create browser output directory
     fs::create_dir_all(browser_dir)
         .map_err(|e| format!("failed to create {}: {e}", browser_dir.display()))?;
@@ -724,6 +793,48 @@ fn create_browser_target(wasm_path: &Path, browser_dir: &Path, name: &str, proje
     Ok(())
 }
 
+fn create_linux_ui_target(
+    out_dir: &Path,
+    project_name: &str,
+    bundle_json: &[u8],
+) -> Result<(), String> {
+    let linux_dir = out_dir.join("linux-ui");
+    fs::create_dir_all(&linux_dir)
+        .map_err(|e| format!("failed to create {}: {e}", linux_dir.display()))?;
+
+    let runner_with_gtk = build_runner_binary_with_features(&["linux-gtk"])?;
+    let linux_bin = linux_dir.join(project_name);
+    create_native_v3_bundle_with_runner(bundle_json, &linux_bin, &runner_with_gtk)?;
+
+    let run_sh = linux_dir.join("run-linux-ui.sh");
+    let script = format!(
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nFORAI_UI_BACKEND=\"${{FORAI_UI_BACKEND:-gtk}}\" exec \"$DIR/{}\" \"$@\"\n",
+        project_name
+    );
+    fs::write(&run_sh, script).map_err(|e| format!("failed to write {}: {e}", run_sh.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&run_sh)
+            .map_err(|e| format!("failed to read {} metadata: {e}", run_sh.display()))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&run_sh, perms)
+            .map_err(|e| format!("failed to set executable bit on {}: {e}", run_sh.display()))?;
+    }
+
+    let readme = linux_dir.join("README.md");
+    let text = format!(
+        "# Linux UI Target\n\nGenerated Linux-native executable and launcher.\n\n## Run\n\n```bash\n{0}/{1}\n```\n\nOr use the wrapper script:\n\n```bash\n{0}/run-linux-ui.sh\n```\n\nThe wrapper sets `FORAI_UI_BACKEND=gtk` by default and executes the bundled binary.\n",
+        linux_dir.display(),
+        project_name
+    );
+    fs::write(&readme, text).map_err(|e| format!("failed to write {}: {e}", readme.display()))?;
+
+    Ok(())
+}
+
 fn generate_docs_for_source(source_path: &Path, project_root: Option<&Path>) {
     let discovered;
     let root = match project_root {
@@ -790,7 +901,11 @@ async fn run() -> Result<(), String> {
             let src_dir = source_path.parent().unwrap_or(&project_root);
             let (formatted, fmt_total) = formatter::fmt_path(src_dir, false)?;
             if !formatted.is_empty() {
-                eprintln!("  fmt      {} reformatted ({} files)", formatted.len(), fmt_total);
+                eprintln!(
+                    "  fmt      {} reformatted ({} files)",
+                    formatted.len(),
+                    fmt_total
+                );
             } else {
                 eprintln!("  fmt      ok ({} files)", fmt_total);
             }
@@ -807,13 +922,18 @@ async fn run() -> Result<(), String> {
             };
 
             // Step 1: Compile and generate docs
-            let (flow, ir, registry, flow_registry, ffi_registry) = compile_source(&source_path, &resolved_deps)?;
+            let (flow, ir, registry, flow_registry, ffi_registry) =
+                compile_source(&source_path, &resolved_deps)?;
             generate_docs_for_source(&source_path, Some(&project_root));
             eprintln!("  docs     ok ({} files)", fmt_total);
 
             // Reject WASM targets when FFI extern blocks are present
             if !ffi_registry.is_empty() {
-                let has_wasm_target = config.build.targets.iter().any(|t| t == "wasm" || t == "bundle" || t == "browser");
+                let has_wasm_target = config
+                    .build
+                    .targets
+                    .iter()
+                    .any(|t| t == "wasm" || t == "bundle" || t == "browser");
                 if has_wasm_target {
                     return Err(
                         "project uses `extern` FFI blocks which are incompatible with WASM targets.\n\
@@ -836,7 +956,10 @@ async fn run() -> Result<(), String> {
             let summary = tester::run_tests_at_path_build(&project_root).await?;
             if summary.total > 0 {
                 if summary.failed > 0 {
-                    eprintln!("  test     FAILED ({} passed, {} failed)", summary.passed, summary.failed);
+                    eprintln!(
+                        "  test     FAILED ({} passed, {} failed)",
+                        summary.passed, summary.failed
+                    );
                     for f in &summary.failures {
                         eprintln!("      FAIL  {}", f.name);
                         eprintln!("            > {}", f.error);
@@ -855,13 +978,18 @@ async fn run() -> Result<(), String> {
 
             // Step 4: Build targets
             let targets = &config.build.targets;
-            let needs_wasm = targets.iter().any(|t| t == "wasm" || t == "bundle" || t == "browser");
+            let needs_wasm = targets
+                .iter()
+                .any(|t| t == "wasm" || t == "bundle" || t == "browser");
             let mut target_failures: Vec<String> = Vec::new();
 
             let ffi_json = if ffi_registry.is_empty() {
                 None
             } else {
-                Some(serde_json::to_value(&ffi_registry).map_err(|e| format!("failed to serialize ffi_registry: {e}"))?)
+                Some(
+                    serde_json::to_value(&ffi_registry)
+                        .map_err(|e| format!("failed to serialize ffi_registry: {e}"))?,
+                )
             };
             let bundle = forai_core::loader::ProgramBundle {
                 entry_flow: flow,
@@ -927,7 +1055,12 @@ async fn run() -> Result<(), String> {
             if targets.contains(&"browser".to_string()) {
                 if wasm_ok {
                     let browser_dir = out_dir.join("browser");
-                    match create_browser_target(&wasm_path, &browser_dir, &config.name, &project_root) {
+                    match create_browser_target(
+                        &wasm_path,
+                        &browser_dir,
+                        &config.name,
+                        &project_root,
+                    ) {
                         Ok(()) => {
                             eprintln!("  browser  ok");
                         }
@@ -942,6 +1075,16 @@ async fn run() -> Result<(), String> {
                 }
             }
 
+            if targets.contains(&"linux-ui".to_string()) {
+                match create_linux_ui_target(&out_dir, &config.name, &bundle_json) {
+                    Ok(()) => eprintln!("  linux-ui ok"),
+                    Err(e) => {
+                        eprintln!("  linux-ui FAILED: {e}");
+                        target_failures.push("linux-ui".to_string());
+                    }
+                }
+            }
+
             let docs_dir = project_root.join("docs");
             if target_failures.is_empty() {
                 eprintln!("\n  build    ok");
@@ -951,7 +1094,11 @@ async fn run() -> Result<(), String> {
             } else {
                 eprintln!("\n  output   {}", out_dir.display());
                 eprintln!("  docs     {}", docs_dir.display());
-                Err(format!("build failed: {} target(s) failed ({})", target_failures.len(), target_failures.join(", ")))
+                Err(format!(
+                    "build failed: {} target(s) failed ({})",
+                    target_failures.len(),
+                    target_failures.join(", ")
+                ))
             }
         }
         CliCommand::Check { path } => {
@@ -1067,9 +1214,14 @@ async fn run() -> Result<(), String> {
                                     file_ok = false;
                                 }
                                 Ok(flow) => {
-                                    if let Err(e) =
-                                        typecheck::typecheck_func(&f.name, &f.takes, &flow.body, &f.emits, &f.fails, &type_registry)
-                                    {
+                                    if let Err(e) = typecheck::typecheck_func(
+                                        &f.name,
+                                        &f.takes,
+                                        &flow.body,
+                                        &f.emits,
+                                        &f.fails,
+                                        &type_registry,
+                                    ) {
                                         errors.push(format!("{}:{e}", file.display()));
                                         file_ok = false;
                                     }
@@ -1084,40 +1236,36 @@ async fn run() -> Result<(), String> {
                                 }
                             }
                         }
-                        TopDecl::Flow(f) => {
-                            match parser::parse_flow_graph_decl_v1(f) {
+                        TopDecl::Flow(f) => match parser::parse_flow_graph_decl_v1(f) {
+                            Err(e) => {
+                                errors.push(format!(
+                                    "{}: flow `{}` parse error: {e}",
+                                    file.display(),
+                                    f.name
+                                ));
+                                file_ok = false;
+                            }
+                            Ok(graph) => match parser::lower_flow_graph_to_flow(&graph) {
                                 Err(e) => {
                                     errors.push(format!(
-                                        "{}: flow `{}` parse error: {e}",
+                                        "{}: flow `{}` lower error: {e}",
                                         file.display(),
                                         f.name
                                     ));
                                     file_ok = false;
                                 }
-                                Ok(graph) => {
-                                    match parser::lower_flow_graph_to_flow(&graph) {
-                                        Err(e) => {
-                                            errors.push(format!(
-                                                "{}: flow `{}` lower error: {e}",
-                                                file.display(),
-                                                f.name
-                                            ));
-                                            file_ok = false;
-                                        }
-                                        Ok(flow) => {
-                                            if let Err(e) = ir::lower_to_ir(&flow) {
-                                                errors.push(format!(
-                                                    "{}: flow `{}` IR error: {e}",
-                                                    file.display(),
-                                                    f.name
-                                                ));
-                                                file_ok = false;
-                                            }
-                                        }
+                                Ok(flow) => {
+                                    if let Err(e) = ir::lower_to_ir(&flow) {
+                                        errors.push(format!(
+                                            "{}: flow `{}` IR error: {e}",
+                                            file.display(),
+                                            f.name
+                                        ));
+                                        file_ok = false;
                                     }
                                 }
-                            }
-                        }
+                            },
+                        },
                         _ => {}
                     }
                 }
@@ -1165,8 +1313,7 @@ async fn run() -> Result<(), String> {
                     query.as_deref().unwrap_or("")
                 ));
             }
-            let rendered =
-                serde_json::to_string_pretty(&filtered).map_err(|e| e.to_string())?;
+            let rendered = serde_json::to_string_pretty(&filtered).map_err(|e| e.to_string())?;
             println!("{rendered}");
             Ok(())
         }
@@ -1175,7 +1322,8 @@ async fn run() -> Result<(), String> {
             out,
             compact,
         } => {
-            let (_flow, ir, _registry, _flow_registry, _ffi_registry) = compile_source(&source, &resolve_deps_for_source(&source))?;
+            let (_flow, ir, _registry, _flow_registry, _ffi_registry) =
+                compile_source(&source, &resolve_deps_for_source(&source))?;
             generate_docs_for_source(&source, None);
             let rendered = if compact {
                 serde_json::to_string(&ir).map_err(|e| e.to_string())?
@@ -1208,7 +1356,8 @@ async fn run() -> Result<(), String> {
                     project_root.join(&config.main)
                 }
             };
-            let (flow, ir, registry, flow_registry, ffi_registry) = compile_source(&source, &resolve_deps_for_source(&source))?;
+            let (flow, ir, registry, flow_registry, ffi_registry) =
+                compile_source(&source, &resolve_deps_for_source(&source))?;
             generate_docs_for_source(&source, None);
 
             if debug {
@@ -1255,8 +1404,7 @@ async fn run() -> Result<(), String> {
                     runtime::load_inputs(&flow, input.as_ref())?
                 };
                 let codecs = CodecRegistry::default_registry();
-                let native_host = host_native::NativeHost::new()
-                    .with_ffi_registry(ffi_registry);
+                let native_host = host_native::NativeHost::new().with_ffi_registry(ffi_registry);
                 let host: std::rc::Rc<dyn host::Host> = std::rc::Rc::new(native_host);
                 let report = runtime::execute_flow(
                     &flow,
@@ -1612,7 +1760,8 @@ done
                 let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../examples/read-docs/src/app/router/Classify.fa");
                 let (flow, ir, registry, flow_registry, _ffi_registry) =
-                    compile_source(&path, &ResolvedDeps::empty()).unwrap_or_else(|e| panic!("compile failed: {e}"));
+                    compile_source(&path, &ResolvedDeps::empty())
+                        .unwrap_or_else(|e| panic!("compile failed: {e}"));
 
                 let mut inputs = std::collections::HashMap::new();
                 inputs.insert("cmd".to_string(), serde_json::json!("help"));

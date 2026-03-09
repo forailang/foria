@@ -1,0 +1,24 @@
+docs NormalizeText
+    Normalizes feed text snippets by removing HTML tags and collapsing whitespace.
+done
+
+func NormalizeText
+    take text as text
+    emit text as text
+body
+    t = regex.replace_all(text, "<[^>]+>", " ")
+    t = str.replace(t, "&amp;", "&")
+    t = str.replace(t, "&quot;", "\"")
+    t = str.replace(t, "&lt;", "<")
+    t = str.replace(t, "&gt;", ">")
+    t = str.trim(t)
+    emit t
+done
+
+test NormalizeText
+    it "strips html tags"
+        out = NormalizeText("<p>Hello <b>world</b></p>")
+        must str.contains(out, "Hello")
+        must str.contains(out, "world")
+    done
+done

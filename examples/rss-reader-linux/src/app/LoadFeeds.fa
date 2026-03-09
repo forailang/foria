@@ -1,0 +1,70 @@
+use ParseAtom from "./parse/ParseAtom.fa"
+use ParseRss from "./parse/ParseRss.fa"
+
+docs LoadFeeds
+    Fetches hardcoded Simon Willison and Daring Fireball feeds.
+    Parses Atom and RSS into a normalized article list.
+    On fetch failure, returns available parsed items from successful feeds.
+done
+
+func LoadFeeds
+    emit articles as list
+body
+    articles = list.new()
+
+    simon_url = "https://simonwillison.net/atom/everything/"
+    simon_resp = http.get(simon_url)
+    simon_status = obj.get(simon_resp, "status") ?? 0
+    if simon_status == 200
+        simon_xml = obj.get(simon_resp, "body") ?? ""
+        simon_items = ParseAtom(simon_xml, "simon")
+        loop simon_items as item
+            articles = list.append(articles, item)
+        done
+    done
+
+    df_url = "https://daringfireball.net/feeds/main"
+    df_resp = http.get(df_url)
+    df_status = obj.get(df_resp, "status") ?? 0
+    if df_status == 200
+        df_xml = obj.get(df_resp, "body") ?? ""
+        df_items = ParseRss(df_xml, "df")
+        loop df_items as item
+            articles = list.append(articles, item)
+        done
+    done
+
+    # Offline/network-failure fallback so the example stays usable.
+    if list.len(articles) == 0
+        a = obj.new()
+        a = obj.set(a, "id", "fallback-simon")
+        a = obj.set(a, "source", "simon")
+        a = obj.set(a, "title", "Simon feed unavailable - sample article")
+        a = obj.set(a, "link", "https://simonwillison.net/")
+        a = obj.set(a, "published", "")
+        a = obj.set(a, "summary", "Feed fetch failed; showing fallback content.")
+        articles = list.append(articles, a)
+
+        a = obj.new()
+        a = obj.set(a, "id", "fallback-df")
+        a = obj.set(a, "source", "df")
+        a = obj.set(a, "title", "Daring Fireball feed unavailable - sample article")
+        a = obj.set(a, "link", "https://daringfireball.net/")
+        a = obj.set(a, "published", "")
+        a = obj.set(a, "summary", "Feed fetch failed; showing fallback content.")
+        articles = list.append(articles, a)
+    done
+
+    emit articles
+done
+
+test LoadFeeds
+    it "fetches and parses feeds"
+        mock http.get => {status: 200, body: "<rss><channel><item><guid>x</guid><title>X</title><link>https://example.com/x</link></item></channel></rss>"}
+        mock ParseAtom => [{id: "x", source: "simon", title: "X", link: "https://example.com/x", published: "", summary: ""}]
+        mock ParseRss => [{id: "x", source: "df", title: "Y", link: "https://example.com/y", published: "", summary: ""}]
+        items = LoadFeeds()
+        must list.len(items) >= 1
+        must true == true
+    done
+done

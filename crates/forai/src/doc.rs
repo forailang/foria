@@ -574,7 +574,11 @@ pub fn generate_docs_folder(
         .filter_map(|d| {
             if let TopDecl::Uses(u) = d {
                 let resolved = project_root.join(&u.path);
-                if resolved.is_dir() { Some(resolved) } else { None }
+                if resolved.is_dir() {
+                    Some(resolved)
+                } else {
+                    None
+                }
             } else {
                 None
             }

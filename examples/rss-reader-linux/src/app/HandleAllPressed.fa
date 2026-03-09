@@ -1,0 +1,29 @@
+docs HandleAllPressed
+    Toggles the all_caps boolean state.
+    Returns the negated value.
+done
+
+func HandleAllPressed
+    take all_caps as bool
+    emit all_caps as bool
+body
+    _ = log.info("HandleAllPressed called with all_caps=#{to.text(all_caps)}")
+    if all_caps
+        _ = log.info("HandleAllPressed toggling to false")
+        emit false to :all_caps
+    else
+        _ = log.info("HandleAllPressed toggling to true")
+        emit true to :all_caps
+    done
+done
+
+test HandleAllPressed
+    it "toggles false to true"
+        result = HandleAllPressed(false)
+        must result == true
+    done
+    it "toggles true to false"
+        result = HandleAllPressed(true)
+        must result == false
+    done
+done

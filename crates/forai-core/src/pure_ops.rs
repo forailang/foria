@@ -24,7 +24,12 @@ pub fn read_i64_arg(args: &[Value], index: usize, op: &str) -> Result<i64, Strin
     };
     value
         .as_i64()
-        .or_else(|| value.as_f64().and_then(|f| { let r = f as i64; if r as f64 == f { Some(r) } else { None } }))
+        .or_else(|| {
+            value.as_f64().and_then(|f| {
+                let r = f as i64;
+                if r as f64 == f { Some(r) } else { None }
+            })
+        })
         .ok_or_else(|| format!("Op `{op}` expected integer at arg{index}"))
 }
 
@@ -162,6 +167,11 @@ fn build_ui_node(op: &str, args: &[Value]) -> Result<Value, String> {
                     props.insert("size".to_string(), v.clone());
                 }
             }
+            "html" => {
+                if let Some(v) = prop_args.first() {
+                    props.insert("html".to_string(), v.clone());
+                }
+            }
             "button" => {
                 if let Some(v) = prop_args.first() {
                     props.insert("label".to_string(), v.clone());
@@ -203,7 +213,9 @@ fn build_ui_node(op: &str, args: &[Value]) -> Result<Value, String> {
     node.insert("type".to_string(), json!(node_type));
     node.insert("props".to_string(), Value::Object(props));
     node.insert("children".to_string(), children);
-    let events = extracted_events.map(Value::Object).unwrap_or_else(|| json!({}));
+    let events = extracted_events
+        .map(Value::Object)
+        .unwrap_or_else(|| json!({}));
     node.insert("events".to_string(), events);
     Ok(Value::Object(node))
 }
@@ -595,7 +607,6 @@ pub fn known_ops() -> &'static [&'static str] {
         "list.range",
         "list.new",
         "list.append",
-
         "list.len",
         "list.contains",
         "list.slice",
@@ -2099,11 +2110,15 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
         "route.get" | "route.post" | "route.put" | "route.delete" | "route.patch" => {
             let pattern = read_string_arg(args, 0, op)?;
-            let req = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
+            let req = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
             let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
             let path = req.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let expected = op.strip_prefix("route.").unwrap().to_uppercase();
-            Ok(json!(method == expected && route_match_bool(&pattern, path)))
+            Ok(json!(
+                method == expected && route_match_bool(&pattern, path)
+            ))
         }
 
         // --- HTML ops ---
@@ -2156,8 +2171,8 @@ pub fn execute_pure_op(op: &str, args: &[Value], codecs: &CodecRegistry) -> Resu
         }
 
         // ── UI ops ──
-        "ui.screen" | "ui.vstack" | "ui.hstack" | "ui.zstack" | "ui.text" | "ui.button"
-        | "ui.input" | "ui.toggle" | "ui.image" | "ui.shape" | "ui.list" => {
+        "ui.screen" | "ui.vstack" | "ui.hstack" | "ui.zstack" | "ui.text" | "ui.html"
+        | "ui.button" | "ui.input" | "ui.toggle" | "ui.image" | "ui.shape" | "ui.list" => {
             build_ui_node(op, args)
         }
 

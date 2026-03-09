@@ -128,18 +128,17 @@ fn builtin_types() -> HashMap<String, TypeDef> {
         "ws_conn".to_string(),
         TypeDef::Primitive(PrimitiveType::WsConn),
     );
-    types.insert(
-        "ptr".to_string(),
-        TypeDef::Primitive(PrimitiveType::Ptr),
-    );
+    types.insert("ptr".to_string(), TypeDef::Primitive(PrimitiveType::Ptr));
 
     // Helper closures for building struct fields
-    let req = || vec![ResolvedConstraint {
-        key: "required".to_string(),
-        bool_val: Some(true),
-        number_val: None,
-        regex_val: None,
-    }];
+    let req = || {
+        vec![ResolvedConstraint {
+            key: "required".to_string(),
+            bool_val: Some(true),
+            number_val: None,
+            regex_val: None,
+        }]
+    };
     let field = |name: &str, ty: &str, required: bool| ResolvedField {
         name: name.to_string(),
         type_ref: ty.to_string(),
@@ -190,10 +189,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
         "TimeRange".to_string(),
         TypeDef::Struct {
             open: true,
-            fields: vec![
-                field("start", "Date", true),
-                field("end", "Date", true),
-            ],
+            fields: vec![field("start", "Date", true), field("end", "Date", true)],
         },
     );
 
@@ -231,10 +227,7 @@ fn builtin_types() -> HashMap<String, TypeDef> {
         "WebSocketMessage".to_string(),
         TypeDef::Struct {
             open: true,
-            fields: vec![
-                field("type", "text", true),
-                field("data", "text", true),
-            ],
+            fields: vec![field("type", "text", true), field("data", "text", true)],
         },
     );
 
@@ -362,7 +355,13 @@ impl TypeRegistry {
                                         .collect(),
                                 })
                                 .collect();
-                            types.insert(td.name.clone(), TypeDef::Struct { open: td.open, fields: resolved });
+                            types.insert(
+                                td.name.clone(),
+                                TypeDef::Struct {
+                                    open: td.open,
+                                    fields: resolved,
+                                },
+                            );
                         }
                     }
                 }

@@ -220,7 +220,9 @@ pub fn validate_dependencies(config: &ProjectConfig) -> Result<(), String> {
     for (name, value) in &config.dependencies {
         let source = DepSource::parse(name, value)?;
         // GitHub shorthand requires @user/repo format
-        if matches!(source, DepSource::GitHub { .. }) && (!name.starts_with('@') || name.matches('/').count() != 1) {
+        if matches!(source, DepSource::GitHub { .. })
+            && (!name.starts_with('@') || name.matches('/').count() != 1)
+        {
             return Err(format!(
                 "invalid dependency '{name}': GitHub packages must use '@user/repo' format"
             ));
@@ -355,14 +357,16 @@ mod tests {
 
     #[test]
     fn validate_dependencies_github() {
-        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"@user/repo": "^1.0.0"}}"#;
+        let json =
+            r#"{"name": "test", "main": "main.fa", "dependencies": {"@user/repo": "^1.0.0"}}"#;
         let config: ProjectConfig = serde_json::from_str(json).unwrap();
         assert!(validate_dependencies(&config).is_ok());
     }
 
     #[test]
     fn validate_dependencies_file() {
-        let json = r#"{"name": "test", "main": "main.fa", "dependencies": {"mylib": "file:../mylib/"}}"#;
+        let json =
+            r#"{"name": "test", "main": "main.fa", "dependencies": {"mylib": "file:../mylib/"}}"#;
         let config: ProjectConfig = serde_json::from_str(json).unwrap();
         assert!(validate_dependencies(&config).is_ok());
     }

@@ -1,0 +1,17 @@
+docs HandleFilterAll
+    Sets filter to show all feeds.
+done
+
+func HandleFilterAll
+    take articles as list
+    emit filter as text
+body
+    emit "all" to :filter
+done
+
+test HandleFilterAll
+    it "returns all"
+        result = HandleFilterAll([])
+        must result == "all"
+    done
+done

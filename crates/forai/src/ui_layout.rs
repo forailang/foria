@@ -60,14 +60,8 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
         }
 
         "vstack" => {
-            let spacing = props
-                .get("spacing")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u16;
-            let align = props
-                .get("align")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let spacing = props.get("spacing").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            let align = props.get("align").and_then(|v| v.as_str()).unwrap_or("");
             let n = children.len() as u16;
             if n == 0 {
                 return vec![];
@@ -139,14 +133,8 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
         }
 
         "hstack" => {
-            let spacing = props
-                .get("spacing")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u16;
-            let align = props
-                .get("align")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let spacing = props.get("spacing").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            let align = props.get("align").and_then(|v| v.as_str()).unwrap_or("");
             let n = children.len() as u16;
             if n == 0 {
                 return vec![];
@@ -169,11 +157,7 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
                     };
                     let child_nodes = layout_node(child, child_rect);
                     // Measure the max width actually used by child nodes
-                    let used_w = child_nodes
-                        .iter()
-                        .map(|n| n.rect.width)
-                        .max()
-                        .unwrap_or(1);
+                    let used_w = child_nodes.iter().map(|n| n.rect.width).max().unwrap_or(1);
                     result.extend(child_nodes);
                     x = x.saturating_add(used_w).saturating_add(spacing);
                 }
@@ -226,10 +210,7 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
         }
 
         "text" => {
-            let value = props
-                .get("value")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let value = props.get("value").and_then(|v| v.as_str()).unwrap_or("");
             let width = available.width as usize;
             let height = if width == 0 {
                 1
@@ -250,11 +231,34 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
             }]
         }
 
+        "html" => {
+            let raw = props.get("html").and_then(|v| v.as_str()).unwrap_or("");
+            // Strip HTML tags for terminal layout sizing
+            let plain = regex::Regex::new(r"<[^>]+>")
+                .unwrap()
+                .replace_all(raw, "")
+                .to_string();
+            let width = available.width as usize;
+            let height = if width == 0 {
+                1
+            } else {
+                std::cmp::max(1, (plain.len() + width - 1) / width) as u16
+            };
+            vec![PositionedNode {
+                rect: Rect {
+                    x: available.x,
+                    y: available.y,
+                    width: available.width,
+                    height,
+                },
+                node_type: "html".into(),
+                props: props.clone(),
+                text: Some(plain),
+            }]
+        }
+
         "button" => {
-            let label = props
-                .get("label")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let label = props.get("label").and_then(|v| v.as_str()).unwrap_or("");
             let width = (label.len() as u16).saturating_add(4);
             vec![PositionedNode {
                 rect: Rect {
@@ -289,10 +293,7 @@ pub fn layout_node(node: &Value, available: Rect) -> Vec<PositionedNode> {
         }
 
         "toggle" => {
-            let on = props
-                .get("on")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let on = props.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
             let text = if on { "[x]" } else { "[ ]" };
             vec![PositionedNode {
                 rect: Rect {

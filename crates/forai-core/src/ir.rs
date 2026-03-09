@@ -149,7 +149,11 @@ fn pattern_to_text(pattern: &Pattern) -> String {
     match pattern {
         Pattern::Ident(v) => v.clone(),
         Pattern::Lit(v) => v.to_string(),
-        Pattern::Or(alts) => alts.iter().map(pattern_to_text).collect::<Vec<_>>().join(" | "),
+        Pattern::Or(alts) => alts
+            .iter()
+            .map(pattern_to_text)
+            .collect::<Vec<_>>()
+            .join(" | "),
         Pattern::Range { lo, hi } => format!("{lo}..{hi}"),
         Pattern::Type(t) => format!(":{t}"),
     }
@@ -178,7 +182,11 @@ fn collect_expr_vars(expr: &Expr, out: &mut Vec<String>) {
                 }
             }
         }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             collect_expr_vars(cond, out);
             collect_expr_vars(then_expr, out);
             collect_expr_vars(else_expr, out);
@@ -398,7 +406,8 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                 Statement::Case(case_block) => {
                     let expr_text = expr_to_text(&case_block.expr);
                     for arm in &case_block.arms {
-                        let mut arm_cond = format!("case({expr_text} == {})", pattern_to_text(&arm.pattern));
+                        let mut arm_cond =
+                            format!("case({expr_text} == {})", pattern_to_text(&arm.pattern));
                         if let Some(guard) = &arm.guard {
                             arm_cond = format!("{arm_cond} && {}", expr_to_text(guard));
                         }
@@ -571,7 +580,10 @@ pub fn lower_to_ir(flow: &Flow) -> Result<Ir, String> {
                 Statement::On(on_block) => {
                     let cond = combine_cond(
                         condition,
-                        &format!("on(:{} from {} as {})", on_block.event_tag, on_block.source_op, on_block.bind),
+                        &format!(
+                            "on(:{} from {} as {})",
+                            on_block.event_tag, on_block.source_op, on_block.bind
+                        ),
                     );
                     let mut on_scope = local_scope.clone();
                     on_scope.insert(

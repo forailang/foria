@@ -81,7 +81,11 @@ fn top_level_keyword_completions(prefix: &str) -> Vec<CompletionItem> {
         ("type", "type declaration", "Struct or scalar type"),
         ("data", "data declaration", "Data type"),
         ("enum", "enum declaration", "Enum type"),
-        ("use", "module import", "Import a module: `use Name from \"./path\"`"),
+        (
+            "use",
+            "module import",
+            "Import a module: `use Name from \"./path\"`",
+        ),
     ];
 
     keywords

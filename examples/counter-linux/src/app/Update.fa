@@ -1,0 +1,35 @@
+docs Update
+    Pure state reducer. Takes the current count and an action type.
+    The flow wiring routes events to the correct handler by port name,
+    so Update only needs to apply the action.
+done
+
+func Update
+    take count as long
+    take type as text
+    emit count as long
+body
+    case type
+        when "inc"
+            emit count + 1
+        when "dec"
+            emit count - 1
+        else
+            emit count
+    done
+done
+
+test Update
+    it "increments"
+        result = Update(0, "inc")
+        must result == 1
+    done
+    it "decrements"
+        result = Update(5, "dec")
+        must result == 4
+    done
+    it "passes through unknown type"
+        result = Update(3, "other")
+        must result == 3
+    done
+done

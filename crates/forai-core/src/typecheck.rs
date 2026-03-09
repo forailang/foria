@@ -56,19 +56,15 @@ fn take_type_to_op_type(type_name: &str, registry: &TypeRegistry) -> InferredTyp
     // Look up in registry for user-defined and built-in struct types
     match registry.get(type_name) {
         Some(TypeDef::Struct { .. }) => InferredType::Known(OpType::Struct(type_name.to_string())),
-        Some(TypeDef::Scalar { base, .. }) => {
-            match primitive_to_op_type(base) {
-                Some(op) => InferredType::Known(op),
-                None => InferredType::Unknown,
-            }
-        }
+        Some(TypeDef::Scalar { base, .. }) => match primitive_to_op_type(base) {
+            Some(op) => InferredType::Known(op),
+            None => InferredType::Unknown,
+        },
         Some(TypeDef::Enum { .. }) => InferredType::Known(OpType::Text),
-        Some(TypeDef::Primitive(prim)) => {
-            match primitive_to_op_type(prim) {
-                Some(op) => InferredType::Known(op),
-                None => InferredType::Unknown,
-            }
-        }
+        Some(TypeDef::Primitive(prim)) => match primitive_to_op_type(prim) {
+            Some(op) => InferredType::Known(op),
+            None => InferredType::Unknown,
+        },
         None => InferredType::Unknown,
     }
 }
@@ -112,11 +108,21 @@ fn resolve_annotation(
     }
 }
 
-fn infer_expr_type(expr: &Expr, var_types: &HashMap<String, InferredType>, registry: &TypeRegistry) -> InferredType {
+fn infer_expr_type(
+    expr: &Expr,
+    var_types: &HashMap<String, InferredType>,
+    registry: &TypeRegistry,
+) -> InferredType {
     infer_expr_type_with_flows(expr, var_types, &HashMap::new(), registry, None)
 }
 
-fn infer_expr_type_with_flows(expr: &Expr, var_types: &HashMap<String, InferredType>, list_elem_types: &HashMap<String, InferredType>, registry: &TypeRegistry, flow_registry: Option<&FlowRegistry>) -> InferredType {
+fn infer_expr_type_with_flows(
+    expr: &Expr,
+    var_types: &HashMap<String, InferredType>,
+    list_elem_types: &HashMap<String, InferredType>,
+    registry: &TypeRegistry,
+    flow_registry: Option<&FlowRegistry>,
+) -> InferredType {
     match expr {
         Expr::Var(name) => {
             if let Some(t) = var_types.get(name) {
@@ -126,7 +132,8 @@ fn infer_expr_type_with_flows(expr: &Expr, var_types: &HashMap<String, InferredT
             if let Some(dot_pos) = name.find('.') {
                 let base = &name[..dot_pos];
                 let field = &name[dot_pos + 1..];
-                if let Some(InferredType::Known(OpType::Struct(struct_name))) = var_types.get(base) {
+                if let Some(InferredType::Known(OpType::Struct(struct_name))) = var_types.get(base)
+                {
                     return infer_struct_field_type(struct_name, field, registry);
                 }
             }
@@ -153,29 +160,55 @@ fn infer_expr_type_with_flows(expr: &Expr, var_types: &HashMap<String, InferredT
             }
         }
         Expr::BinOp { op, lhs, rhs } => infer_binop_type(op, lhs, rhs, var_types, registry),
-        Expr::UnaryOp { op, expr: inner } => {
-            match op {
-                crate::ast::UnaryOp::Not => InferredType::Known(OpType::Bool),
-                crate::ast::UnaryOp::Neg => {
-                    let inner_type = infer_expr_type_with_flows(inner, var_types, list_elem_types, registry, flow_registry);
-                    match inner_type {
-                        InferredType::Known(OpType::Long) => InferredType::Known(OpType::Long),
-                        InferredType::Known(OpType::Real) => InferredType::Known(OpType::Real),
-                        _ => InferredType::Unknown,
-                    }
+        Expr::UnaryOp { op, expr: inner } => match op {
+            crate::ast::UnaryOp::Not => InferredType::Known(OpType::Bool),
+            crate::ast::UnaryOp::Neg => {
+                let inner_type = infer_expr_type_with_flows(
+                    inner,
+                    var_types,
+                    list_elem_types,
+                    registry,
+                    flow_registry,
+                );
+                match inner_type {
+                    InferredType::Known(OpType::Long) => InferredType::Known(OpType::Long),
+                    InferredType::Known(OpType::Real) => InferredType::Known(OpType::Real),
+                    _ => InferredType::Unknown,
                 }
             }
-        }
-        Expr::Ternary { then_expr, else_expr, .. } => {
-            let then_type = infer_expr_type_with_flows(then_expr, var_types, list_elem_types, registry, flow_registry);
+        },
+        Expr::Ternary {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_type = infer_expr_type_with_flows(
+                then_expr,
+                var_types,
+                list_elem_types,
+                registry,
+                flow_registry,
+            );
             if matches!(then_type, InferredType::Known(_)) {
                 then_type
             } else {
-                infer_expr_type_with_flows(else_expr, var_types, list_elem_types, registry, flow_registry)
+                infer_expr_type_with_flows(
+                    else_expr,
+                    var_types,
+                    list_elem_types,
+                    registry,
+                    flow_registry,
+                )
             }
         }
         Expr::Index { expr: base, index } => {
-            let base_type = infer_expr_type_with_flows(base, var_types, list_elem_types, registry, flow_registry);
+            let base_type = infer_expr_type_with_flows(
+                base,
+                var_types,
+                list_elem_types,
+                registry,
+                flow_registry,
+            );
             // Field access on a struct with a string key — look up the field type
             if let InferredType::Known(OpType::Struct(ref struct_name)) = base_type {
                 if let Expr::Lit(v) = index.as_ref() {
@@ -198,7 +231,13 @@ fn infer_expr_type_with_flows(expr: &Expr, var_types: &HashMap<String, InferredT
         Expr::DictLit(_) => InferredType::Known(OpType::Dict),
         Expr::Interp(_) => InferredType::Known(OpType::Text),
         Expr::Coalesce { lhs, rhs } => {
-            let lhs_type = infer_expr_type_with_flows(lhs, var_types, list_elem_types, registry, flow_registry);
+            let lhs_type = infer_expr_type_with_flows(
+                lhs,
+                var_types,
+                list_elem_types,
+                registry,
+                flow_registry,
+            );
             if matches!(lhs_type, InferredType::Known(_)) {
                 lhs_type
             } else {
@@ -275,7 +314,11 @@ fn infer_callee_return_type(
     InferredType::Unknown
 }
 
-fn infer_struct_field_type(struct_name: &str, field_name: &str, registry: &TypeRegistry) -> InferredType {
+fn infer_struct_field_type(
+    struct_name: &str,
+    field_name: &str,
+    registry: &TypeRegistry,
+) -> InferredType {
     // Check built-in struct field types first
     match (struct_name, field_name) {
         ("ProcessOutput", "stdout" | "stderr") => return InferredType::Known(OpType::Text),
@@ -289,11 +332,15 @@ fn infer_struct_field_type(struct_name: &str, field_name: &str, registry: &TypeR
         ("HttpResponse", "ok") => return InferredType::Known(OpType::Bool),
         ("Date", "year" | "month" | "day") => return InferredType::Known(OpType::Long),
         ("Stamp", "ns") => return InferredType::Known(OpType::Long),
-        ("TimeRange", "start" | "end") => return InferredType::Known(OpType::Struct("Stamp".to_string())),
+        ("TimeRange", "start" | "end") => {
+            return InferredType::Known(OpType::Struct("Stamp".to_string()));
+        }
         ("WebSocketMessage", "text") => return InferredType::Known(OpType::Text),
         ("WebSocketMessage", "binary") => return InferredType::Known(OpType::List),
         ("ErrorObject", "code" | "message") => return InferredType::Known(OpType::Text),
-        ("URLParts", "scheme" | "host" | "path" | "query" | "fragment") => return InferredType::Known(OpType::Text),
+        ("URLParts", "scheme" | "host" | "path" | "query" | "fragment") => {
+            return InferredType::Known(OpType::Text);
+        }
         ("URLParts", "port") => return InferredType::Known(OpType::Long),
         _ => {}
     }
@@ -468,28 +515,66 @@ fn check_statements(
                     infer_callee_return_type(&n.op, flow_registry, registry)
                 };
                 let final_type = resolve_annotation(
-                    func_name, &n.bind, &n.type_annotation, &inferred, registry, errors,
+                    func_name,
+                    &n.bind,
+                    &n.type_annotation,
+                    &inferred,
+                    registry,
+                    errors,
                 );
                 // Track list element types for ops that return lists
-                infer_list_elem_type_from_node(&n.op, &n.args, &n.bind, var_types, list_elem_types, registry);
+                infer_list_elem_type_from_node(
+                    &n.op,
+                    &n.args,
+                    &n.bind,
+                    var_types,
+                    list_elem_types,
+                    registry,
+                );
                 var_types.insert(n.bind.clone(), final_type);
             }
             Statement::ExprAssign(ea) => {
                 // Check any op calls inside the expression
                 check_expr_calls(func_name, &ea.expr, var_types, registry, errors);
-                let inferred = infer_expr_type_with_flows(&ea.expr, var_types, list_elem_types, registry, flow_registry);
+                let inferred = infer_expr_type_with_flows(
+                    &ea.expr,
+                    var_types,
+                    list_elem_types,
+                    registry,
+                    flow_registry,
+                );
                 let final_type = resolve_annotation(
-                    func_name, &ea.bind, &ea.type_annotation, &inferred, registry, errors,
+                    func_name,
+                    &ea.bind,
+                    &ea.type_annotation,
+                    &inferred,
+                    registry,
+                    errors,
                 );
                 // Track list element types from expressions
-                infer_list_elem_type_from_expr(&ea.expr, &ea.bind, var_types, list_elem_types, registry);
+                infer_list_elem_type_from_expr(
+                    &ea.expr,
+                    &ea.bind,
+                    var_types,
+                    list_elem_types,
+                    registry,
+                );
                 var_types.insert(ea.bind.clone(), final_type);
             }
             Statement::Case(c) => {
                 for arm in &c.arms {
                     let mut arm_scope = var_types.clone();
                     let mut arm_list_elems = list_elem_types.clone();
-                    check_statements(func_name, &arm.body, &mut arm_scope, &mut arm_list_elems, emit_port_types, registry, flow_registry, errors);
+                    check_statements(
+                        func_name,
+                        &arm.body,
+                        &mut arm_scope,
+                        &mut arm_list_elems,
+                        emit_port_types,
+                        registry,
+                        flow_registry,
+                        errors,
+                    );
                     // Merge back assignments that exist in outer scope
                     for (k, v) in &arm_scope {
                         if var_types.contains_key(k) {
@@ -505,7 +590,16 @@ fn check_statements(
                 if !c.else_body.is_empty() {
                     let mut else_scope = var_types.clone();
                     let mut else_list_elems = list_elem_types.clone();
-                    check_statements(func_name, &c.else_body, &mut else_scope, &mut else_list_elems, emit_port_types, registry, flow_registry, errors);
+                    check_statements(
+                        func_name,
+                        &c.else_body,
+                        &mut else_scope,
+                        &mut else_list_elems,
+                        emit_port_types,
+                        registry,
+                        flow_registry,
+                        errors,
+                    );
                     for (k, v) in &else_scope {
                         if var_types.contains_key(k) {
                             var_types.insert(k.clone(), v.clone());
@@ -522,7 +616,10 @@ fn check_statements(
                 let mut loop_scope = var_types.clone();
                 // Infer loop item type from collection's element type
                 let item_type = match &l.collection {
-                    Expr::Var(name) => list_elem_types.get(name).cloned().unwrap_or(InferredType::Unknown),
+                    Expr::Var(name) => list_elem_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(InferredType::Unknown),
                     _ => InferredType::Unknown,
                 };
                 loop_scope.insert(l.item.clone(), item_type);
@@ -530,7 +627,16 @@ fn check_statements(
                     loop_scope.insert(idx.clone(), InferredType::Known(OpType::Long));
                 }
                 let mut loop_list_elems = list_elem_types.clone();
-                check_statements(func_name, &l.body, &mut loop_scope, &mut loop_list_elems, emit_port_types, registry, flow_registry, errors);
+                check_statements(
+                    func_name,
+                    &l.body,
+                    &mut loop_scope,
+                    &mut loop_list_elems,
+                    emit_port_types,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
                 // Merge back
                 for (k, v) in &loop_scope {
                     if var_types.contains_key(k) {
@@ -539,12 +645,30 @@ fn check_statements(
                 }
             }
             Statement::Sync(s) => {
-                check_statements(func_name, &s.body, var_types, list_elem_types, emit_port_types, registry, flow_registry, errors);
+                check_statements(
+                    func_name,
+                    &s.body,
+                    var_types,
+                    list_elem_types,
+                    emit_port_types,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
             }
             Statement::BareLoop(b) => {
                 let mut loop_scope = var_types.clone();
                 let mut loop_list_elems = list_elem_types.clone();
-                check_statements(func_name, &b.body, &mut loop_scope, &mut loop_list_elems, emit_port_types, registry, flow_registry, errors);
+                check_statements(
+                    func_name,
+                    &b.body,
+                    &mut loop_scope,
+                    &mut loop_list_elems,
+                    emit_port_types,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
                 for (k, v) in &loop_scope {
                     if var_types.contains_key(k) {
                         var_types.insert(k.clone(), v.clone());
@@ -552,7 +676,14 @@ fn check_statements(
                 }
             }
             Statement::SourceLoop(sl) => {
-                check_node_args(func_name, &sl.source_op, &sl.source_args, var_types, registry, errors);
+                check_node_args(
+                    func_name,
+                    &sl.source_op,
+                    &sl.source_args,
+                    var_types,
+                    registry,
+                    errors,
+                );
                 if let Some(sig) = op_types::op_signature(&sl.source_op) {
                     var_types.insert(sl.bind.clone(), InferredType::Known(sig.returns));
                 } else {
@@ -560,10 +691,26 @@ fn check_statements(
                 }
                 let mut loop_scope = var_types.clone();
                 let mut loop_list_elems = list_elem_types.clone();
-                check_statements(func_name, &sl.body, &mut loop_scope, &mut loop_list_elems, emit_port_types, registry, flow_registry, errors);
+                check_statements(
+                    func_name,
+                    &sl.body,
+                    &mut loop_scope,
+                    &mut loop_list_elems,
+                    emit_port_types,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
             }
             Statement::On(on_block) => {
-                check_node_args(func_name, &on_block.source_op, &on_block.source_args, var_types, registry, errors);
+                check_node_args(
+                    func_name,
+                    &on_block.source_op,
+                    &on_block.source_args,
+                    var_types,
+                    registry,
+                    errors,
+                );
                 if let Some(sig) = op_types::op_signature(&on_block.source_op) {
                     var_types.insert(on_block.bind.clone(), InferredType::Known(sig.returns));
                 } else {
@@ -571,13 +718,28 @@ fn check_statements(
                 }
                 let mut on_scope = var_types.clone();
                 let mut on_list_elems = list_elem_types.clone();
-                check_statements(func_name, &on_block.body, &mut on_scope, &mut on_list_elems, emit_port_types, registry, flow_registry, errors);
+                check_statements(
+                    func_name,
+                    &on_block.body,
+                    &mut on_scope,
+                    &mut on_list_elems,
+                    emit_port_types,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
             }
             Statement::Emit(emit) => {
                 check_expr_calls(func_name, &emit.value_expr, var_types, registry, errors);
                 // Check emit value type against declared port type
                 if let Some(port_type) = emit_port_types.get(&emit.output) {
-                    let value_type = infer_expr_type_with_flows(&emit.value_expr, var_types, list_elem_types, registry, flow_registry);
+                    let value_type = infer_expr_type_with_flows(
+                        &emit.value_expr,
+                        var_types,
+                        list_elem_types,
+                        registry,
+                        flow_registry,
+                    );
                     match (port_type, &value_type) {
                         (InferredType::Known(port_op), InferredType::Known(val_op)) => {
                             if !op_types::types_compatible(port_op, val_op) {
@@ -685,14 +847,24 @@ fn infer_list_elem_type_from_expr(
         }
         Expr::Call { func, args, .. } => {
             // Delegate to the same logic as Node assignments
-            let node_args: Vec<Arg> = args.iter().map(|e| {
-                match e {
+            let node_args: Vec<Arg> = args
+                .iter()
+                .map(|e| match e {
                     Expr::Var(v) => Arg::Var { var: v.clone() },
                     Expr::Lit(l) => Arg::Lit { lit: l.clone() },
-                    _ => Arg::Lit { lit: serde_json::Value::Null },
-                }
-            }).collect();
-            infer_list_elem_type_from_node(func, &node_args, bind, var_types, list_elem_types, registry);
+                    _ => Arg::Lit {
+                        lit: serde_json::Value::Null,
+                    },
+                })
+                .collect();
+            infer_list_elem_type_from_node(
+                func,
+                &node_args,
+                bind,
+                var_types,
+                list_elem_types,
+                registry,
+            );
         }
         _ => {}
     }
@@ -781,23 +953,35 @@ pub fn typecheck_func_with_flows(
 
     // Seed from take declarations
     for take in takes {
-        var_types.insert(take.name.clone(), take_type_to_op_type(&take.type_name, registry));
+        var_types.insert(
+            take.name.clone(),
+            take_type_to_op_type(&take.type_name, registry),
+        );
     }
 
     // Build emit/fail port type map for checking emit statements
     let mut emit_port_types: HashMap<String, InferredType> = HashMap::new();
     for port in emits {
-        emit_port_types.insert(port.name.clone(), take_type_to_op_type(&port.type_name, registry));
+        emit_port_types.insert(
+            port.name.clone(),
+            take_type_to_op_type(&port.type_name, registry),
+        );
     }
     for port in fails {
-        emit_port_types.insert(port.name.clone(), take_type_to_op_type(&port.type_name, registry));
+        emit_port_types.insert(
+            port.name.clone(),
+            take_type_to_op_type(&port.type_name, registry),
+        );
     }
 
     let mut errors = Vec::new();
 
     // Validate all port types resolve to Known
     for take in takes {
-        if matches!(take_type_to_op_type(&take.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&take.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "func '{}': take '{}' has unknown type '{}'",
                 func_name, take.name, take.type_name
@@ -805,7 +989,10 @@ pub fn typecheck_func_with_flows(
         }
     }
     for port in emits {
-        if matches!(take_type_to_op_type(&port.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&port.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "func '{}': emit '{}' has unknown type '{}'",
                 func_name, port.name, port.type_name
@@ -813,7 +1000,10 @@ pub fn typecheck_func_with_flows(
         }
     }
     for port in fails {
-        if matches!(take_type_to_op_type(&port.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&port.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "func '{}': fail '{}' has unknown type '{}'",
                 func_name, port.name, port.type_name
@@ -822,7 +1012,16 @@ pub fn typecheck_func_with_flows(
     }
 
     let mut list_elem_types: HashMap<String, InferredType> = HashMap::new();
-    check_statements(func_name, body, &mut var_types, &mut list_elem_types, &emit_port_types, registry, flow_registry, &mut errors);
+    check_statements(
+        func_name,
+        body,
+        &mut var_types,
+        &mut list_elem_types,
+        &emit_port_types,
+        registry,
+        flow_registry,
+        &mut errors,
+    );
 
     if errors.is_empty() {
         Ok(())
@@ -844,14 +1043,20 @@ pub fn typecheck_flow(
 
     // Seed scope from flow's own input ports
     for port in &flow_graph.inputs {
-        scope.insert(port.name.clone(), take_type_to_op_type(&port.type_name, registry));
+        scope.insert(
+            port.name.clone(),
+            take_type_to_op_type(&port.type_name, registry),
+        );
     }
 
     let mut errors = Vec::new();
 
     // Validate all flow port types resolve to Known
     for port in &flow_graph.inputs {
-        if matches!(take_type_to_op_type(&port.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&port.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "flow '{}': input '{}' has unknown type '{}'",
                 flow_name, port.name, port.type_name
@@ -859,7 +1064,10 @@ pub fn typecheck_flow(
         }
     }
     for port in &flow_graph.emit_ports {
-        if matches!(take_type_to_op_type(&port.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&port.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "flow '{}': emit '{}' has unknown type '{}'",
                 flow_name, port.name, port.type_name
@@ -867,7 +1075,10 @@ pub fn typecheck_flow(
         }
     }
     for port in &flow_graph.fail_ports {
-        if matches!(take_type_to_op_type(&port.type_name, registry), InferredType::Unknown) {
+        if matches!(
+            take_type_to_op_type(&port.type_name, registry),
+            InferredType::Unknown
+        ) {
             errors.push(format!(
                 "flow '{}': fail '{}' has unknown type '{}'",
                 flow_name, port.name, port.type_name
@@ -875,7 +1086,14 @@ pub fn typecheck_flow(
         }
     }
 
-    check_flow_statements(flow_name, &flow_graph.body, &mut scope, registry, flow_registry, &mut errors);
+    check_flow_statements(
+        flow_name,
+        &flow_graph.body,
+        &mut scope,
+        registry,
+        flow_registry,
+        &mut errors,
+    );
 
     if errors.is_empty() {
         Ok(())
@@ -902,10 +1120,14 @@ fn check_flow_statements(
                     // Check each input mapping against callee's declared input ports
                     for mapping in &step.inputs {
                         // Find the callee port matching this mapping
-                        if let Some(callee_port) = callee_inputs.iter().find(|p| p.name == mapping.port) {
+                        if let Some(callee_port) =
+                            callee_inputs.iter().find(|p| p.name == mapping.port)
+                        {
                             let expected = take_type_to_op_type(&callee_port.type_name, registry);
                             let actual = match &mapping.value {
-                                Arg::Var { var } => scope.get(var).cloned().unwrap_or(InferredType::Unknown),
+                                Arg::Var { var } => {
+                                    scope.get(var).cloned().unwrap_or(InferredType::Unknown)
+                                }
                                 Arg::Lit { lit } => {
                                     if lit.is_string() {
                                         InferredType::Known(OpType::Text)
@@ -945,8 +1167,13 @@ fn check_flow_statements(
                     for then_item in &step.then_body {
                         if let crate::ast::StepThenItem::Next(next) = then_item {
                             // next.port is the output port name, next.wire is the scope variable
-                            if let Some(out_port) = program.flow.outputs.iter().find(|p| p.name == next.port) {
-                                scope.insert(next.wire.clone(), take_type_to_op_type(&out_port.type_name, registry));
+                            if let Some(out_port) =
+                                program.flow.outputs.iter().find(|p| p.name == next.port)
+                            {
+                                scope.insert(
+                                    next.wire.clone(),
+                                    take_type_to_op_type(&out_port.type_name, registry),
+                                );
                             }
                         }
                     }
@@ -955,7 +1182,14 @@ fn check_flow_statements(
             }
             FlowStatement::Branch(branch) => {
                 let mut branch_scope = scope.clone();
-                check_flow_statements(flow_name, &branch.body, &mut branch_scope, registry, flow_registry, errors);
+                check_flow_statements(
+                    flow_name,
+                    &branch.body,
+                    &mut branch_scope,
+                    registry,
+                    flow_registry,
+                    errors,
+                );
                 // Merge back
                 for (k, v) in &branch_scope {
                     if scope.contains_key(k) {
@@ -966,7 +1200,14 @@ fn check_flow_statements(
             FlowStatement::Choose(choose) => {
                 for branch in &choose.branches {
                     let mut branch_scope = scope.clone();
-                    check_flow_statements(flow_name, &branch.body, &mut branch_scope, registry, flow_registry, errors);
+                    check_flow_statements(
+                        flow_name,
+                        &branch.body,
+                        &mut branch_scope,
+                        registry,
+                        flow_registry,
+                        errors,
+                    );
                     // Merge back
                     for (k, v) in &branch_scope {
                         if scope.contains_key(k) {
@@ -1062,7 +1303,9 @@ mod tests {
             ),
             emit("response", "result"),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok()
+        );
     }
 
     #[test]
@@ -1073,7 +1316,8 @@ mod tests {
             "db.exec",
             vec![var_arg("name"), lit_arg(json!("SELECT 1"))],
         )];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
     }
@@ -1085,7 +1329,8 @@ mod tests {
             "db.exec",
             vec![lit_arg(json!("my_db")), lit_arg(json!("SELECT 1"))],
         )];
-        let err = typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err =
+            typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
         assert!(
             err.contains("handles cannot be constructed from literals"),
             "got: {err}"
@@ -1118,7 +1363,8 @@ mod tests {
             "db.exec",
             vec![var_arg("srv"), lit_arg(json!("SELECT 1"))],
         )];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'http_server'"), "got: {err}");
     }
@@ -1147,7 +1393,8 @@ mod tests {
                 children: None,
             },
         )];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
     }
 
@@ -1173,7 +1420,8 @@ mod tests {
                 vec![var_arg("out"), lit_arg(json!("SELECT 1"))],
             ),
         ];
-        let err = typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err =
+            typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
     }
@@ -1183,7 +1431,11 @@ mod tests {
         // date.now → date.add should pass (Date → Date)
         let body = vec![
             node("d", "date.now", vec![]),
-            node("d2", "date.add", vec![var_arg("d"), lit_arg(json!(86400000))]),
+            node(
+                "d2",
+                "date.add",
+                vec![var_arg("d"), lit_arg(json!(86400000))],
+            ),
             emit("result", "d2"),
         ];
         assert!(typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).is_ok());
@@ -1194,7 +1446,8 @@ mod tests {
         // text var passed to date.to_unix_ms (expects Date) should fail
         let takes = vec![take("s", "text")];
         let body = vec![node("ms", "date.to_unix_ms", vec![var_arg("s")])];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("expected 'Date'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
     }
@@ -1204,7 +1457,8 @@ mod tests {
         // ProcessOutput take passed to date.to_unix_ms (expects Date) should fail
         let takes = vec![take("po", "ProcessOutput")];
         let body = vec![node("ms", "date.to_unix_ms", vec![var_arg("po")])];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("expected 'Date'"), "got: {err}");
         assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
     }
@@ -1216,7 +1470,8 @@ mod tests {
             node("d", "date.now", vec![]),
             node("ms", "trange.duration_ms", vec![var_arg("d")]),
         ];
-        let err = typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err =
+            typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
         assert!(err.contains("expected 'TimeRange'"), "got: {err}");
         assert!(err.contains("got 'Date'"), "got: {err}");
     }
@@ -1239,7 +1494,8 @@ mod tests {
                 vec![var_arg("out"), lit_arg(json!("SELECT 1"))],
             ),
         ];
-        let err = typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err =
+            typecheck_func("TestFunc", &[], &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
         assert!(err.contains("expected 'db_conn'"), "got: {err}");
         assert!(err.contains("got 'ProcessOutput'"), "got: {err}");
     }
@@ -1248,8 +1504,8 @@ mod tests {
 
     fn build_registry_with_types() -> TypeRegistry {
         use crate::ast::{
-            EnumDecl, FieldDecl, ModuleAst, Span, TopDecl, TypeConstraint, TypeDecl, TypeKind,
-            ConstraintValue,
+            ConstraintValue, EnumDecl, FieldDecl, ModuleAst, Span, TopDecl, TypeConstraint,
+            TypeDecl, TypeKind,
         };
         let module = ModuleAst {
             decls: vec![
@@ -1362,7 +1618,11 @@ mod tests {
         let errors = registry.validate(&value, "LoginRequest", "req");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].constraint, "closed");
-        assert!(errors[0].message.contains("unexpected field 'extra'"), "got: {}", errors[0].message);
+        assert!(
+            errors[0].message.contains("unexpected field 'extra'"),
+            "got: {}",
+            errors[0].message
+        );
     }
 
     #[test]
@@ -1376,9 +1636,14 @@ mod tests {
     #[test]
     fn builtin_struct_is_open() {
         let registry = TypeRegistry::empty();
-        let value = serde_json::json!({"method": "GET", "path": "/", "conn_id": "c1", "extra": "ok"});
+        let value =
+            serde_json::json!({"method": "GET", "path": "/", "conn_id": "c1", "extra": "ok"});
         let errors = registry.validate(&value, "HttpRequest", "req");
-        assert!(errors.is_empty(), "built-in structs should be open: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "built-in structs should be open: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -1401,8 +1666,16 @@ mod tests {
             })],
         };
         let registry = TypeRegistry::from_module(&module).unwrap();
-        let errors = registry.validate(&serde_json::json!("unknown_variant"), "OpenStatus", "status");
-        assert!(errors.is_empty(), "open enum should accept unknown variants: {:?}", errors);
+        let errors = registry.validate(
+            &serde_json::json!("unknown_variant"),
+            "OpenStatus",
+            "status",
+        );
+        assert!(
+            errors.is_empty(),
+            "open enum should accept unknown variants: {:?}",
+            errors
+        );
     }
 
     // --- Type annotation tests ---
@@ -1431,7 +1704,12 @@ mod tests {
         let registry = build_registry_with_types();
         let takes = vec![take("input", "dict")];
         let body = vec![
-            node_annotated("data", "obj.get", vec![var_arg("input"), lit_arg(json!("data"))], "LoginRequest"),
+            node_annotated(
+                "data",
+                "obj.get",
+                vec![var_arg("input"), lit_arg(json!("data"))],
+                "LoginRequest",
+            ),
             // Now use `data` where LoginRequest would be wrong — pass to date.to_unix_ms (expects Date)
             node("ms", "date.to_unix_ms", vec![var_arg("data")]),
         ];
@@ -1445,7 +1723,9 @@ mod tests {
         // str.upper returns text; annotating as text should produce no error
         let takes = vec![take("x", "text")];
         let body = vec![node_annotated("y", "str.upper", vec![var_arg("x")], "text")];
-        assert!(typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok()
+        );
     }
 
     #[test]
@@ -1453,7 +1733,8 @@ mod tests {
         // str.upper returns text; annotating as long should error
         let takes = vec![take("x", "text")];
         let body = vec![node_annotated("y", "str.upper", vec![var_arg("x")], "long")];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty())
+            .unwrap_err();
         assert!(err.contains("annotated as 'long'"), "got: {err}");
         assert!(err.contains("type 'text'"), "got: {err}");
     }
@@ -1473,7 +1754,11 @@ mod tests {
                 "Email",
             ),
             // Email resolves to text; pass to db.exec which expects db_conn → error
-            node("result", "db.exec", vec![var_arg("val"), lit_arg(json!("SELECT 1"))]),
+            node(
+                "result",
+                "db.exec",
+                vec![var_arg("val"), lit_arg(json!("SELECT 1"))],
+            ),
         ];
         let takes = vec![take("input", "dict")];
         let err = typecheck_func("TestFunc", &takes, &body, &[], &[], &registry).unwrap_err();
@@ -1486,11 +1771,17 @@ mod tests {
         // Without annotation, unknown types pass through silently (gradual typing)
         let takes = vec![take("input", "dict")];
         let body = vec![
-            node("data", "obj.get", vec![var_arg("input"), lit_arg(json!("key"))]),
+            node(
+                "data",
+                "obj.get",
+                vec![var_arg("input"), lit_arg(json!("key"))],
+            ),
             // data is Any from obj.get — passes through all checks
             node("ms", "date.to_unix_ms", vec![var_arg("data")]),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok()
+        );
     }
 
     // --- Emit type checking tests ---
@@ -1512,7 +1803,15 @@ mod tests {
             node("conn", "db.open", vec![var_arg("path")]),
             emit("result", "conn"),
         ];
-        let err = typecheck_func("TestFunc", &takes, &body, &emits, &[], &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func(
+            "TestFunc",
+            &takes,
+            &body,
+            &emits,
+            &[],
+            &TypeRegistry::empty(),
+        )
+        .unwrap_err();
         assert!(err.contains("emit 'result'"), "got: {err}");
         assert!(err.contains("expected type 'long'"), "got: {err}");
         assert!(err.contains("got 'db_conn'"), "got: {err}");
@@ -1527,7 +1826,17 @@ mod tests {
             node("len", "str.len", vec![var_arg("x")]),
             emit("result", "len"),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &emits, &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func(
+                "TestFunc",
+                &takes,
+                &body,
+                &emits,
+                &[],
+                &TypeRegistry::empty()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1539,7 +1848,17 @@ mod tests {
             node("data", "some.unknown.op", vec![var_arg("x")]),
             emit("result", "data"),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &emits, &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func(
+                "TestFunc",
+                &takes,
+                &body,
+                &emits,
+                &[],
+                &TypeRegistry::empty()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1551,7 +1870,15 @@ mod tests {
             node("msg", "str.upper", vec![var_arg("x")]),
             emit("error", "msg"),
         ];
-        let err = typecheck_func("TestFunc", &takes, &body, &[], &fails, &TypeRegistry::empty()).unwrap_err();
+        let err = typecheck_func(
+            "TestFunc",
+            &takes,
+            &body,
+            &[],
+            &fails,
+            &TypeRegistry::empty(),
+        )
+        .unwrap_err();
         assert!(err.contains("emit 'error'"), "got: {err}");
         assert!(err.contains("expected type 'long'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
@@ -1565,20 +1892,34 @@ mod tests {
             node("conn", "db.open", vec![var_arg("x")]),
             emit("result", "conn"),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func("TestFunc", &takes, &body, &[], &[], &TypeRegistry::empty()).is_ok()
+        );
     }
 
     // --- Flow type checking tests ---
 
     use crate::ast::{
-        FlowGraph, FlowStatement, Port, PortMapping, StepBlock, StepThenItem, NextWire,
+        FlowGraph, FlowStatement, NextWire, Port, PortMapping, StepBlock, StepThenItem,
     };
-    use crate::loader::{FlowProgram, FlowRegistry};
     use crate::ir::Ir;
+    use crate::loader::{FlowProgram, FlowRegistry};
 
     fn make_flow_program(inputs: Vec<(&str, &str)>, outputs: Vec<(&str, &str)>) -> FlowProgram {
-        let flow_inputs: Vec<Port> = inputs.iter().map(|(n, t)| Port { name: n.to_string(), type_name: t.to_string() }).collect();
-        let flow_outputs: Vec<Port> = outputs.iter().map(|(n, t)| Port { name: n.to_string(), type_name: t.to_string() }).collect();
+        let flow_inputs: Vec<Port> = inputs
+            .iter()
+            .map(|(n, t)| Port {
+                name: n.to_string(),
+                type_name: t.to_string(),
+            })
+            .collect();
+        let flow_outputs: Vec<Port> = outputs
+            .iter()
+            .map(|(n, t)| Port {
+                name: n.to_string(),
+                type_name: t.to_string(),
+            })
+            .collect();
         FlowProgram {
             flow: crate::ast::Flow {
                 name: "mock".to_string(),
@@ -1608,21 +1949,26 @@ mod tests {
     fn flow_type_mismatch() {
         // Flow wires text into a step that expects long
         let mut flow_reg = FlowRegistry::new();
-        flow_reg.insert("StepA".to_string(), make_flow_program(
-            vec![("input", "long")],
-            vec![("result", "text")],
-        ));
+        flow_reg.insert(
+            "StepA".to_string(),
+            make_flow_program(vec![("input", "long")], vec![("result", "text")]),
+        );
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "text".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "text".to_string(),
+            }],
             emit_ports: vec![],
             fail_ports: vec![],
             body: vec![FlowStatement::Step(StepBlock {
                 callee: "StepA".to_string(),
                 inputs: vec![PortMapping {
                     port: "input".to_string(),
-                    value: Arg::Var { var: "req".to_string() },
+                    value: Arg::Var {
+                        var: "req".to_string(),
+                    },
                     span: span(),
                 }],
                 then_body: vec![],
@@ -1630,7 +1976,8 @@ mod tests {
             })],
         };
 
-        let err = typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
+        let err =
+            typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
         assert!(err.contains("expected type 'long'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
     }
@@ -1638,21 +1985,26 @@ mod tests {
     #[test]
     fn flow_compatible_types() {
         let mut flow_reg = FlowRegistry::new();
-        flow_reg.insert("StepA".to_string(), make_flow_program(
-            vec![("input", "text")],
-            vec![("result", "long")],
-        ));
+        flow_reg.insert(
+            "StepA".to_string(),
+            make_flow_program(vec![("input", "text")], vec![("result", "long")]),
+        );
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "text".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "text".to_string(),
+            }],
             emit_ports: vec![],
             fail_ports: vec![],
             body: vec![FlowStatement::Step(StepBlock {
                 callee: "StepA".to_string(),
                 inputs: vec![PortMapping {
                     port: "input".to_string(),
-                    value: Arg::Var { var: "req".to_string() },
+                    value: Arg::Var {
+                        var: "req".to_string(),
+                    },
                     span: span(),
                 }],
                 then_body: vec![],
@@ -1670,14 +2022,19 @@ mod tests {
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "text".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "text".to_string(),
+            }],
             emit_ports: vec![],
             fail_ports: vec![],
             body: vec![FlowStatement::Step(StepBlock {
                 callee: "UnknownStep".to_string(),
                 inputs: vec![PortMapping {
                     port: "input".to_string(),
-                    value: Arg::Var { var: "req".to_string() },
+                    value: Arg::Var {
+                        var: "req".to_string(),
+                    },
                     span: span(),
                 }],
                 then_body: vec![],
@@ -1692,18 +2049,21 @@ mod tests {
     fn flow_output_wiring_propagates_type() {
         // StepA outputs text, StepB expects long — should error
         let mut flow_reg = FlowRegistry::new();
-        flow_reg.insert("StepA".to_string(), make_flow_program(
-            vec![("input", "text")],
-            vec![("result", "text")],
-        ));
-        flow_reg.insert("StepB".to_string(), make_flow_program(
-            vec![("data", "long")],
-            vec![("output", "bool")],
-        ));
+        flow_reg.insert(
+            "StepA".to_string(),
+            make_flow_program(vec![("input", "text")], vec![("result", "text")]),
+        );
+        flow_reg.insert(
+            "StepB".to_string(),
+            make_flow_program(vec![("data", "long")], vec![("output", "bool")]),
+        );
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "text".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "text".to_string(),
+            }],
             emit_ports: vec![],
             fail_ports: vec![],
             body: vec![
@@ -1711,7 +2071,9 @@ mod tests {
                     callee: "StepA".to_string(),
                     inputs: vec![PortMapping {
                         port: "input".to_string(),
-                        value: Arg::Var { var: "req".to_string() },
+                        value: Arg::Var {
+                            var: "req".to_string(),
+                        },
                         span: span(),
                     }],
                     then_body: vec![StepThenItem::Next(NextWire {
@@ -1728,7 +2090,9 @@ mod tests {
                     callee: "StepB".to_string(),
                     inputs: vec![PortMapping {
                         port: "data".to_string(),
-                        value: Arg::Var { var: "step_a_out".to_string() },
+                        value: Arg::Var {
+                            var: "step_a_out".to_string(),
+                        },
                         span: span(),
                     }],
                     then_body: vec![],
@@ -1737,7 +2101,8 @@ mod tests {
             ],
         };
 
-        let err = typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
+        let err =
+            typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
         assert!(err.contains("expected type 'long'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
     }
@@ -1749,10 +2114,27 @@ mod tests {
         let emits = vec![port("out", "AlsoMissing")];
         let fails = vec![port("err", "NoSuchType")];
         let body = vec![];
-        let err = typecheck_func("TestFunc", &takes, &body, &emits, &fails, &TypeRegistry::empty()).unwrap_err();
-        assert!(err.contains("take 'x' has unknown type 'Nonexistent'"), "got: {err}");
-        assert!(err.contains("emit 'out' has unknown type 'AlsoMissing'"), "got: {err}");
-        assert!(err.contains("fail 'err' has unknown type 'NoSuchType'"), "got: {err}");
+        let err = typecheck_func(
+            "TestFunc",
+            &takes,
+            &body,
+            &emits,
+            &fails,
+            &TypeRegistry::empty(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("take 'x' has unknown type 'Nonexistent'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("emit 'out' has unknown type 'AlsoMissing'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("fail 'err' has unknown type 'NoSuchType'"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1761,47 +2143,73 @@ mod tests {
         let flow_reg = FlowRegistry::new();
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "Nonexistent".to_string() }],
-            emit_ports: vec![Port { name: "out".to_string(), type_name: "AlsoMissing".to_string() }],
-            fail_ports: vec![Port { name: "err".to_string(), type_name: "NoSuchType".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "Nonexistent".to_string(),
+            }],
+            emit_ports: vec![Port {
+                name: "out".to_string(),
+                type_name: "AlsoMissing".to_string(),
+            }],
+            fail_ports: vec![Port {
+                name: "err".to_string(),
+                type_name: "NoSuchType".to_string(),
+            }],
             body: vec![],
         };
-        let err = typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
-        assert!(err.contains("input 'req' has unknown type 'Nonexistent'"), "got: {err}");
-        assert!(err.contains("emit 'out' has unknown type 'AlsoMissing'"), "got: {err}");
-        assert!(err.contains("fail 'err' has unknown type 'NoSuchType'"), "got: {err}");
+        let err =
+            typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
+        assert!(
+            err.contains("input 'req' has unknown type 'Nonexistent'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("emit 'out' has unknown type 'AlsoMissing'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("fail 'err' has unknown type 'NoSuchType'"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn flow_wire_unknown_type_errors() {
         // Unknown wire into typed step port is now a hard error
         let mut flow_reg = FlowRegistry::new();
-        flow_reg.insert("StepB".to_string(), make_flow_program(
-            vec![("data", "long")],
-            vec![("output", "bool")],
-        ));
+        flow_reg.insert(
+            "StepB".to_string(),
+            make_flow_program(vec![("data", "long")], vec![("output", "bool")]),
+        );
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
-            inputs: vec![Port { name: "req".to_string(), type_name: "text".to_string() }],
+            inputs: vec![Port {
+                name: "req".to_string(),
+                type_name: "text".to_string(),
+            }],
             emit_ports: vec![],
             fail_ports: vec![],
-            body: vec![
-                FlowStatement::Step(StepBlock {
-                    callee: "StepB".to_string(),
-                    inputs: vec![PortMapping {
-                        port: "data".to_string(),
-                        value: Arg::Var { var: "undefined_var".to_string() },
-                        span: span(),
-                    }],
-                    then_body: vec![],
+            body: vec![FlowStatement::Step(StepBlock {
+                callee: "StepB".to_string(),
+                inputs: vec![PortMapping {
+                    port: "data".to_string(),
+                    value: Arg::Var {
+                        var: "undefined_var".to_string(),
+                    },
                     span: span(),
-                }),
-            ],
+                }],
+                then_body: vec![],
+                span: span(),
+            })],
         };
 
-        let err = typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
-        assert!(err.contains("requires 'long' but wire has unknown type"), "got: {err}");
+        let err =
+            typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
+        assert!(
+            err.contains("requires 'long' but wire has unknown type"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1811,7 +2219,11 @@ mod tests {
         let emits = vec![port("result", "text")];
         let body = vec![
             // items = str.split(x, ",") → list of text
-            node("items", "str.split", vec![var_arg("x"), lit_arg(json!(","))]),
+            node(
+                "items",
+                "str.split",
+                vec![var_arg("x"), lit_arg(json!(","))],
+            ),
             Statement::Loop(crate::ast::LoopBlock {
                 collection: Expr::Var("items".to_string()),
                 item: "item".to_string(),
@@ -1819,7 +2231,17 @@ mod tests {
                 body: vec![emit("result", "item")],
             }),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &emits, &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func(
+                "TestFunc",
+                &takes,
+                &body,
+                &emits,
+                &[],
+                &TypeRegistry::empty()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1836,7 +2258,17 @@ mod tests {
                 body: vec![emit("result", "item")],
             }),
         ];
-        assert!(typecheck_func("TestFunc", &takes, &body, &emits, &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func(
+                "TestFunc",
+                &takes,
+                &body,
+                &emits,
+                &[],
+                &TypeRegistry::empty()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1845,10 +2277,13 @@ mod tests {
         let registry = build_registry_with_types();
         let emits = vec![port("result", "LoginRequest")];
         let body = vec![
-            expr_assign("data", Expr::DictLit(vec![
-                ("email".to_string(), Expr::Lit(json!("a@b.com"))),
-                ("password".to_string(), Expr::Lit(json!("secret"))),
-            ])),
+            expr_assign(
+                "data",
+                Expr::DictLit(vec![
+                    ("email".to_string(), Expr::Lit(json!("a@b.com"))),
+                    ("password".to_string(), Expr::Lit(json!("secret"))),
+                ]),
+            ),
             emit("result", "data"),
         ];
         assert!(typecheck_func("TestFunc", &[], &body, &emits, &[], &registry).is_ok());
@@ -1859,7 +2294,11 @@ mod tests {
         // list.range produces list of longs → loop var should be long
         let emits = vec![port("result", "long")];
         let body = vec![
-            node("nums", "list.range", vec![lit_arg(json!(0)), lit_arg(json!(10))]),
+            node(
+                "nums",
+                "list.range",
+                vec![lit_arg(json!(0)), lit_arg(json!(10))],
+            ),
             Statement::Loop(crate::ast::LoopBlock {
                 collection: Expr::Var("nums".to_string()),
                 item: "n".to_string(),
@@ -1867,17 +2306,19 @@ mod tests {
                 body: vec![emit("result", "n")],
             }),
         ];
-        assert!(typecheck_func("TestFunc", &[], &body, &emits, &[], &TypeRegistry::empty()).is_ok());
+        assert!(
+            typecheck_func("TestFunc", &[], &body, &emits, &[], &TypeRegistry::empty()).is_ok()
+        );
     }
 
     #[test]
     fn flow_wire_literal_type_checked() {
         // String literal wired to long port → type mismatch
         let mut flow_reg = FlowRegistry::new();
-        flow_reg.insert("StepA".to_string(), make_flow_program(
-            vec![("count", "long")],
-            vec![("result", "text")],
-        ));
+        flow_reg.insert(
+            "StepA".to_string(),
+            make_flow_program(vec![("count", "long")], vec![("result", "text")]),
+        );
 
         let flow_graph = FlowGraph {
             name: "TestFlow".to_string(),
@@ -1888,7 +2329,9 @@ mod tests {
                 callee: "StepA".to_string(),
                 inputs: vec![PortMapping {
                     port: "count".to_string(),
-                    value: Arg::Lit { lit: json!("hello") },
+                    value: Arg::Lit {
+                        lit: json!("hello"),
+                    },
                     span: span(),
                 }],
                 then_body: vec![],
@@ -1896,7 +2339,8 @@ mod tests {
             })],
         };
 
-        let err = typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
+        let err =
+            typecheck_flow("TestFlow", &flow_graph, &TypeRegistry::empty(), &flow_reg).unwrap_err();
         assert!(err.contains("expected type 'long'"), "got: {err}");
         assert!(err.contains("got 'text'"), "got: {err}");
     }

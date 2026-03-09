@@ -29,6 +29,7 @@ FAILURES=()
 examples=(
   browser-demo
   cli-ports
+  counter-linux
   counter-ui
   ffi-test
   github-stats
@@ -36,6 +37,7 @@ examples=(
   read-docs
   unit-converter
   wasm-test
+  web-simple-linux
   web-simple
 )
 

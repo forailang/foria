@@ -118,7 +118,8 @@ pub fn execute_flow_stepping(
         output,
         value_var,
         value,
-    } = execute_statements_stepping(&flow.body, &mut vars, flow_registry, host, codecs, &on_step)?
+    } =
+        execute_statements_stepping(&flow.body, &mut vars, flow_registry, host, codecs, &on_step)?
     {
         outputs.insert(output, value.clone());
         if !value_var.contains(' ') && !value_var.contains('"') {
@@ -184,13 +185,21 @@ fn execute_statements_stepping(
                 for arm in &case_block.arms {
                     if eval::pattern_matches(&subject, &arm.pattern) {
                         if let Some(guard_expr) = &arm.guard {
-                            let guard_val = eval_expr(guard_expr, vars, flow_registry, host, codecs)?;
+                            let guard_val =
+                                eval_expr(guard_expr, vars, flow_registry, host, codecs)?;
                             if !guard_val.as_bool().unwrap_or(false) {
                                 continue;
                             }
                         }
                         matched = true;
-                        match execute_statements_stepping(&arm.body, vars, flow_registry, host, codecs, on_step)? {
+                        match execute_statements_stepping(
+                            &arm.body,
+                            vars,
+                            flow_registry,
+                            host,
+                            codecs,
+                            on_step,
+                        )? {
                             ExecSignal::Continue => {}
                             signal @ ExecSignal::Emit { .. } => return Ok(signal),
                             ExecSignal::Break => return Ok(ExecSignal::Break),
@@ -200,7 +209,14 @@ fn execute_statements_stepping(
                     }
                 }
                 if !matched {
-                    match execute_statements_stepping(&case_block.else_body, vars, flow_registry, host, codecs, on_step)? {
+                    match execute_statements_stepping(
+                        &case_block.else_body,
+                        vars,
+                        flow_registry,
+                        host,
+                        codecs,
+                        on_step,
+                    )? {
                         ExecSignal::Continue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => return Ok(ExecSignal::Break),
@@ -209,19 +225,30 @@ fn execute_statements_stepping(
                 }
             }
             Statement::Loop(loop_block) => {
-                let collection = eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)?;
+                let collection =
+                    eval_expr(&loop_block.collection, vars, flow_registry, host, codecs)?;
                 let items = collection.as_array().ok_or_else(|| {
                     format!("Loop collection must be an array, got `{}`", collection)
                 })?;
                 let items = items.clone();
                 let previous = vars.get(&loop_block.item).cloned();
-                let prev_index = loop_block.index.as_ref().and_then(|idx| vars.get(idx).cloned());
+                let prev_index = loop_block
+                    .index
+                    .as_ref()
+                    .and_then(|idx| vars.get(idx).cloned());
                 for (i, item) in items.iter().enumerate() {
                     vars.insert(loop_block.item.clone(), item.clone());
                     if let Some(idx) = &loop_block.index {
                         vars.insert(idx.clone(), json!(i as i64));
                     }
-                    match execute_statements_stepping(&loop_block.body, vars, flow_registry, host, codecs, on_step)? {
+                    match execute_statements_stepping(
+                        &loop_block.body,
+                        vars,
+                        flow_registry,
+                        host,
+                        codecs,
+                        on_step,
+                    )? {
                         ExecSignal::Continue | ExecSignal::LoopContinue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => break,
@@ -241,7 +268,14 @@ fn execute_statements_stepping(
                 }
             }
             Statement::BareLoop(block) => loop {
-                match execute_statements_stepping(&block.body, vars, flow_registry, host, codecs, on_step)? {
+                match execute_statements_stepping(
+                    &block.body,
+                    vars,
+                    flow_registry,
+                    host,
+                    codecs,
+                    on_step,
+                )? {
                     ExecSignal::Continue | ExecSignal::LoopContinue => {}
                     signal @ ExecSignal::Emit { .. } => return Ok(signal),
                     ExecSignal::Break => break,
@@ -249,7 +283,14 @@ fn execute_statements_stepping(
             },
             Statement::Sync(sync_block) => {
                 for s in &sync_block.body {
-                    match execute_statements_stepping(&[s.clone()], vars, flow_registry, host, codecs, on_step)? {
+                    match execute_statements_stepping(
+                        &[s.clone()],
+                        vars,
+                        flow_registry,
+                        host,
+                        codecs,
+                        on_step,
+                    )? {
                         ExecSignal::Continue => {}
                         signal @ ExecSignal::Emit { .. } => return Ok(signal),
                         ExecSignal::Break => return Ok(ExecSignal::Break),
@@ -444,7 +485,8 @@ fn execute_statements(
                 for arm in &case_block.arms {
                     if eval::pattern_matches(&subject, &arm.pattern) {
                         if let Some(guard_expr) = &arm.guard {
-                            let guard_val = eval_expr(guard_expr, vars, flow_registry, host, codecs)?;
+                            let guard_val =
+                                eval_expr(guard_expr, vars, flow_registry, host, codecs)?;
                             if !guard_val.as_bool().unwrap_or(false) {
                                 continue;
                             }
@@ -482,7 +524,10 @@ fn execute_statements(
                 })?;
                 let items = items.clone();
                 let previous = vars.get(&loop_block.item).cloned();
-                let prev_index = loop_block.index.as_ref().and_then(|idx| vars.get(idx).cloned());
+                let prev_index = loop_block
+                    .index
+                    .as_ref()
+                    .and_then(|idx| vars.get(idx).cloned());
                 for (i, item) in items.iter().enumerate() {
                     vars.insert(loop_block.item.clone(), item.clone());
                     if let Some(idx) = &loop_block.index {
@@ -645,7 +690,13 @@ fn execute_child_stmt(
         }
         _ => {
             // For other statement types (case, loop, etc.), execute normally
-            execute_statements(std::slice::from_ref(stmt), vars, flow_registry, host, codecs)?;
+            execute_statements(
+                std::slice::from_ref(stmt),
+                vars,
+                flow_registry,
+                host,
+                codecs,
+            )?;
         }
     }
     Ok(())
@@ -690,8 +741,16 @@ fn dispatch_op(
                 .outputs
                 .as_object()
                 .ok_or_else(|| format!("flow `{op}` produced invalid outputs shape"))?;
-            let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
-            let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+            let success = program
+                .emit_name
+                .as_deref()
+                .and_then(|n| outputs.get(n))
+                .cloned();
+            let failure = program
+                .fail_name
+                .as_deref()
+                .and_then(|n| outputs.get(n))
+                .cloned();
             if program.emit_name.is_none() {
                 return Ok(serde_json::Value::Null);
             }
@@ -736,7 +795,11 @@ fn eval_expr(
             let v = eval_expr(inner, vars, flow_registry, host, codecs)?;
             eval::eval_unary(*op, &v)
         }
-        Expr::Call { func, args, children } => {
+        Expr::Call {
+            func,
+            args,
+            children,
+        } => {
             let mut evaluated = Vec::with_capacity(args.len());
             for a in args {
                 evaluated.push(eval_expr(a, vars, flow_registry, host, codecs)?);
@@ -829,8 +892,12 @@ fn eval_expr(
                     Ok(arr[resolved as usize].clone())
                 }
                 Value::Object(map) => {
-                    let key = idx.as_str().ok_or_else(|| format!("Dict key must be a string, got {idx}"))?;
-                    map.get(key).cloned().ok_or_else(|| format!("Key \"{key}\" not found"))
+                    let key = idx
+                        .as_str()
+                        .ok_or_else(|| format!("Dict key must be a string, got {idx}"))?;
+                    map.get(key)
+                        .cloned()
+                        .ok_or_else(|| format!("Key \"{key}\" not found"))
                 }
                 _ => Err(format!("Cannot index into {}", collection)),
             }
@@ -980,12 +1047,7 @@ mod tests {
         Expr::ListLit(items)
     }
     fn dict_lit(pairs: Vec<(&str, Expr)>) -> Expr {
-        Expr::DictLit(
-            pairs
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        )
+        Expr::DictLit(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 
     fn assign(name: &str, expr: Expr) -> Statement {
@@ -1039,10 +1101,7 @@ mod tests {
     /// Run a flow with inputs, returning the first emit output value.
     /// Note: input ports are left empty to skip type validation in tests.
     /// The inputs HashMap is used directly as the variable scope.
-    fn run_body_with_inputs(
-        body: Vec<Statement>,
-        inputs: Vec<(&str, Value)>,
-    ) -> Value {
+    fn run_body_with_inputs(body: Vec<Statement>, inputs: Vec<(&str, Value)>) -> Value {
         let flow = make_flow("Test", vec![], vec![("result", "Any")], body);
         let input_map: HashMap<String, Value> = inputs
             .into_iter()
@@ -1172,16 +1231,9 @@ mod tests {
         let v = run_body(vec![
             assign(
                 "items",
-                Expr::ListLit(
-                    (0..6)
-                        .map(|i| lit(json!(format!("item{i}"))))
-                        .collect(),
-                ),
+                Expr::ListLit((0..6).map(|i| lit(json!(format!("item{i}")))).collect()),
             ),
-            assign(
-                "idx",
-                binop(BinOp::Div, lit(json!(10)), lit(json!(2))),
-            ),
+            assign("idx", binop(BinOp::Div, lit(json!(10)), lit(json!(2)))),
             emit(
                 "result",
                 Expr::Index {
@@ -1405,10 +1457,9 @@ mod tests {
             json!(false)
         );
         assert_eq!(
-            run_body(vec![emit(
-                "result",
-                unary(UnaryOp::Not, lit(json!(false))),
-            )]),
+            run_body(vec![
+                emit("result", unary(UnaryOp::Not, lit(json!(false))),)
+            ]),
             json!(true)
         );
     }
@@ -1463,10 +1514,7 @@ mod tests {
 
     #[test]
     fn unary_negation_float() {
-        let v = run_body(vec![emit(
-            "result",
-            unary(UnaryOp::Neg, lit(json!(3.14))),
-        )]);
+        let v = run_body(vec![emit("result", unary(UnaryOp::Neg, lit(json!(3.14))))]);
         assert_eq!(v, json!(-3.14));
     }
 
@@ -1512,7 +1560,10 @@ mod tests {
     #[test]
     fn array_index_zero() {
         let v = run_body(vec![
-            assign("items", list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30))])),
+            assign(
+                "items",
+                list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30))]),
+            ),
             emit("result", index(var("items"), lit(json!(0)))),
         ]);
         assert_eq!(v, json!(10));
@@ -1521,7 +1572,10 @@ mod tests {
     #[test]
     fn array_index_negative() {
         let v = run_body(vec![
-            assign("items", list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30))])),
+            assign(
+                "items",
+                list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30))]),
+            ),
             emit("result", index(var("items"), lit(json!(-1)))),
         ]);
         assert_eq!(v, json!(30));
@@ -1531,7 +1585,10 @@ mod tests {
     fn array_index_float_as_int() {
         // items[2.0] should work when 2.0 is a whole number (from arithmetic)
         let v = run_body(vec![
-            assign("items", list_lit(vec![lit(json!("a")), lit(json!("b")), lit(json!("c"))])),
+            assign(
+                "items",
+                list_lit(vec![lit(json!("a")), lit(json!("b")), lit(json!("c"))]),
+            ),
             emit("result", index(var("items"), lit(json!(2.0)))),
         ]);
         assert_eq!(v, json!("c"));
@@ -1540,7 +1597,10 @@ mod tests {
     #[test]
     fn dict_index() {
         let v = run_body(vec![
-            assign("row", dict_lit(vec![("name", lit(json!("Alice"))), ("age", lit(json!(30)))])),
+            assign(
+                "row",
+                dict_lit(vec![("name", lit(json!("Alice"))), ("age", lit(json!(30)))]),
+            ),
             emit("result", index(var("row"), lit(json!("name")))),
         ]);
         assert_eq!(v, json!("Alice"));
@@ -1577,24 +1637,22 @@ mod tests {
     #[test]
     fn case_when_literal_match() {
         let v = run_body_with_inputs(
-            vec![
-                Statement::Case(CaseBlock {
-                    expr: var("color"),
-                    arms: vec![
-                        CaseArm {
-                            pattern: Pattern::Lit(json!("red")),
-                            guard: None,
-                            body: vec![emit("result", lit(json!(1)))],
-                        },
-                        CaseArm {
-                            pattern: Pattern::Lit(json!("blue")),
-                            guard: None,
-                            body: vec![emit("result", lit(json!(2)))],
-                        },
-                    ],
-                    else_body: vec![emit("result", lit(json!(0)))],
-                }),
-            ],
+            vec![Statement::Case(CaseBlock {
+                expr: var("color"),
+                arms: vec![
+                    CaseArm {
+                        pattern: Pattern::Lit(json!("red")),
+                        guard: None,
+                        body: vec![emit("result", lit(json!(1)))],
+                    },
+                    CaseArm {
+                        pattern: Pattern::Lit(json!("blue")),
+                        guard: None,
+                        body: vec![emit("result", lit(json!(2)))],
+                    },
+                ],
+                else_body: vec![emit("result", lit(json!(0)))],
+            })],
             vec![("color", json!("blue"))],
         );
         assert_eq!(v, json!(2));
@@ -1650,13 +1708,11 @@ mod tests {
         let v = run_body_with_inputs(
             vec![Statement::Case(CaseBlock {
                 expr: var("val"),
-                arms: vec![
-                    CaseArm {
-                        pattern: Pattern::Lit(json!(42)),
-                        guard: None,
-                        body: vec![emit("result", lit(json!("matched")))],
-                    },
-                ],
+                arms: vec![CaseArm {
+                    pattern: Pattern::Lit(json!(42)),
+                    guard: None,
+                    body: vec![emit("result", lit(json!("matched")))],
+                }],
                 else_body: vec![emit("result", lit(json!("no match")))],
             })],
             vec![("val", json!(42.0))],
@@ -1671,13 +1727,11 @@ mod tests {
             assign("x", binop(BinOp::Div, lit(json!(10)), lit(json!(2)))),
             Statement::Case(CaseBlock {
                 expr: var("x"),
-                arms: vec![
-                    CaseArm {
-                        pattern: Pattern::Lit(json!(5)),
-                        guard: None,
-                        body: vec![emit("result", lit(json!("five")))],
-                    },
-                ],
+                arms: vec![CaseArm {
+                    pattern: Pattern::Lit(json!(5)),
+                    guard: None,
+                    body: vec![emit("result", lit(json!("five")))],
+                }],
                 else_body: vec![emit("result", lit(json!("other")))],
             }),
         ]);
@@ -1799,10 +1853,7 @@ mod tests {
             assign("counter", lit(json!(0))),
             Statement::BareLoop(BareLoopBlock {
                 body: vec![
-                    assign(
-                        "counter",
-                        binop(BinOp::Add, var("counter"), lit(json!(1))),
-                    ),
+                    assign("counter", binop(BinOp::Add, var("counter"), lit(json!(1)))),
                     Statement::Case(CaseBlock {
                         expr: binop(BinOp::Eq, var("counter"), lit(json!(3))),
                         arms: vec![CaseArm {
@@ -1842,7 +1893,11 @@ mod tests {
                         }],
                         else_body: vec![],
                     }),
-                    node("result", "list.append", vec![arg_var("result"), arg_var("n")]),
+                    node(
+                        "result",
+                        "list.append",
+                        vec![arg_var("result"), arg_var("n")],
+                    ),
                 ],
             }),
             emit("result", var("result")),
@@ -1871,7 +1926,11 @@ mod tests {
                     }),
                     // skip even
                     Statement::Case(CaseBlock {
-                        expr: binop(BinOp::Eq, binop(BinOp::Mod, var("counter"), lit(json!(2))), lit(json!(0))),
+                        expr: binop(
+                            BinOp::Eq,
+                            binop(BinOp::Mod, var("counter"), lit(json!(2))),
+                            lit(json!(0)),
+                        ),
                         arms: vec![CaseArm {
                             pattern: Pattern::Lit(json!(true)),
                             guard: None,
@@ -1879,7 +1938,11 @@ mod tests {
                         }],
                         else_body: vec![],
                     }),
-                    node("result", "list.append", vec![arg_var("result"), arg_var("counter")]),
+                    node(
+                        "result",
+                        "list.append",
+                        vec![arg_var("result"), arg_var("counter")],
+                    ),
                 ],
             }),
             emit("result", var("result")),
@@ -1917,27 +1980,33 @@ mod tests {
                 collection: list_lit(vec![lit(json!(10)), lit(json!(20))]),
                 item: "base".to_string(),
                 index: None,
-                body: vec![
-                    Statement::Loop(LoopBlock {
-                        collection: list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))]),
-                        item: "n".to_string(),
-                        index: None,
-                        body: vec![
-                            // skip even n
-                            Statement::Case(CaseBlock {
-                                expr: binop(BinOp::Eq, binop(BinOp::Mod, var("n"), lit(json!(2))), lit(json!(0))),
-                                arms: vec![CaseArm {
-                                    pattern: Pattern::Lit(json!(true)),
-                                    guard: None,
-                                    body: vec![Statement::Continue],
-                                }],
-                                else_body: vec![],
-                            }),
-                            assign("val", binop(BinOp::Add, var("base"), var("n"))),
-                            node("result", "list.append", vec![arg_var("result"), arg_var("val")]),
-                        ],
-                    }),
-                ],
+                body: vec![Statement::Loop(LoopBlock {
+                    collection: list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))]),
+                    item: "n".to_string(),
+                    index: None,
+                    body: vec![
+                        // skip even n
+                        Statement::Case(CaseBlock {
+                            expr: binop(
+                                BinOp::Eq,
+                                binop(BinOp::Mod, var("n"), lit(json!(2))),
+                                lit(json!(0)),
+                            ),
+                            arms: vec![CaseArm {
+                                pattern: Pattern::Lit(json!(true)),
+                                guard: None,
+                                body: vec![Statement::Continue],
+                            }],
+                            else_body: vec![],
+                        }),
+                        assign("val", binop(BinOp::Add, var("base"), var("n"))),
+                        node(
+                            "result",
+                            "list.append",
+                            vec![arg_var("result"), arg_var("val")],
+                        ),
+                    ],
+                })],
             }),
             emit("result", var("result")),
         ]);
@@ -1964,7 +2033,11 @@ mod tests {
                         }],
                         else_body: vec![],
                     }),
-                    node("result", "list.append", vec![arg_var("result"), arg_var("ch")]),
+                    node(
+                        "result",
+                        "list.append",
+                        vec![arg_var("result"), arg_var("ch")],
+                    ),
                 ],
             }),
             emit("result", var("result")),
@@ -2032,7 +2105,11 @@ mod tests {
     fn obj_new_and_set_and_get() {
         let v = run_body(vec![
             node("o", "obj.new", vec![]),
-            node("o2", "obj.set", vec![arg_var("o"), arg_lit(json!("x")), arg_lit(json!(42))]),
+            node(
+                "o2",
+                "obj.set",
+                vec![arg_var("o"), arg_lit(json!("x")), arg_lit(json!(42))],
+            ),
             node("val", "obj.get", vec![arg_var("o2"), arg_lit(json!("x"))]),
             emit("result", var("val")),
         ]);
@@ -2043,13 +2120,14 @@ mod tests {
     fn obj_has() {
         let v = run_body(vec![
             node("o", "obj.new", vec![]),
-            node("o2", "obj.set", vec![arg_var("o"), arg_lit(json!("k")), arg_lit(json!(1))]),
+            node(
+                "o2",
+                "obj.set",
+                vec![arg_var("o"), arg_lit(json!("k")), arg_lit(json!(1))],
+            ),
             node("yes", "obj.has", vec![arg_var("o2"), arg_lit(json!("k"))]),
             node("no", "obj.has", vec![arg_var("o2"), arg_lit(json!("z"))]),
-            emit(
-                "result",
-                list_lit(vec![var("yes"), var("no")]),
-            ),
+            emit("result", list_lit(vec![var("yes"), var("no")])),
         ]);
         assert_eq!(v, json!([true, false]));
     }
@@ -2057,7 +2135,10 @@ mod tests {
     #[test]
     fn obj_keys() {
         let v = run_body(vec![
-            assign("o", dict_lit(vec![("a", lit(json!(1))), ("b", lit(json!(2)))])),
+            assign(
+                "o",
+                dict_lit(vec![("a", lit(json!(1))), ("b", lit(json!(2)))]),
+            ),
             node("ks", "obj.keys", vec![arg_var("o")]),
             emit("result", var("ks")),
         ]);
@@ -2070,7 +2151,10 @@ mod tests {
     #[test]
     fn obj_delete() {
         let v = run_body(vec![
-            assign("o", dict_lit(vec![("a", lit(json!(1))), ("b", lit(json!(2)))])),
+            assign(
+                "o",
+                dict_lit(vec![("a", lit(json!(1))), ("b", lit(json!(2)))]),
+            ),
             node("o2", "obj.delete", vec![arg_var("o"), arg_lit(json!("a"))]),
             node("has_a", "obj.has", vec![arg_var("o2"), arg_lit(json!("a"))]),
             emit("result", var("has_a")),
@@ -2106,7 +2190,10 @@ mod tests {
     #[test]
     fn list_len() {
         let v = run_body(vec![
-            assign("l", list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))])),
+            assign(
+                "l",
+                list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))]),
+            ),
             node("n", "list.len", vec![arg_var("l")]),
             emit("result", var("n")),
         ]);
@@ -2117,8 +2204,16 @@ mod tests {
     fn list_contains() {
         let v = run_body(vec![
             assign("l", list_lit(vec![lit(json!("a")), lit(json!("b"))])),
-            node("yes", "list.contains", vec![arg_var("l"), arg_lit(json!("a"))]),
-            node("no", "list.contains", vec![arg_var("l"), arg_lit(json!("z"))]),
+            node(
+                "yes",
+                "list.contains",
+                vec![arg_var("l"), arg_lit(json!("a"))],
+            ),
+            node(
+                "no",
+                "list.contains",
+                vec![arg_var("l"), arg_lit(json!("z"))],
+            ),
             emit("result", list_lit(vec![var("yes"), var("no")])),
         ]);
         assert_eq!(v, json!([true, false]));
@@ -2127,8 +2222,20 @@ mod tests {
     #[test]
     fn list_slice() {
         let v = run_body(vec![
-            assign("l", list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30)), lit(json!(40))])),
-            node("s", "list.slice", vec![arg_var("l"), arg_lit(json!(1)), arg_lit(json!(3))]),
+            assign(
+                "l",
+                list_lit(vec![
+                    lit(json!(10)),
+                    lit(json!(20)),
+                    lit(json!(30)),
+                    lit(json!(40)),
+                ]),
+            ),
+            node(
+                "s",
+                "list.slice",
+                vec![arg_var("l"), arg_lit(json!(1)), arg_lit(json!(3))],
+            ),
             emit("result", var("s")),
         ]);
         assert_eq!(v, json!([20, 30]));
@@ -2138,7 +2245,11 @@ mod tests {
     fn list_range() {
         // list.range is inclusive: range(0, 3) → [0, 1, 2, 3]
         let v = run_body(vec![
-            node("r", "list.range", vec![arg_lit(json!(0)), arg_lit(json!(3))]),
+            node(
+                "r",
+                "list.range",
+                vec![arg_lit(json!(0)), arg_lit(json!(3))],
+            ),
             emit("result", var("r")),
         ]);
         assert_eq!(v, json!([0, 1, 2, 3]));
@@ -2179,8 +2290,16 @@ mod tests {
     #[test]
     fn str_split_join() {
         let v = run_body(vec![
-            node("parts", "str.split", vec![arg_lit(json!("a,b,c")), arg_lit(json!(","))]),
-            node("joined", "str.join", vec![arg_var("parts"), arg_lit(json!("-"))]),
+            node(
+                "parts",
+                "str.split",
+                vec![arg_lit(json!("a,b,c")), arg_lit(json!(","))],
+            ),
+            node(
+                "joined",
+                "str.join",
+                vec![arg_var("parts"), arg_lit(json!("-"))],
+            ),
             emit("result", var("joined")),
         ]);
         assert_eq!(v, json!("a-b-c"));
@@ -2192,7 +2311,11 @@ mod tests {
             node(
                 "out",
                 "str.replace",
-                vec![arg_lit(json!("hello world")), arg_lit(json!("world")), arg_lit(json!("rust"))],
+                vec![
+                    arg_lit(json!("hello world")),
+                    arg_lit(json!("world")),
+                    arg_lit(json!("rust")),
+                ],
             ),
             emit("result", var("out")),
         ]);
@@ -2202,8 +2325,16 @@ mod tests {
     #[test]
     fn str_contains() {
         let v = run_body(vec![
-            node("yes", "str.contains", vec![arg_lit(json!("foobar")), arg_lit(json!("bar"))]),
-            node("no", "str.contains", vec![arg_lit(json!("foobar")), arg_lit(json!("baz"))]),
+            node(
+                "yes",
+                "str.contains",
+                vec![arg_lit(json!("foobar")), arg_lit(json!("bar"))],
+            ),
+            node(
+                "no",
+                "str.contains",
+                vec![arg_lit(json!("foobar")), arg_lit(json!("baz"))],
+            ),
             emit("result", list_lit(vec![var("yes"), var("no")])),
         ]);
         assert_eq!(v, json!([true, false]));
@@ -2212,8 +2343,16 @@ mod tests {
     #[test]
     fn str_starts_ends_with() {
         let v = run_body(vec![
-            node("sw", "str.starts_with", vec![arg_lit(json!("hello world")), arg_lit(json!("hello"))]),
-            node("ew", "str.ends_with", vec![arg_lit(json!("hello world")), arg_lit(json!("world"))]),
+            node(
+                "sw",
+                "str.starts_with",
+                vec![arg_lit(json!("hello world")), arg_lit(json!("hello"))],
+            ),
+            node(
+                "ew",
+                "str.ends_with",
+                vec![arg_lit(json!("hello world")), arg_lit(json!("world"))],
+            ),
             emit("result", list_lit(vec![var("sw"), var("ew")])),
         ]);
         assert_eq!(v, json!([true, true]));
@@ -2222,7 +2361,15 @@ mod tests {
     #[test]
     fn str_slice() {
         let v = run_body(vec![
-            node("s", "str.slice", vec![arg_lit(json!("hello")), arg_lit(json!(1)), arg_lit(json!(4))]),
+            node(
+                "s",
+                "str.slice",
+                vec![
+                    arg_lit(json!("hello")),
+                    arg_lit(json!(1)),
+                    arg_lit(json!(4)),
+                ],
+            ),
             emit("result", var("s")),
         ]);
         assert_eq!(v, json!("ell"));
@@ -2239,7 +2386,10 @@ mod tests {
             node("t2", "type.of", vec![arg_lit(json!(42))]),
             node("t3", "type.of", vec![arg_lit(json!(true))]),
             node("t4", "type.of", vec![arg_lit(json!(null))]),
-            emit("result", list_lit(vec![var("t1"), var("t2"), var("t3"), var("t4")])),
+            emit(
+                "result",
+                list_lit(vec![var("t1"), var("t2"), var("t3"), var("t4")]),
+            ),
         ]);
         assert_eq!(v, json!(["text", "long", "bool", "void"]));
     }
@@ -2295,10 +2445,7 @@ mod tests {
                 name: "result".to_string(),
                 type_name: "long".to_string(),
             }],
-            body: vec![emit(
-                "result",
-                binop(BinOp::Mul, var("n"), lit(json!(2))),
-            )],
+            body: vec![emit("result", binop(BinOp::Mul, var("n"), lit(json!(2))))],
             state_names: vec![],
             local_names: vec![],
         };
@@ -2391,16 +2538,10 @@ mod tests {
             Statement::Sync(SyncBlock {
                 targets: vec!["a".to_string(), "b".to_string()],
                 options: SyncOptions::default(),
-                body: vec![
-                    assign("x", lit(json!(10))),
-                    assign("y", lit(json!(20))),
-                ],
+                body: vec![assign("x", lit(json!(10))), assign("y", lit(json!(20)))],
                 exports: vec!["x".to_string(), "y".to_string()],
             }),
-            emit(
-                "result",
-                binop(BinOp::Add, var("a"), var("b")),
-            ),
+            emit("result", binop(BinOp::Add, var("a"), var("b"))),
         ]);
         assert_eq!(v, json!(30));
     }
@@ -2553,17 +2694,15 @@ mod tests {
             collection: list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))]),
             item: "n".to_string(),
             index: None,
-            body: vec![
-                Statement::Case(CaseBlock {
-                    expr: binop(BinOp::Eq, var("n"), lit(json!(2))),
-                    arms: vec![CaseArm {
-                        pattern: Pattern::Lit(json!(true)),
-                        guard: None,
-                        body: vec![emit("result", var("n"))],
-                    }],
-                    else_body: vec![],
-                }),
-            ],
+            body: vec![Statement::Case(CaseBlock {
+                expr: binop(BinOp::Eq, var("n"), lit(json!(2))),
+                arms: vec![CaseArm {
+                    pattern: Pattern::Lit(json!(true)),
+                    guard: None,
+                    body: vec![emit("result", var("n"))],
+                }],
+                else_body: vec![],
+            })],
         })]);
         assert_eq!(v, json!(2));
     }
@@ -2819,9 +2958,7 @@ mod tests {
                 collection: list_lit(vec![lit(json!(1)), lit(json!(2)), lit(json!(3))]),
                 item: "n".to_string(),
                 index: None,
-                body: vec![
-                    assign("sum", binop(BinOp::Add, var("sum"), var("n"))),
-                ],
+                body: vec![assign("sum", binop(BinOp::Add, var("sum"), var("n")))],
             }),
             emit("result", var("sum")),
         ]);
@@ -2841,9 +2978,11 @@ mod tests {
                 collection: list_lit(vec![lit(json!(10)), lit(json!(20)), lit(json!(30))]),
                 item: "item".to_string(),
                 index: Some("i".to_string()),
-                body: vec![
-                    node("result", "list.append", vec![arg_var("result"), arg_var("i")]),
-                ],
+                body: vec![node(
+                    "result",
+                    "list.append",
+                    vec![arg_var("result"), arg_var("i")],
+                )],
             }),
             emit("result", var("result")),
         ]);
@@ -2859,9 +2998,7 @@ mod tests {
                 collection: list_lit(vec![lit(json!("a")), lit(json!("b")), lit(json!("c"))]),
                 item: "ch".to_string(),
                 index: Some("idx".to_string()),
-                body: vec![
-                    assign("sum", binop(BinOp::Add, var("sum"), var("idx"))),
-                ],
+                body: vec![assign("sum", binop(BinOp::Add, var("sum"), var("idx")))],
             }),
             emit("result", var("sum")),
         ]);
@@ -2897,8 +3034,19 @@ mod tests {
                 item: "val".to_string(),
                 index: Some("i".to_string()),
                 body: vec![
-                    assign("combined", binop(BinOp::Add, binop(BinOp::Mul, var("val"), lit(json!(10))), var("i"))),
-                    node("results", "list.append", vec![arg_var("results"), arg_var("combined")]),
+                    assign(
+                        "combined",
+                        binop(
+                            BinOp::Add,
+                            binop(BinOp::Mul, var("val"), lit(json!(10))),
+                            var("i"),
+                        ),
+                    ),
+                    node(
+                        "results",
+                        "list.append",
+                        vec![arg_var("results"), arg_var("combined")],
+                    ),
                 ],
             }),
             emit("result", var("results")),
@@ -2960,21 +3108,30 @@ mod tests {
     #[test]
     fn coalesce_non_null_returns_lhs() {
         // 42 ?? 99 → 42
-        let v = run_body(vec![emit("result", coalesce(lit(json!(42)), lit(json!(99))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!(42)), lit(json!(99))),
+        )]);
         assert_eq!(v, json!(42));
     }
 
     #[test]
     fn coalesce_null_returns_rhs() {
         // null ?? 99 → 99
-        let v = run_body(vec![emit("result", coalesce(lit(json!(null)), lit(json!(99))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!(null)), lit(json!(99))),
+        )]);
         assert_eq!(v, json!(99));
     }
 
     #[test]
     fn coalesce_missing_var_returns_rhs() {
         // undefined_var ?? "default" → "default"
-        let v = run_body(vec![emit("result", coalesce(var("undefined_var"), lit(json!("default"))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(var("undefined_var"), lit(json!("default"))),
+        )]);
         assert_eq!(v, json!("default"));
     }
 
@@ -3003,7 +3160,10 @@ mod tests {
         // null ?? null ?? "last" → "last"
         let v = run_body(vec![emit(
             "result",
-            coalesce(lit(json!(null)), coalesce(lit(json!(null)), lit(json!("last")))),
+            coalesce(
+                lit(json!(null)),
+                coalesce(lit(json!(null)), lit(json!("last"))),
+            ),
         )]);
         assert_eq!(v, json!("last"));
     }
@@ -3013,7 +3173,10 @@ mod tests {
         // null ?? "second" ?? "third" → "second"
         let v = run_body(vec![emit(
             "result",
-            coalesce(coalesce(lit(json!(null)), lit(json!("second"))), lit(json!("third"))),
+            coalesce(
+                coalesce(lit(json!(null)), lit(json!("second"))),
+                lit(json!("third")),
+            ),
         )]);
         assert_eq!(v, json!("second"));
     }
@@ -3021,21 +3184,30 @@ mod tests {
     #[test]
     fn coalesce_false_is_not_null() {
         // false ?? "fallback" → false (false is not null)
-        let v = run_body(vec![emit("result", coalesce(lit(json!(false)), lit(json!("fallback"))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!(false)), lit(json!("fallback"))),
+        )]);
         assert_eq!(v, json!(false));
     }
 
     #[test]
     fn coalesce_zero_is_not_null() {
         // 0 ?? 99 → 0 (zero is not null)
-        let v = run_body(vec![emit("result", coalesce(lit(json!(0)), lit(json!(99))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!(0)), lit(json!(99))),
+        )]);
         assert_eq!(v, json!(0));
     }
 
     #[test]
     fn coalesce_empty_string_is_not_null() {
         // "" ?? "fallback" → "" (empty string is not null)
-        let v = run_body(vec![emit("result", coalesce(lit(json!("")), lit(json!("fallback"))))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!("")), lit(json!("fallback"))),
+        )]);
         assert_eq!(v, json!(""));
     }
 
@@ -3044,7 +3216,10 @@ mod tests {
         // null ?? (1 + 2) → 3
         let v = run_body(vec![emit(
             "result",
-            coalesce(lit(json!(null)), binop(BinOp::Add, lit(json!(1)), lit(json!(2)))),
+            coalesce(
+                lit(json!(null)),
+                binop(BinOp::Add, lit(json!(1)), lit(json!(2))),
+            ),
         )]);
         assert_eq!(v, json!(3));
     }
@@ -3053,7 +3228,10 @@ mod tests {
     fn coalesce_lazy_rhs_not_evaluated_when_lhs_present() {
         // If LHS is non-null, RHS should not be evaluated (lazy).
         // We test by using a missing variable in RHS — should not error.
-        let v = run_body(vec![emit("result", coalesce(lit(json!("yes")), var("does_not_exist")))]);
+        let v = run_body(vec![emit(
+            "result",
+            coalesce(lit(json!("yes")), var("does_not_exist")),
+        )]);
         assert_eq!(v, json!("yes"));
     }
 
@@ -3117,9 +3295,10 @@ mod tests {
                         call_with_children(
                             "ui.vstack",
                             vec![lit(json!(20))],
-                            vec![
-                                assign("_t", call("ui.text", vec![lit(json!("Count: 42")), lit(json!(24))])),
-                            ],
+                            vec![assign(
+                                "_t",
+                                call("ui.text", vec![lit(json!("Count: 42")), lit(json!(24))]),
+                            )],
                         ),
                     )],
                 ),
@@ -3164,10 +3343,10 @@ mod tests {
                                 vec![
                                     assign(
                                         "_label",
-                                        call("ui.text", vec![
-                                            lit(json!("Current Count: 42")),
-                                            lit(json!(24)),
-                                        ]),
+                                        call(
+                                            "ui.text",
+                                            vec![lit(json!("Current Count: 42")), lit(json!(24))],
+                                        ),
                                     ),
                                     assign(
                                         "_btns",
@@ -3175,8 +3354,14 @@ mod tests {
                                             "ui.hstack",
                                             vec![lit(json!(10))],
                                             vec![
-                                                assign("_b1", call("ui.button", vec![lit(json!("+"))])),
-                                                assign("_b2", call("ui.button", vec![lit(json!("-"))])),
+                                                assign(
+                                                    "_b1",
+                                                    call("ui.button", vec![lit(json!("+"))]),
+                                                ),
+                                                assign(
+                                                    "_b2",
+                                                    call("ui.button", vec![lit(json!("-"))]),
+                                                ),
                                             ],
                                         ),
                                     ),
@@ -3220,9 +3405,9 @@ mod tests {
                     "ui.vstack",
                     vec![],
                     vec![
-                        assign("x", lit(json!(42))),              // plain number, not UiNode
-                        assign("_t", call("ui.text", vec![lit(json!("hello"))])),  // UiNode
-                        assign("y", lit(json!("plain string"))),  // plain string, not UiNode
+                        assign("x", lit(json!(42))), // plain number, not UiNode
+                        assign("_t", call("ui.text", vec![lit(json!("hello"))])), // UiNode
+                        assign("y", lit(json!("plain string"))), // plain string, not UiNode
                     ],
                 ),
             ),
@@ -3270,22 +3455,45 @@ mod tests {
         let v = run_body(vec![
             assign(
                 "tree",
-                call_with_children("ui.screen", vec![], vec![
-                    assign("_l1", call_with_children("ui.zstack", vec![], vec![
-                        assign("_l2", call_with_children("ui.vstack", vec![], vec![
-                            assign("_l3", call_with_children("ui.hstack", vec![], vec![
-                                assign("_l4", call("ui.text", vec![lit(json!("deep"))])),
-                            ])),
-                        ])),
-                    ])),
-                ]),
+                call_with_children(
+                    "ui.screen",
+                    vec![],
+                    vec![assign(
+                        "_l1",
+                        call_with_children(
+                            "ui.zstack",
+                            vec![],
+                            vec![assign(
+                                "_l2",
+                                call_with_children(
+                                    "ui.vstack",
+                                    vec![],
+                                    vec![assign(
+                                        "_l3",
+                                        call_with_children(
+                                            "ui.hstack",
+                                            vec![],
+                                            vec![assign(
+                                                "_l4",
+                                                call("ui.text", vec![lit(json!("deep"))]),
+                                            )],
+                                        ),
+                                    )],
+                                ),
+                            )],
+                        ),
+                    )],
+                ),
             ),
             emit("result", var("tree")),
         ]);
         assert_eq!(v["type"], "screen");
         assert_eq!(v["children"][0]["type"], "zstack");
         assert_eq!(v["children"][0]["children"][0]["type"], "vstack");
-        assert_eq!(v["children"][0]["children"][0]["children"][0]["type"], "hstack");
+        assert_eq!(
+            v["children"][0]["children"][0]["children"][0]["type"],
+            "hstack"
+        );
         assert_eq!(
             v["children"][0]["children"][0]["children"][0]["children"][0]["props"]["value"],
             "deep"

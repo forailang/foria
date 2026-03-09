@@ -182,7 +182,14 @@ pub fn resolve_dependencies(
     // Build the lockfile
     let mut new_lockfile = Lockfile::new();
     for (name, (version, path, sha, transitive_deps)) in &resolved {
-        let resolved_url = match DepSource::parse(name, project_config.dependencies.get(name).map(|s| s.as_str()).unwrap_or("")) {
+        let resolved_url = match DepSource::parse(
+            name,
+            project_config
+                .dependencies
+                .get(name)
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+        ) {
             Ok(DepSource::GitHub { .. }) => fetch::resolve_git_url(name),
             Ok(DepSource::Git { url, .. }) => url.clone(),
             Ok(DepSource::File { path: p }) => format!("file:{p}"),

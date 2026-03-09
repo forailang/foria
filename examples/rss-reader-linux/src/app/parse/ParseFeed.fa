@@ -1,0 +1,34 @@
+use ParseAtom from "./ParseAtom.fa"
+use ParseRss from "./ParseRss.fa"
+
+docs ParseFeed
+    Detects feed format and parses into normalized articles.
+done
+
+func ParseFeed
+    take xml as text
+    take source as text
+    emit articles as list
+body
+    if str.contains(xml, "<entry")
+        emit ParseAtom(xml, source)
+    else if str.contains(xml, "<item")
+        emit ParseRss(xml, source)
+    else
+        emit list.new()
+    done
+done
+
+test ParseFeed
+    it "routes atom"
+        atom = "<feed><entry><id>x</id><title>X</title><link href=\"https://example.com/x\"/></entry></feed>"
+        items = ParseFeed(atom, "simon")
+        must list.len(items) == 1
+    done
+
+    it "routes rss"
+        rss = "<rss><channel><item><guid>y</guid><title>Y</title><link>https://example.com/y</link></item></channel></rss>"
+        items = ParseFeed(rss, "df")
+        must list.len(items) == 1
+    done
+done

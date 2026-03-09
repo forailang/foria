@@ -328,96 +328,95 @@ fn eval_value_expr<'a>(
     env: &'a HashMap<String, Value>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + 'a>> {
     Box::pin(async move {
-    let token = expr.trim();
+        let token = expr.trim();
 
-    // Array/object literals — support both JSON-quoted and forai bare-key styles
-    if (token.starts_with('[') && token.ends_with(']'))
-        || (token.starts_with('{') && token.ends_with('}'))
-    {
-        let json_str = quote_bare_keys(token);
-        return serde_json::from_str(&json_str)
-            .map_err(|e| format!("Invalid literal: {e}"));
-    }
-
-    if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
-        return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
-    }
-    if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
-        return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
-    }
-    if token == "true" {
-        return Ok(Value::Bool(true));
-    }
-    if token == "false" {
-        return Ok(Value::Bool(false));
-    }
-    if let Ok(v) = token.parse::<i64>() {
-        return Ok(Value::from(v));
-    }
-    if let Ok(v) = token.parse::<f64>() {
-        return Ok(Value::from(v));
-    }
-
-    if let Some((fn_name, rest)) = token.split_once('(')
-        && token.ends_with(')')
-        && !fn_name.trim().is_empty()
-    {
-        let args_raw = &rest[..rest.len() - 1];
-        let arg_tokens = split_csv(args_raw);
-        let mut args = Vec::with_capacity(arg_tokens.len());
-        for a in &arg_tokens {
-            args.push(eval_value_expr(a, env).await?);
+        // Array/object literals — support both JSON-quoted and forai bare-key styles
+        if (token.starts_with('[') && token.ends_with(']'))
+            || (token.starts_with('{') && token.ends_with('}'))
+        {
+            let json_str = quote_bare_keys(token);
+            return serde_json::from_str(&json_str).map_err(|e| format!("Invalid literal: {e}"));
         }
 
-        if fn_name.trim() == "dict" {
-            return Ok(Value::Object(serde_json::Map::new()));
+        if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+            return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
         }
-        if fn_name.trim() == "obj" {
-            if args.len() % 2 != 0 {
-                return Err("obj() expects alternating key-value pairs".to_string());
-            }
-            let mut obj = serde_json::Map::new();
-            for pair in args.chunks(2) {
-                let Some(key) = pair[0].as_str() else {
-                    return Err(format!("obj() key must be a string, got {}", pair[0]));
-                };
-                obj.insert(key.to_string(), pair[1].clone());
-            }
-            return Ok(Value::Object(obj));
+        if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
+            return Ok(Value::String(unescape_string(&token[1..token.len() - 1])));
         }
-        if fn_name.trim() == "request" {
-            if args.len() != 2 {
-                return Err("request(email, password) expects 2 args".to_string());
+        if token == "true" {
+            return Ok(Value::Bool(true));
+        }
+        if token == "false" {
+            return Ok(Value::Bool(false));
+        }
+        if let Ok(v) = token.parse::<i64>() {
+            return Ok(Value::from(v));
+        }
+        if let Ok(v) = token.parse::<f64>() {
+            return Ok(Value::from(v));
+        }
+
+        if let Some((fn_name, rest)) = token.split_once('(')
+            && token.ends_with(')')
+            && !fn_name.trim().is_empty()
+        {
+            let args_raw = &rest[..rest.len() - 1];
+            let arg_tokens = split_csv(args_raw);
+            let mut args = Vec::with_capacity(arg_tokens.len());
+            for a in &arg_tokens {
+                args.push(eval_value_expr(a, env).await?);
             }
-            let Some(email) = args[0].as_str() else {
-                return Err("request(email, password): email must be string".to_string());
-            };
-            let Some(password) = args[1].as_str() else {
-                return Err("request(email, password): password must be string".to_string());
-            };
-            return Ok(serde_json::json!({
-                "path": "/login",
-                "params": {
-                    "email": email,
-                    "password": password
+
+            if fn_name.trim() == "dict" {
+                return Ok(Value::Object(serde_json::Map::new()));
+            }
+            if fn_name.trim() == "obj" {
+                if args.len() % 2 != 0 {
+                    return Err("obj() expects alternating key-value pairs".to_string());
                 }
-            }));
+                let mut obj = serde_json::Map::new();
+                for pair in args.chunks(2) {
+                    let Some(key) = pair[0].as_str() else {
+                        return Err(format!("obj() key must be a string, got {}", pair[0]));
+                    };
+                    obj.insert(key.to_string(), pair[1].clone());
+                }
+                return Ok(Value::Object(obj));
+            }
+            if fn_name.trim() == "request" {
+                if args.len() != 2 {
+                    return Err("request(email, password) expects 2 args".to_string());
+                }
+                let Some(email) = args[0].as_str() else {
+                    return Err("request(email, password): email must be string".to_string());
+                };
+                let Some(password) = args[1].as_str() else {
+                    return Err("request(email, password): password must be string".to_string());
+                };
+                return Ok(serde_json::json!({
+                    "path": "/login",
+                    "params": {
+                        "email": email,
+                        "password": password
+                    }
+                }));
+            }
+            // Dispatch dotted names to runtime ops (e.g. list.len, obj.get)
+            if fn_name.trim().contains('.') {
+                let h = NativeHost::new();
+                let codecs = CodecRegistry::default_registry();
+                return runtime::execute_op(fn_name.trim(), &args, &h, &codecs)
+                    .await
+                    .map_err(|e| format!("op `{}` failed: {e}", fn_name.trim()));
+            }
+            if args.len() == 1 {
+                return Ok(args[0].clone());
+            }
+            return Ok(Value::Array(args));
         }
-        // Dispatch dotted names to runtime ops (e.g. list.len, obj.get)
-        if fn_name.trim().contains('.') {
-            let h = NativeHost::new();
-            let codecs = CodecRegistry::default_registry();
-            return runtime::execute_op(fn_name.trim(), &args, &h, &codecs)
-                .await
-                .map_err(|e| format!("op `{}` failed: {e}", fn_name.trim()));
-        }
-        if args.len() == 1 {
-            return Ok(args[0].clone());
-        }
-        return Ok(Value::Array(args));
-    }
 
-    resolve_path(env, token).ok_or_else(|| format!("Unknown value `{token}`"))
+        resolve_path(env, token).ok_or_else(|| format!("Unknown value `{token}`"))
     }) // end Box::pin(async move)
 }
 
@@ -520,8 +519,16 @@ async fn invoke_flow(
         return Err(format!("Flow `{flow_name}` produced invalid outputs shape"));
     };
 
-    let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
-    let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+    let success = program
+        .emit_name
+        .as_deref()
+        .and_then(|n| outputs.get(n))
+        .cloned();
+    let failure = program
+        .fail_name
+        .as_deref()
+        .and_then(|n| outputs.get(n))
+        .cloned();
 
     if program.emit_name.is_none() {
         return Ok(FlowCallResult::Success(serde_json::Value::Null));
@@ -750,7 +757,15 @@ async fn run_test_body(
     // Execute shared setup to collect env and mocks
     let shared_mocks = collect_mocks_from_lines_async(&setup).await?;
     let mut shared_env = HashMap::<String, Value>::new();
-    execute_lines(&setup, &mut shared_env, &shared_mocks, flows, flow_registry, quiet).await?;
+    execute_lines(
+        &setup,
+        &mut shared_env,
+        &shared_mocks,
+        flows,
+        flow_registry,
+        quiet,
+    )
+    .await?;
 
     let mut results = Vec::with_capacity(it_blocks.len());
 
@@ -767,8 +782,7 @@ async fn run_test_body(
             mocks.insert(k, v);
         }
 
-        let result =
-            execute_lines(&it.body, &mut env, &mocks, flows, flow_registry, quiet).await;
+        let result = execute_lines(&it.body, &mut env, &mocks, flows, flow_registry, quiet).await;
 
         results.push(ItResult {
             description: it.description.clone(),
@@ -824,7 +838,8 @@ async fn run_tests_impl(path: &Path, quiet: bool) -> Result<TestSummary, String>
         };
         if let Ok((cfg, root)) = crate::config::find_config(dir) {
             if !cfg.dependencies.is_empty() {
-                crate::deps::resolve_dependencies(&cfg, &root).unwrap_or_else(|_| crate::deps::ResolvedDeps::empty())
+                crate::deps::resolve_dependencies(&cfg, &root)
+                    .unwrap_or_else(|_| crate::deps::ResolvedDeps::empty())
             } else {
                 crate::deps::ResolvedDeps::empty()
             }
@@ -1099,8 +1114,14 @@ mod tests {
         let summary = run_tests_at_path_async(&path)
             .await
             .expect("test run should succeed");
-        assert!(summary.total >= 1, "expected tests to be found under pipeline/");
-        assert_eq!(summary.failed, 0, "pipeline tests should all pass: {summary:?}");
+        assert!(
+            summary.total >= 1,
+            "expected tests to be found under pipeline/"
+        );
+        assert_eq!(
+            summary.failed, 0,
+            "pipeline tests should all pass: {summary:?}"
+        );
     }
 
     #[tokio::test]
@@ -1243,9 +1264,7 @@ done
     #[tokio::test]
     async fn eval_json_object_literal() {
         let env = HashMap::new();
-        let val = eval_value_expr(r#"{"key": "value"}"#, &env)
-            .await
-            .unwrap();
+        let val = eval_value_expr(r#"{"key": "value"}"#, &env).await.unwrap();
         assert!(val.is_object());
     }
 

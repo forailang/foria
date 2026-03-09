@@ -1,0 +1,129 @@
+docs ParseAtom
+    Parses Atom feed entries into normalized article dicts.
+    Extracts id, title, link, published, and summary fields.
+done
+
+func ParseAtom
+    take xml as text
+    take source as text
+    emit articles as list
+body
+    parts = str.split(xml, "<entry")
+    articles = list.new()
+
+    loop parts as part with index i
+        if i > 0
+            aid = ""
+            id_parts = str.split(part, "<id>")
+            if list.len(id_parts) > 1
+                id_tail = id_parts[1]
+                id_end = str.split(id_tail, "<")
+                aid = id_end[0]
+            done
+
+            title_raw = ""
+            title_open = str.split(part, "<title")
+            if list.len(title_open) > 1
+                title_tail = title_open[1]
+                title_gt = str.split(title_tail, ">")
+                if list.len(title_gt) > 1
+                    title_body = title_gt[1]
+                    title_end = str.split(title_body, "<")
+                    title_raw = title_end[0]
+                done
+            done
+            title = regex.replace_all(title_raw, "<[^>]+>", " ")
+            title = str.replace(title, "&amp;", "&")
+            title = str.replace(title, "&quot;", "\"")
+            title = str.replace(title, "&lt;", "<")
+            title = str.replace(title, "&gt;", ">")
+            title = str.trim(title)
+
+            link = ""
+            href_parts = str.split(part, "href=\"")
+            if list.len(href_parts) > 1
+                href_tail = href_parts[1]
+                href_end = str.split(href_tail, "\"")
+                link = href_end[0]
+            done
+
+            published = ""
+            updated_parts = str.split(part, "<updated>")
+            if list.len(updated_parts) > 1
+                updated_tail = updated_parts[1]
+                updated_end = str.split(updated_tail, "<")
+                published = updated_end[0]
+            done
+            if published == ""
+                pub_parts = str.split(part, "<published>")
+                if list.len(pub_parts) > 1
+                    pub_tail = pub_parts[1]
+                    pub_end = str.split(pub_tail, "<")
+                    published = pub_end[0]
+                done
+            done
+
+            summary_raw = ""
+            summary_open = str.split(part, "<summary")
+            if list.len(summary_open) > 1
+                summary_tail = summary_open[1]
+                summary_gt = str.split(summary_tail, ">")
+                if list.len(summary_gt) > 1
+                    summary_body = summary_gt[1]
+                    summary_end = str.split(summary_body, "</summary>")
+                    summary_raw = summary_end[0]
+                done
+            done
+            if summary_raw == ""
+                content_open = str.split(part, "<content")
+                if list.len(content_open) > 1
+                    content_tail = content_open[1]
+                    content_gt = str.split(content_tail, ">")
+                    if list.len(content_gt) > 1
+                        content_body = content_gt[1]
+                        content_end = str.split(content_body, "</content>")
+                        summary_raw = content_end[0]
+                    done
+                done
+            done
+            summary = regex.replace_all(summary_raw, "<[^>]+>", " ")
+            summary = str.replace(summary, "&amp;", "&")
+            summary = str.replace(summary, "&quot;", "\"")
+            summary = str.replace(summary, "&lt;", "<")
+            summary = str.replace(summary, "&gt;", ">")
+            summary = str.trim(summary)
+
+            if aid == ""
+                aid = link
+            done
+            if aid == ""
+                aid = "#{source}-atom-#{to.text(i)}"
+            done
+            if title == ""
+                title = "Atom article #{to.text(i)}"
+            done
+
+            article = obj.new()
+            article = obj.set(article, "id", aid)
+            article = obj.set(article, "source", source)
+            article = obj.set(article, "title", title)
+            article = obj.set(article, "link", link)
+            article = obj.set(article, "published", published)
+            article = obj.set(article, "summary", summary)
+            articles = list.append(articles, article)
+        done
+    done
+
+    emit articles
+done
+
+test ParseAtom
+    it "extracts title link and summary"
+        xml = "<feed><entry><id>a1</id><title>Atom One</title><link href=\"https://example.com/a1\"/><updated>2026-03-01</updated><summary>Hello <b>Atom</b></summary></entry></feed>"
+        items = ParseAtom(xml, "simon")
+        encoded = json.encode(items)
+        must str.contains(encoded, "Atom One")
+        must str.contains(encoded, "https://example.com/a1")
+        must str.contains(encoded, "Hello")
+    done
+done

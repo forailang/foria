@@ -90,9 +90,10 @@ pub fn op_signature(op: &str) -> Option<OpSignature> {
 
         // ── HTTP client ──
         "http.get" | "http.delete" => sig(vec![Text, opt(Dict)], Struct("HttpResponse".into())),
-        "http.post" | "http.put" | "http.patch" => {
-            sig(vec![Text, opt(Any), opt(Dict)], Struct("HttpResponse".into()))
-        }
+        "http.post" | "http.put" | "http.patch" => sig(
+            vec![Text, opt(Any), opt(Dict)],
+            Struct("HttpResponse".into()),
+        ),
         "http.request" => sig(vec![Text, Text, opt(Dict)], Struct("HttpResponse".into())),
         "http.response" => sig(vec![Long, opt(Any)], Struct("HttpResponse".into())),
         "http.error_response" => sig(vec![Long, Text], Struct("HttpResponse".into())),
@@ -271,7 +272,9 @@ pub fn op_signature(op: &str) -> Option<OpSignature> {
         "date.to_epoch" => sig(vec![Struct("Date".into()), Struct("Date".into())], Long),
         "date.weekday" => sig(vec![Struct("Date".into())], Long),
         "date.with_tz" => sig(vec![Struct("Date".into()), Long], Struct("Date".into())),
-        "date.add" | "date.add_days" => sig(vec![Struct("Date".into()), Long], Struct("Date".into())),
+        "date.add" | "date.add_days" => {
+            sig(vec![Struct("Date".into()), Long], Struct("Date".into()))
+        }
         "date.diff" | "date.compare" => {
             sig(vec![Struct("Date".into()), Struct("Date".into())], Long)
         }

@@ -15,14 +15,14 @@ pub enum TokenKind {
     RegexLit(String),
     Symbol(char),
     FatArrow,
-    EqEq,     // ==
-    BangEq,   // !=
-    GtEq,     // >=
-    LtEq,     // <=
-    AmpAmp,   // &&
-    PipePipe, // ||
-    StarStar,   // **
-    DotDot,     // ..
+    EqEq,             // ==
+    BangEq,           // !=
+    GtEq,             // >=
+    LtEq,             // <=
+    AmpAmp,           // &&
+    PipePipe,         // ||
+    StarStar,         // **
+    DotDot,           // ..
     PlusEq,           // +=
     MinusEq,          // -=
     StarEq,           // *=

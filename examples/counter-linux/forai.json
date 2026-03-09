@@ -1,0 +1,9 @@
+{
+  "name": "counter-linux",
+  "version": "0.1.0",
+  "main": "src/main.fa",
+  "build": {
+    "out": "dist",
+    "targets": ["linux-ui"]
+  }
+}

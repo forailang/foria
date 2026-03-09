@@ -1,0 +1,72 @@
+use { View, LoadFeeds, HandleAllPressed, HandleSelect, HandleFilterAll, HandleFilterSimon, HandleFilterDf, HandleRefresh } from "./app"
+
+docs main
+    Linux native RSS reader example with a two-pane layout.
+    Left pane shows a filterable article list.
+    Right pane shows details for the currently selected article.
+done
+
+flow main
+body
+    state articles = LoadFeeds()
+    state selected_id = ""
+    state filter = "all"
+    state status = "loaded #{to.text(list.len(articles))} articles"
+    state all_caps = false
+
+    log "main cycle", all_caps
+
+    step View(articles to :articles, selected_id to :selected_id, filter to :filter, status to :status, all_caps to :all_caps) then
+        on :all_pressed as _ then
+            step HandleAllPressed(all_caps to :all_caps) then
+                next :all_caps to all_caps
+            done
+        done
+
+        on :on_filter_all as _ then
+            step HandleFilterAll(articles to :articles) then
+                next :filter to filter
+            done
+        done
+
+        on :on_filter_simon as _ then
+            step HandleFilterSimon() then
+                next :filter to filter
+            done
+        done
+
+        on :on_filter_df as _ then
+            step HandleFilterDf() then
+                next :filter to filter
+            done
+        done
+
+        on :on_refresh as _ then
+            step HandleRefresh() then
+                next :articles to articles
+            done
+        done
+
+        on :on_select as selected then
+            step HandleSelect(selected to :value, selected_id to :selected_id) then
+                next :selected_id to selected_id
+            done
+        done
+    done
+done
+
+test main
+    mock LoadFeeds => list.new()
+    mock View => {type: "action", action: "all_pressed", value: true}
+    mock HandleAllPressed => true
+    mock HandleSelect => "test-1"
+    mock HandleFilterAll => "all"
+    mock HandleFilterSimon => "simon"
+    mock HandleFilterDf => "df"
+    mock HandleRefresh => list.new()
+    it "runs one cycle"
+        _ = main()
+        ok = true
+        must ok == true
+    done
+done

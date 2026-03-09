@@ -1,0 +1,74 @@
+use LoadFeeds from "./LoadFeeds.fa"
+
+docs Update
+    Reduces UI events into next app state.
+    Supports article selection, source filtering, and refresh.
+done
+
+func Update
+    take articles as list
+    take selected_id as text
+    take filter as text
+    take status as text
+    take action as text
+    take value as text
+    emit articles as list
+    emit selected_id as text
+    emit filter as text
+    emit status as text
+body
+    next_articles = articles
+    next_selected = selected_id
+    next_filter = filter
+    next_status = status
+
+    case action
+        when "on_filter_all"
+            next_filter = "all"
+            next_status = "showing all feeds (#{to.text(list.len(next_articles))} articles)"
+        when "on_filter_simon"
+            next_filter = "simon"
+            next_status = "showing simonwillison.net"
+        when "on_filter_df"
+            next_filter = "df"
+            next_status = "showing daringfireball.net"
+        when "on_select"
+            next_selected = value
+            next_status = "selected #{next_selected}"
+        when "on_refresh"
+            next_articles = LoadFeeds()
+            if next_selected == ""
+                loop next_articles as article
+                    if next_selected == ""
+                        next_selected = obj.get(article, "id") ?? ""
+                    done
+                done
+            done
+            if list.len(next_articles) == 0
+                next_status = "refresh failed: no articles loaded"
+            else
+                next_status = "feeds refreshed (#{to.text(list.len(next_articles))} articles)"
+            done
+        else
+            next_status = status
+    done
+
+    emit next_articles to :articles
+    emit next_selected to :selected_id
+    emit next_filter to :filter
+    emit next_status to :status
+done
+
+test Update
+    mock LoadFeeds => list.new()
+
+    it "updates selected article"
+        _ = Update(list.new(), "", "all", "ready", "on_select", "df-2")
+        must true == true
+    done
+
+    it "changes filter"
+        _ = Update(list.new(), "", "all", "ready", "on_filter_df", "")
+        must true == true
+    done
+done

@@ -64,6 +64,7 @@ Supported targets:
 | `browser` | `dist/browser/` | Copies `forai-browser.js`, `<name>.wasm`, and an `index.html` bootstrap |
 | `bundle` | `dist/<name>` | Native self-extracting executable bundle (requires `wasm`) |
 | `native` | `dist/<name>` | Native v3 bundle output |
+| `linux-ui` | `dist/linux-ui/` | Generates Linux-native executable `<name>` plus `run-linux-ui.sh` wrapper (GTK backend) |
 
 For browser apps, build and run:
 

@@ -1,14 +1,39 @@
 use crate::ffi_manager::{FfiManager, FfiRegistry};
 use crate::host::Host;
 use crate::runtime::civil_from_days;
-use forai_core::pure_ops::{read_f64_arg, read_i64_arg, read_object_arg, read_string_arg};
+use crate::ui_gtk::GtkUiState;
 use base64::Engine;
+use forai_core::pure_ops::{read_f64_arg, read_i64_arg, read_object_arg, read_string_arg};
 use serde_json::{Value, json};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiBackendKind {
+    Terminal,
+    Gtk,
+}
+
+fn detect_ui_backend() -> UiBackendKind {
+    match std::env::var("FORAI_UI_BACKEND") {
+        Ok(v) if v.eq_ignore_ascii_case("gtk") => UiBackendKind::Gtk,
+        _ => {
+            // Linux UI bundled artifacts are emitted under a `linux-ui/` directory.
+            // If the executable is launched from there, default to GTK backend.
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(parent) = exe.parent() {
+                    if parent.file_name().and_then(|n| n.to_str()) == Some("linux-ui") {
+                        return UiBackendKind::Gtk;
+                    }
+                }
+            }
+            UiBackendKind::Terminal
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Handle types — stateful resources (servers, connections, sockets, databases)
@@ -72,8 +97,15 @@ pub struct NativeHost {
     quiet: bool,
     ffi: RefCell<FfiManager>,
     ffi_registry: FfiRegistry,
+    ui_backend: UiBackendKind,
     ui_active: RefCell<bool>,
     ui_tree: RefCell<Option<Value>>,
+    ui_focus_index: RefCell<usize>,
+    ui_gtk_state: RefCell<GtkUiState>,
+    #[cfg(feature = "linux-gtk")]
+    ui_gtk_backend: RefCell<Option<crate::ui_gtk_backend::GtkBackend>>,
+    ui_current_path: RefCell<String>,
+    ui_pending_nav_events: RefCell<VecDeque<Value>>,
 }
 
 impl NativeHost {
@@ -83,8 +115,15 @@ impl NativeHost {
             quiet: false,
             ffi: RefCell::new(FfiManager::new()),
             ffi_registry: FfiRegistry::new(),
+            ui_backend: detect_ui_backend(),
             ui_active: RefCell::new(false),
             ui_tree: RefCell::new(None),
+            ui_focus_index: RefCell::new(0),
+            ui_gtk_state: RefCell::new(GtkUiState::new()),
+            #[cfg(feature = "linux-gtk")]
+            ui_gtk_backend: RefCell::new(None),
+            ui_current_path: RefCell::new("/".to_string()),
+            ui_pending_nav_events: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -96,8 +135,15 @@ impl NativeHost {
             quiet: true,
             ffi: RefCell::new(FfiManager::new()),
             ffi_registry: FfiRegistry::new(),
+            ui_backend: detect_ui_backend(),
             ui_active: RefCell::new(false),
             ui_tree: RefCell::new(None),
+            ui_focus_index: RefCell::new(0),
+            ui_gtk_state: RefCell::new(GtkUiState::new()),
+            #[cfg(feature = "linux-gtk")]
+            ui_gtk_backend: RefCell::new(None),
+            ui_current_path: RefCell::new("/".to_string()),
+            ui_pending_nav_events: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -117,7 +163,11 @@ fn collect_button_events(tree: &Value) -> HashMap<String, (String, Value)> {
 
 fn collect_button_events_recursive(node: &Value, map: &mut HashMap<String, (String, Value)>) {
     if node.get("type").and_then(|t| t.as_str()) == Some("button") {
-        if let Some(label) = node.get("props").and_then(|p| p.get("label")).and_then(|l| l.as_str()) {
+        if let Some(label) = node
+            .get("props")
+            .and_then(|p| p.get("label"))
+            .and_then(|l| l.as_str())
+        {
             if let Some(events) = node.get("events").and_then(|e| e.as_object()) {
                 if let Some((action, value)) = events.iter().next() {
                     map.insert(label.to_string(), (action.clone(), value.clone()));
@@ -132,9 +182,62 @@ fn collect_button_events_recursive(node: &Value, map: &mut HashMap<String, (Stri
     }
 }
 
+/// Collect buttons in tree order as (action_name, value) pairs.
+/// Used for keyboard navigation (arrow keys + Enter).
+fn collect_button_list(tree: &Value) -> Vec<(String, Value)> {
+    let mut list = Vec::new();
+    collect_button_list_recursive(tree, &mut list);
+    list
+}
+
+fn collect_button_list_recursive(node: &Value, list: &mut Vec<(String, Value)>) {
+    if node.get("type").and_then(|t| t.as_str()) == Some("button") {
+        if let Some(events) = node.get("events").and_then(|e| e.as_object()) {
+            if let Some((action, value)) = events.iter().next() {
+                list.push((action.clone(), value.clone()));
+            }
+        }
+    }
+    if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+        for child in children {
+            collect_button_list_recursive(child, list);
+        }
+    }
+}
+
+/// Inject `"focused": true` into the Nth button's props in the tree (by mutation on a clone).
+fn inject_focus(tree: &Value, focus_index: usize) -> Value {
+    let mut tree = tree.clone();
+    let mut counter = 0usize;
+    inject_focus_recursive(&mut tree, focus_index, &mut counter);
+    tree
+}
+
+fn inject_focus_recursive(node: &mut Value, target: usize, counter: &mut usize) {
+    if node.get("type").and_then(|t| t.as_str()) == Some("button") {
+        if node.get("events").and_then(|e| e.as_object()).map_or(false, |e| !e.is_empty()) {
+            if *counter == target {
+                if let Some(props) = node.get_mut("props").and_then(|p| p.as_object_mut()) {
+                    props.insert("reverse".to_string(), json!(true));
+                }
+            }
+            *counter += 1;
+        }
+    }
+    if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+        for child in children {
+            inject_focus_recursive(child, target, counter);
+        }
+    }
+}
+
 impl Drop for NativeHost {
     fn drop(&mut self) {
-        if *self.ui_active.borrow() {
+        #[cfg(feature = "linux-gtk")]
+        if let Some(backend) = self.ui_gtk_backend.borrow().as_ref() {
+            backend.shutdown();
+        }
+        if self.ui_backend == UiBackendKind::Terminal && *self.ui_active.borrow() {
             use crossterm::{cursor, execute, terminal};
             let mut stdout = std::io::stdout();
             let _ = execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show);
@@ -157,7 +260,9 @@ impl Host for NativeHost {
                 return Ok(json!(self.ffi.borrow_mut().is_available(&lib)));
             }
             if op.starts_with("ffi.") {
-                let meta = self.ffi_registry.get(op)
+                let meta = self
+                    .ffi_registry
+                    .get(op)
                     .ok_or_else(|| format!("unknown FFI function `{op}`"))?;
                 return self.ffi.borrow_mut().call(
                     &meta.lib_name,
@@ -665,7 +770,8 @@ impl Host for NativeHost {
                         conn.writer
                     };
 
-                    send_http_response_bytes(&mut writer, op, status, &content_type, &bytes).await?;
+                    send_http_response_bytes(&mut writer, op, status, &content_type, &bytes)
+                        .await?;
                     Ok(json!(true))
                 }
                 "http.server.close" => {
@@ -841,6 +947,12 @@ impl Host for NativeHost {
 
                 // --- UI rendering ops ---
                 "ui.render" => {
+                    if self.ui_backend == UiBackendKind::Gtk {
+                        return Err(
+                            "Op `ui.render` is terminal-only when `FORAI_UI_BACKEND=gtk`; use `ui.mount`/`ui.update` (GTK backend implementation starts in Phase 2)"
+                                .to_string(),
+                        );
+                    }
                     let tree = args
                         .first()
                         .ok_or_else(|| "Op `ui.render` missing arg0 (UiNode tree)".to_string())?;
@@ -853,107 +965,268 @@ impl Host for NativeHost {
                         use crossterm::{cursor, execute, terminal};
                         let mut stdout = std::io::stdout();
                         let _ = terminal::enable_raw_mode();
-                        let _ = execute!(
-                            stdout,
-                            terminal::EnterAlternateScreen,
-                            cursor::Hide
-                        );
+                        let _ = execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide);
                         *self.ui_active.borrow_mut() = true;
                     }
 
+                    let focus = *self.ui_focus_index.borrow();
+                    let focused_tree = inject_focus(tree, focus);
                     let mut stdout = std::io::stdout();
-                    crate::ui_render::render_ui_tree(tree, &mut stdout);
+                    crate::ui_render::render_ui_tree(&focused_tree, &mut stdout);
                     Ok(json!(true))
                 }
 
                 "ui.events" => {
-                    // Build button label → event mapping from the stored tree
+                    if self.ui_backend == UiBackendKind::Gtk {
+                        if let Some(nav_event) = self.ui_pending_nav_events.borrow_mut().pop_front()
+                        {
+                            return Ok(nav_event);
+                        }
+                        #[cfg(feature = "linux-gtk")]
+                        {
+                            let mut backend_ref = self.ui_gtk_backend.borrow_mut();
+                            if backend_ref.is_none() {
+                                *backend_ref = Some(crate::ui_gtk_backend::GtkBackend::start()?);
+                            }
+                            return backend_ref
+                                .as_ref()
+                                .ok_or_else(|| "GTK backend missing after startup".to_string())?
+                                .next_event();
+                        }
+                        #[cfg(not(feature = "linux-gtk"))]
+                        {
+                            return Err(
+                                "Op `ui.events` with `FORAI_UI_BACKEND=gtk` requires building forai with `--features linux-gtk`"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    // Build button label → event mapping and ordered button list
                     let button_events = {
                         let tree = self.ui_tree.borrow();
                         tree.as_ref()
                             .map(|t| collect_button_events(t))
                             .unwrap_or_default()
                     };
+                    let button_list = {
+                        let tree = self.ui_tree.borrow();
+                        tree.as_ref()
+                            .map(|t| collect_button_list(t))
+                            .unwrap_or_default()
+                    };
+                    let button_count = button_list.len();
+                    let focus_index = *self.ui_focus_index.borrow();
 
                     let result = tokio::task::spawn_blocking(move || {
                         use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-                        match event::read() {
-                            Ok(Event::Key(key_event)) => {
-                                let key = match key_event.code {
-                                    KeyCode::Char(c) => {
-                                        if key_event
-                                            .modifiers
-                                            .contains(KeyModifiers::CONTROL)
-                                        {
-                                            if c == 'c' {
-                                                // Ctrl+C: exit process cleanly
-                                                crossterm::terminal::disable_raw_mode().ok();
-                                                std::process::exit(0);
+                        let mut current_focus = focus_index;
+                        loop {
+                            match event::read() {
+                                Ok(Event::Key(key_event)) => {
+                                    // Navigation keys: move focus and re-render
+                                    if button_count > 0 {
+                                        match key_event.code {
+                                            KeyCode::Up | KeyCode::Left | KeyCode::BackTab => {
+                                                if current_focus == 0 {
+                                                    current_focus = button_count - 1;
+                                                } else {
+                                                    current_focus -= 1;
+                                                }
+                                                return Ok(json!({
+                                                    "__nav": true,
+                                                    "focus": current_focus
+                                                }));
                                             }
-                                            format!("ctrl+{c}")
-                                        } else {
-                                            c.to_string()
+                                            KeyCode::Down | KeyCode::Right | KeyCode::Tab => {
+                                                current_focus = (current_focus + 1) % button_count;
+                                                return Ok(json!({
+                                                    "__nav": true,
+                                                    "focus": current_focus
+                                                }));
+                                            }
+                                            KeyCode::Enter | KeyCode::Char(' ') => {
+                                                if current_focus < button_count {
+                                                    let (action, value) = &button_list[current_focus];
+                                                    return Ok(json!({
+                                                        "type": "action",
+                                                        "action": action,
+                                                        "value": value
+                                                    }));
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    KeyCode::Enter => "enter".to_string(),
-                                    KeyCode::Esc => "esc".to_string(),
-                                    KeyCode::Backspace => "backspace".to_string(),
-                                    KeyCode::Tab => "tab".to_string(),
-                                    KeyCode::Up => "up".to_string(),
-                                    KeyCode::Down => "down".to_string(),
-                                    KeyCode::Left => "left".to_string(),
-                                    KeyCode::Right => "right".to_string(),
-                                    KeyCode::Home => "home".to_string(),
-                                    KeyCode::End => "end".to_string(),
-                                    KeyCode::PageUp => "page_up".to_string(),
-                                    KeyCode::PageDown => "page_down".to_string(),
-                                    KeyCode::Delete => "delete".to_string(),
-                                    KeyCode::Insert => "insert".to_string(),
-                                    KeyCode::F(n) => format!("f{n}"),
-                                    _ => "unknown".to_string(),
-                                };
-                                // Match key against button events from the rendered tree
-                                if let Some((action, value)) = button_events.get(&key) {
-                                    Ok(json!({ "type": "action", "action": action, "value": value }))
-                                } else {
-                                    Ok(json!({ "type": "key", "key": key }))
+
+                                    let key = match key_event.code {
+                                        KeyCode::Char(c) => {
+                                            if key_event
+                                                .modifiers
+                                                .contains(KeyModifiers::CONTROL)
+                                            {
+                                                if c == 'c' {
+                                                    crossterm::terminal::disable_raw_mode().ok();
+                                                    std::process::exit(0);
+                                                }
+                                                format!("ctrl+{c}")
+                                            } else {
+                                                c.to_string()
+                                            }
+                                        }
+                                        KeyCode::Enter => "enter".to_string(),
+                                        KeyCode::Esc => "esc".to_string(),
+                                        KeyCode::Backspace => "backspace".to_string(),
+                                        KeyCode::Tab => "tab".to_string(),
+                                        KeyCode::Up => "up".to_string(),
+                                        KeyCode::Down => "down".to_string(),
+                                        KeyCode::Left => "left".to_string(),
+                                        KeyCode::Right => "right".to_string(),
+                                        KeyCode::Home => "home".to_string(),
+                                        KeyCode::End => "end".to_string(),
+                                        KeyCode::PageUp => "page_up".to_string(),
+                                        KeyCode::PageDown => "page_down".to_string(),
+                                        KeyCode::Delete => "delete".to_string(),
+                                        KeyCode::Insert => "insert".to_string(),
+                                        KeyCode::F(n) => format!("f{n}"),
+                                        _ => "unknown".to_string(),
+                                    };
+                                    // Match key against button events from the rendered tree
+                                    if let Some((action, value)) = button_events.get(&key) {
+                                        return Ok(json!({ "type": "action", "action": action, "value": value }));
+                                    } else {
+                                        return Ok(json!({ "type": "key", "key": key }));
+                                    }
                                 }
-                            }
-                            Ok(Event::Resize(w, h)) => {
-                                Ok(json!({ "type": "resize", "width": w, "height": h }))
-                            }
-                            Ok(Event::Mouse(mouse)) => {
-                                Ok(json!({
-                                    "type": "mouse",
-                                    "column": mouse.column,
-                                    "row": mouse.row
-                                }))
-                            }
-                            Ok(_) => Ok(json!({ "type": "unknown" })),
-                            Err(e) => {
-                                Err(format!("Op `ui.events` read error: {e}"))
+                                Ok(Event::Resize(w, h)) => {
+                                    return Ok(json!({ "type": "resize", "width": w, "height": h }));
+                                }
+                                Ok(Event::Mouse(mouse)) => {
+                                    return Ok(json!({
+                                        "type": "mouse",
+                                        "column": mouse.column,
+                                        "row": mouse.row
+                                    }));
+                                }
+                                Ok(_) => { continue; }
+                                Err(e) => {
+                                    return Err(format!("Op `ui.events` read error: {e}"));
+                                }
                             }
                         }
                     })
                     .await
                     .map_err(|e| format!("spawn error: {e}"))??;
+
+                    // Handle internal navigation events: update focus and re-render
+                    if result.get("__nav").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        let new_focus = result.get("focus").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        *self.ui_focus_index.borrow_mut() = new_focus;
+                        // Re-render the tree with updated focus highlight
+                        if let Some(tree) = self.ui_tree.borrow().as_ref() {
+                            let focused_tree = inject_focus(tree, new_focus);
+                            let mut stdout = std::io::stdout();
+                            crate::ui_render::render_ui_tree(&focused_tree, &mut stdout);
+                        }
+                        // Recurse to wait for the next event
+                        return self.execute_io_op(op, args).await;
+                    }
                     Ok(result)
                 }
-                "ui.mount" | "ui.update" | "ui.navigate" | "ui.current_path" => Err(format!(
-                    "Op `{op}` is browser-only; use the wasm/browser target"
-                )),
+                "ui.mount" | "ui.update" => {
+                    let tree = args
+                        .first()
+                        .ok_or_else(|| format!("Op `{op}` missing arg0 (UiNode tree)"))?;
+
+                    *self.ui_tree.borrow_mut() = Some(tree.clone());
+
+                    match self.ui_backend {
+                        UiBackendKind::Terminal => {
+                            if !*self.ui_active.borrow() {
+                                use crossterm::{cursor, execute, terminal};
+                                let mut stdout = std::io::stdout();
+                                let _ = terminal::enable_raw_mode();
+                                let _ =
+                                    execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide);
+                                *self.ui_active.borrow_mut() = true;
+                            }
+                            let focus = *self.ui_focus_index.borrow();
+                            let focused_tree = inject_focus(tree, focus);
+                            let mut stdout = std::io::stdout();
+                            crate::ui_render::render_ui_tree(&focused_tree, &mut stdout);
+                            Ok(json!(true))
+                        }
+                        UiBackendKind::Gtk => {
+                            if op == "ui.mount" {
+                                self.ui_gtk_state
+                                    .borrow_mut()
+                                    .mount(tree)
+                                    .map_err(|e| format!("Op `{op}` GTK mount error: {e}"))?;
+                            } else {
+                                let _patches = self
+                                    .ui_gtk_state
+                                    .borrow_mut()
+                                    .update(tree)
+                                    .map_err(|e| format!("Op `{op}` GTK update error: {e}"))?;
+                            }
+                            #[cfg(feature = "linux-gtk")]
+                            {
+                                let mut backend_ref = self.ui_gtk_backend.borrow_mut();
+                                if backend_ref.is_none() {
+                                    *backend_ref =
+                                        Some(crate::ui_gtk_backend::GtkBackend::start()?);
+                                }
+                                let backend = backend_ref.as_ref().ok_or_else(|| {
+                                    "GTK backend missing after startup".to_string()
+                                })?;
+                                if op == "ui.mount" {
+                                    backend.mount(tree.clone())?;
+                                } else {
+                                    backend.update(tree.clone())?;
+                                }
+                                Ok(json!(true))
+                            }
+                            #[cfg(not(feature = "linux-gtk"))]
+                            {
+                                Err(format!(
+                                    "Op `{op}` with `FORAI_UI_BACKEND=gtk` requires building forai with `--features linux-gtk`"
+                                ))
+                            }
+                        }
+                    }
+                }
+                "ui.navigate" => {
+                    let path = read_string_arg(args, 0, op)?;
+                    *self.ui_current_path.borrow_mut() = path;
+                    if self.ui_backend == UiBackendKind::Gtk {
+                        let nav =
+                            json!({ "type": "nav", "path": self.ui_current_path.borrow().clone() });
+                        self.ui_pending_nav_events.borrow_mut().push_back(nav);
+                    }
+                    Ok(json!(true))
+                }
+                "ui.current_path" => Ok(json!(self.ui_current_path.borrow().clone())),
 
                 // --- DOM ops (browser only, no-op on native) ---
                 "dom.write" => {
-                    let html = args.first()
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    if self.ui_backend == UiBackendKind::Gtk {
+                        return Err(
+                            "Op `dom.write` is browser-only; use `ui.mount`/`ui.update` for Linux UI backends"
+                                .to_string(),
+                        );
+                    }
+                    let html = args.first().and_then(|v| v.as_str()).unwrap_or("");
                     if !self.quiet {
                         eprintln!("[dom.write] {html}");
                     }
                     Ok(json!(true))
                 }
                 "dom.set_title" => {
+                    if self.ui_backend == UiBackendKind::Gtk {
+                        return Err(
+                            "Op `dom.set_title` is browser-only; window title integration for GTK backend is planned in Phase 2"
+                                .to_string(),
+                        );
+                    }
                     Ok(json!(true))
                 }
 

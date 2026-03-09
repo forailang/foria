@@ -1,0 +1,16 @@
+docs HandleFilterDf
+    Sets filter to show daringfireball.net feeds.
+done
+
+func HandleFilterDf
+    emit filter as text
+body
+    emit "df" to :filter
+done
+
+test HandleFilterDf
+    it "returns df"
+        result = HandleFilterDf()
+        must result == "df"
+    done
+done

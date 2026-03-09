@@ -1,0 +1,60 @@
+docs View
+    Builds the counter UI tree from the current count.
+    Buttons declare semantic events via do...done blocks.
+    Renders the tree and waits for user input.
+    Returns the matched action event from the button press.
+done
+
+func View
+    take count as long
+    emit event as dict
+body
+    tree = ui.vstack(1) do stack
+    stack.padding(1)
+    stack.align("start")
+
+    ui.hstack(2) do row
+    row.padding(1)
+    row.backgroundColor("dark_blue")
+
+    ui.button("+") do inc
+    inc.color("green")
+    inc.bold(true)
+    emit true to :on_inc
+done
+
+ui.text("Counter: #{count}") do label
+label.color("yellow")
+label.bold(true)
+label.italic(true)
+done
+
+ui.button("-") do dec
+dec.color("red")
+dec.bold(true)
+emit true to :on_dec
+done
+done
+
+ui.button("q") do quit
+quit.color("white")
+quit.backgroundColor("dark_red")
+quit.bold(true)
+quit.style("padding", "0 1")
+emit true to :on_quit
+done
+done
+ui.render(tree)
+event = ui.events()
+emit event
+done
+
+test View
+    mock ui.render => true
+    mock ui.events => {type: "action", action: "on_inc", value: true}
+    it "returns action event"
+        event = View(0)
+        t = obj.get(event, "type")
+        must t == "action"
+    done
+done

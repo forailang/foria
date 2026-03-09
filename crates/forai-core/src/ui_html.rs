@@ -77,7 +77,11 @@ fn append_text_styles(props: Option<&serde_json::Map<String, Value>>, styles: &m
     if props.get("bold").and_then(|v| v.as_bool()).unwrap_or(false) {
         styles.push("font-weight:bold".to_string());
     }
-    if props.get("italic").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if props
+        .get("italic")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         styles.push("font-style:italic".to_string());
     }
 }
@@ -150,10 +154,7 @@ pub fn render_html(node: &Value) -> String {
     let Some(obj) = node.as_object() else {
         return String::new();
     };
-    let node_type = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let node_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let props = obj.get("props").and_then(|v| v.as_object());
     let children = obj
         .get("children")
@@ -171,7 +172,10 @@ pub fn render_html(node: &Value) -> String {
             ];
             append_common_styles(props, &mut styles);
             append_custom_styles(props, &mut styles);
-            format!("<div class=\"forai-screen\"{}>{inner}</div>", style_attr(&styles))
+            format!(
+                "<div class=\"forai-screen\"{}>{inner}</div>",
+                style_attr(&styles)
+            )
         }
         "vstack" => {
             let spacing = props
@@ -235,6 +239,17 @@ pub fn render_html(node: &Value) -> String {
             append_text_styles(props, &mut styles);
             append_custom_styles(props, &mut styles);
             format!("<span{}>{escaped}</span>", style_attr(&styles))
+        }
+        "html" => {
+            let html_content = props
+                .and_then(|p| p.get("html"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut styles = Vec::new();
+            append_common_styles(props, &mut styles);
+            append_text_styles(props, &mut styles);
+            append_custom_styles(props, &mut styles);
+            format!("<div{}>{}</div>", style_attr(&styles), html_content)
         }
         "button" => {
             let label = props
@@ -317,10 +332,7 @@ mod tests {
     fn html_entities_escaped() {
         let node = json!({"type": "text", "props": {"value": "<script>alert(1)</script>"}, "children": []});
         let html = render_html(&node);
-        assert_eq!(
-            html,
-            "<span>&lt;script&gt;alert(1)&lt;/script&gt;</span>"
-        );
+        assert_eq!(html, "<span>&lt;script&gt;alert(1)&lt;/script&gt;</span>");
     }
 
     #[test]

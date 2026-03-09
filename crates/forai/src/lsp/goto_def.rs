@@ -158,7 +158,11 @@ fn find_module_func(
     // Find the uses declaration that binds this module_name
     let uses_path = module.decls.iter().find_map(|d| {
         if let TopDecl::Uses(u) = d {
-            if u.name == module_name { Some(u.path.clone()) } else { None }
+            if u.name == module_name {
+                Some(u.path.clone())
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -178,8 +182,14 @@ fn find_module_func(
             return Some(Location {
                 uri: target_uri,
                 range: Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 0 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 0,
+                    },
                 },
             });
         }
@@ -192,7 +202,11 @@ fn find_uses_module(name: &str, module: &crate::ast::ModuleAst, uri: &Uri) -> Op
     // Find the uses declaration that binds this name
     let uses_path = module.decls.iter().find_map(|d| {
         if let TopDecl::Uses(u) = d {
-            if u.name == name { Some(u.path.clone()) } else { None }
+            if u.name == name {
+                Some(u.path.clone())
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -210,8 +224,14 @@ fn find_uses_module(name: &str, module: &crate::ast::ModuleAst, uri: &Uri) -> Op
         return Some(Location {
             uri: target_uri,
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
             },
         });
     }
@@ -227,8 +247,14 @@ fn find_uses_module(name: &str, module: &crate::ast::ModuleAst, uri: &Uri) -> Op
         return Some(Location {
             uri: target_uri,
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
             },
         });
     }

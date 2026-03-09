@@ -216,12 +216,7 @@ pub fn coerce_index(idx: &Value) -> Result<i64, String> {
         .ok_or_else(|| format!("Index must be an integer, got {idx}"))
 }
 
-fn num_binop(
-    l: &Value,
-    r: &Value,
-    f: fn(f64, f64) -> f64,
-    name: &str,
-) -> Result<Value, String> {
+fn num_binop(l: &Value, r: &Value, f: fn(f64, f64) -> f64, name: &str) -> Result<Value, String> {
     let a = l
         .as_f64()
         .ok_or_else(|| format!("Cannot {name}: left operand {l} is not a number"))?;
@@ -239,15 +234,9 @@ fn num_binop(
     Ok(json!(result))
 }
 
-fn compare_values(
-    l: &Value,
-    r: &Value,
-    pred: fn(Ordering) -> bool,
-) -> Result<Value, String> {
+fn compare_values(l: &Value, r: &Value, pred: fn(Ordering) -> bool) -> Result<Value, String> {
     if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
-        return Ok(json!(pred(
-            a.partial_cmp(&b).unwrap_or(Ordering::Equal)
-        )));
+        return Ok(json!(pred(a.partial_cmp(&b).unwrap_or(Ordering::Equal))));
     }
     if let (Some(a), Some(b)) = (l.as_str(), r.as_str()) {
         return Ok(json!(pred(a.cmp(b))));
@@ -428,8 +417,14 @@ mod tests {
 
     #[test]
     fn eq_int_int() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!(5), &json!(5)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Eq, &json!(5), &json!(6)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(5), &json!(5)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(5), &json!(6)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
@@ -440,49 +435,85 @@ mod tests {
 
     #[test]
     fn eq_strings() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!("a"), &json!("a")).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Eq, &json!("a"), &json!("b")).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!("a"), &json!("a")).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!("a"), &json!("b")).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn eq_zero_int_float() {
         // 0 == 0.0 must be true
-        assert_eq!(eval_binop(BinOp::Eq, &json!(0), &json!(0.0)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(0), &json!(0.0)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
     fn eq_negative_int_float() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!(-5), &json!(-5.0)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(-5), &json!(-5.0)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
     fn neq_different_values_int_float() {
         // 5 != 6.0 must be true
-        assert_eq!(eval_binop(BinOp::Neq, &json!(5), &json!(6.0)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::Neq, &json!(5), &json!(6.0)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
     fn eq_float_float() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!(3.14), &json!(3.14)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Eq, &json!(3.14), &json!(3.15)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(3.14), &json!(3.14)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(3.14), &json!(3.15)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn eq_different_types_not_equal() {
         // string "42" != number 42
-        assert_eq!(eval_binop(BinOp::Eq, &json!("42"), &json!(42)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!("42"), &json!(42)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn eq_bool_not_equal_to_number() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!(true), &json!(1)).unwrap(), json!(false));
-        assert_eq!(eval_binop(BinOp::Eq, &json!(false), &json!(0)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(true), &json!(1)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(false), &json!(0)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn eq_null_values() {
-        assert_eq!(eval_binop(BinOp::Eq, &json!(null), &json!(null)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Eq, &json!(null), &json!(0)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(null), &json!(null)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Eq, &json!(null), &json!(0)).unwrap(),
+            json!(false)
+        );
     }
 
     // --- Division then equality (the classic footgun) ---
@@ -498,14 +529,26 @@ mod tests {
 
     #[test]
     fn lt_int_float_cross_type() {
-        assert_eq!(eval_binop(BinOp::Lt, &json!(1), &json!(2.5)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Gt, &json!(3), &json!(2.5)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::Lt, &json!(1), &json!(2.5)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Gt, &json!(3), &json!(2.5)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
     fn lteq_int_float_equal_value() {
-        assert_eq!(eval_binop(BinOp::LtEq, &json!(5), &json!(5.0)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::GtEq, &json!(5), &json!(5.0)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::LtEq, &json!(5), &json!(5.0)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::GtEq, &json!(5), &json!(5.0)).unwrap(),
+            json!(true)
+        );
     }
 
     // --- Pattern matching: value-based numeric comparison ---
@@ -527,14 +570,26 @@ mod tests {
 
     #[test]
     fn lt_numbers() {
-        assert_eq!(eval_binop(BinOp::Lt, &json!(1), &json!(2)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Lt, &json!(2), &json!(1)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Lt, &json!(1), &json!(2)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Lt, &json!(2), &json!(1)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
     fn lt_strings() {
-        assert_eq!(eval_binop(BinOp::Lt, &json!("a"), &json!("b")).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Lt, &json!("b"), &json!("a")).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::Lt, &json!("a"), &json!("b")).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Lt, &json!("b"), &json!("a")).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
@@ -546,9 +601,18 @@ mod tests {
 
     #[test]
     fn and_booleans() {
-        assert_eq!(eval_binop(BinOp::And, &json!(true), &json!(true)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::And, &json!(true), &json!(false)).unwrap(), json!(false));
-        assert_eq!(eval_binop(BinOp::And, &json!(false), &json!(true)).unwrap(), json!(false));
+        assert_eq!(
+            eval_binop(BinOp::And, &json!(true), &json!(true)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::And, &json!(true), &json!(false)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            eval_binop(BinOp::And, &json!(false), &json!(true)).unwrap(),
+            json!(false)
+        );
     }
 
     #[test]
@@ -566,9 +630,18 @@ mod tests {
 
     #[test]
     fn or_booleans() {
-        assert_eq!(eval_binop(BinOp::Or, &json!(false), &json!(false)).unwrap(), json!(false));
-        assert_eq!(eval_binop(BinOp::Or, &json!(false), &json!(true)).unwrap(), json!(true));
-        assert_eq!(eval_binop(BinOp::Or, &json!(true), &json!(false)).unwrap(), json!(true));
+        assert_eq!(
+            eval_binop(BinOp::Or, &json!(false), &json!(false)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Or, &json!(false), &json!(true)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binop(BinOp::Or, &json!(true), &json!(false)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
@@ -592,7 +665,10 @@ mod tests {
 
     #[test]
     fn negate_float() {
-        assert_eq!(eval_unary(UnaryOp::Neg, &json!(3.14)).unwrap(), json!(-3.14));
+        assert_eq!(
+            eval_unary(UnaryOp::Neg, &json!(3.14)).unwrap(),
+            json!(-3.14)
+        );
     }
 
     #[test]
@@ -602,8 +678,14 @@ mod tests {
 
     #[test]
     fn not_boolean() {
-        assert_eq!(eval_unary(UnaryOp::Not, &json!(true)).unwrap(), json!(false));
-        assert_eq!(eval_unary(UnaryOp::Not, &json!(false)).unwrap(), json!(true));
+        assert_eq!(
+            eval_unary(UnaryOp::Not, &json!(true)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            eval_unary(UnaryOp::Not, &json!(false)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
@@ -617,7 +699,10 @@ mod tests {
     #[test]
     fn pattern_lit_matches() {
         assert!(pattern_matches(&json!(42), &Pattern::Lit(json!(42))));
-        assert!(pattern_matches(&json!("hello"), &Pattern::Lit(json!("hello"))));
+        assert!(pattern_matches(
+            &json!("hello"),
+            &Pattern::Lit(json!("hello"))
+        ));
         assert!(!pattern_matches(&json!(42), &Pattern::Lit(json!(43))));
     }
 
@@ -628,15 +713,30 @@ mod tests {
 
     #[test]
     fn pattern_ident_matches_string() {
-        assert!(pattern_matches(&json!("active"), &Pattern::Ident("active".to_string())));
-        assert!(!pattern_matches(&json!("inactive"), &Pattern::Ident("active".to_string())));
+        assert!(pattern_matches(
+            &json!("active"),
+            &Pattern::Ident("active".to_string())
+        ));
+        assert!(!pattern_matches(
+            &json!("inactive"),
+            &Pattern::Ident("active".to_string())
+        ));
     }
 
     #[test]
     fn pattern_wildcard() {
-        assert!(pattern_matches(&json!(42), &Pattern::Ident("_".to_string())));
-        assert!(pattern_matches(&json!("anything"), &Pattern::Ident("_".to_string())));
-        assert!(pattern_matches(&json!(null), &Pattern::Ident("_".to_string())));
+        assert!(pattern_matches(
+            &json!(42),
+            &Pattern::Ident("_".to_string())
+        ));
+        assert!(pattern_matches(
+            &json!("anything"),
+            &Pattern::Ident("_".to_string())
+        ));
+        assert!(pattern_matches(
+            &json!(null),
+            &Pattern::Ident("_".to_string())
+        ));
     }
 
     // --- Truthiness ---

@@ -765,7 +765,12 @@ fn http_respond_docs() -> StdlibNamespaceDoc {
                     arg(0, "conn", "http_conn", "Connection handle from accept"),
                     arg(1, "status", "long", "HTTP status code"),
                     arg(2, "path", "text", "File path to read and send"),
-                    arg(3, "content_type", "text", "MIME content-type (e.g. application/wasm, application/javascript)"),
+                    arg(
+                        3,
+                        "content_type",
+                        "text",
+                        "MIME content-type (e.g. application/wasm, application/javascript)",
+                    ),
                 ],
                 ret("bool", "True on success"),
                 "Fails on I/O or file-not-found error",
@@ -2132,12 +2137,7 @@ fn route_docs() -> StdlibNamespaceDoc {
                 "route",
                 "Extract named parameters from a URL path given a pattern",
                 vec![
-                    arg(
-                        0,
-                        "pattern",
-                        "text",
-                        "Route pattern (e.g. \"/users/:id\")",
-                    ),
+                    arg(0, "pattern", "text", "Route pattern (e.g. \"/users/:id\")"),
                     arg(1, "path", "text", "URL path to extract params from"),
                 ],
                 ret(
@@ -2247,7 +2247,12 @@ fn ffi_docs() -> StdlibNamespaceDoc {
             "available",
             "ffi",
             "Check whether an FFI library is available on this system",
-            vec![arg(0, "lib_name", "text", "Library name to check availability for")],
+            vec![arg(
+                0,
+                "lib_name",
+                "text",
+                "Library name to check availability for",
+            )],
             ret("bool", "true if the library can be loaded, false otherwise"),
         )],
     )
@@ -2347,7 +2352,10 @@ fn ui_docs() -> StdlibNamespaceDoc {
                 "ui",
                 "Wait for and return the next UI event (I/O op). Browser payloads are normalized as action/input/toggle/nav.",
                 vec![],
-                ret("dict", "Event object, e.g. {type:\"action\",action:\"on_click\",value:true}"),
+                ret(
+                    "dict",
+                    "Event object, e.g. {type:\"action\",action:\"on_click\",value:true}",
+                ),
             ),
             op(
                 "mount",
@@ -2355,7 +2363,12 @@ fn ui_docs() -> StdlibNamespaceDoc {
                 "Mount a UiNode tree to a browser DOM container selector (I/O op, browser target)",
                 vec![
                     arg(0, "tree", "dict", "UiNode tree to mount"),
-                    arg(1, "selector", "text", "Optional DOM selector (default: #app)"),
+                    arg(
+                        1,
+                        "selector",
+                        "text",
+                        "Optional DOM selector (default: #app)",
+                    ),
                 ],
                 ret("bool", "true on success"),
             ),
@@ -2437,8 +2450,16 @@ fn docs_docs() -> StdlibNamespaceDoc {
                 "detail",
                 "docs",
                 "Get detailed documentation for a specific op",
-                vec![arg(0, "full_name", "text", "Fully qualified op name (e.g. str.len)")],
-                ret("dict", "Op detail with name, summary, args, returns, errors"),
+                vec![arg(
+                    0,
+                    "full_name",
+                    "text",
+                    "Fully qualified op name (e.g. str.len)",
+                )],
+                ret(
+                    "dict",
+                    "Op detail with name, summary, args, returns, errors",
+                ),
             ),
         ],
     )

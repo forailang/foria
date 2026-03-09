@@ -1,0 +1,113 @@
+docs ParseRss
+    Parses RSS feed items into normalized article dicts.
+    Extracts guid, title, link, pubDate, and description fields.
+done
+
+func ParseRss
+    take xml as text
+    take source as text
+    emit articles as list
+body
+    parts = str.split(xml, "<item")
+    articles = list.new()
+
+    loop parts as part with index i
+        if i > 0
+            aid = ""
+            guid_parts = str.split(part, "<guid")
+            if list.len(guid_parts) > 1
+                guid_tail = guid_parts[1]
+                guid_gt = str.split(guid_tail, ">")
+                if list.len(guid_gt) > 1
+                    guid_body = guid_gt[1]
+                    guid_end = str.split(guid_body, "<")
+                    aid = guid_end[0]
+                done
+            done
+
+            title_raw = ""
+            title_parts = str.split(part, "<title>")
+            if list.len(title_parts) > 1
+                title_tail = title_parts[1]
+                title_end = str.split(title_tail, "<")
+                title_raw = title_end[0]
+            done
+            title = regex.replace_all(title_raw, "<[^>]+>", " ")
+            title = str.replace(title, "&amp;", "&")
+            title = str.replace(title, "&quot;", "\"")
+            title = str.replace(title, "&lt;", "<")
+            title = str.replace(title, "&gt;", ">")
+            title = str.trim(title)
+
+            link = ""
+            link_parts = str.split(part, "<link>")
+            if list.len(link_parts) > 1
+                link_tail = link_parts[1]
+                link_end = str.split(link_tail, "<")
+                link = link_end[0]
+            done
+
+            published = ""
+            pub_parts = str.split(part, "<pubDate>")
+            if list.len(pub_parts) > 1
+                pub_tail = pub_parts[1]
+                pub_end = str.split(pub_tail, "<")
+                published = pub_end[0]
+            done
+
+            summary_raw = ""
+            desc_parts = str.split(part, "<description>")
+            if list.len(desc_parts) > 1
+                desc_tail = desc_parts[1]
+                desc_end = str.split(desc_tail, "</description>")
+                summary_raw = desc_end[0]
+            done
+            if summary_raw == ""
+                content_parts = str.split(part, "<content:encoded>")
+                if list.len(content_parts) > 1
+                    content_tail = content_parts[1]
+                    content_end = str.split(content_tail, "</content:encoded>")
+                    summary_raw = content_end[0]
+                done
+            done
+            summary = regex.replace_all(summary_raw, "<[^>]+>", " ")
+            summary = str.replace(summary, "&amp;", "&")
+            summary = str.replace(summary, "&quot;", "\"")
+            summary = str.replace(summary, "&lt;", "<")
+            summary = str.replace(summary, "&gt;", ">")
+            summary = str.trim(summary)
+
+            if aid == ""
+                aid = link
+            done
+            if aid == ""
+                aid = "#{source}-rss-#{to.text(i)}"
+            done
+            if title == ""
+                title = "RSS article #{to.text(i)}"
+            done
+
+            article = obj.new()
+            article = obj.set(article, "id", aid)
+            article = obj.set(article, "source", source)
+            article = obj.set(article, "title", title)
+            article = obj.set(article, "link", link)
+            article = obj.set(article, "published", published)
+            article = obj.set(article, "summary", summary)
+            articles = list.append(articles, article)
+        done
+    done
+
+    emit articles
+done
+
+test ParseRss
+    it "extracts title link and summary"
+        xml = "<rss><channel><item><guid>r1</guid><title>Rss One</title><link>https://example.com/r1</link><pubDate>Mon, 03 Mar 2026 00:00:00 GMT</pubDate><description>Hello <i>RSS</i></description></item></channel></rss>"
+        items = ParseRss(xml, "df")
+        encoded = json.encode(items)
+        must str.contains(encoded, "Rss One")
+        must str.contains(encoded, "https://example.com/r1")
+        must str.contains(encoded, "Hello")
+    done
+done

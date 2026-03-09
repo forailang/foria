@@ -1,0 +1,162 @@
+docs View
+    Builds the two-pane RSS reader interface and waits for the next UI event.
+    Left pane: filters + article list.
+    Right pane: selected article details.
+done
+
+func View
+    take articles as list
+    take selected_id as text
+    take filter as text
+    take status as text
+    take all_caps as bool
+    emit event as dict
+body
+    selected = obj.new()
+    selected = obj.set(selected, "id", "")
+    selected = obj.set(selected, "source", "")
+    selected = obj.set(selected, "title", "Select an article")
+    selected = obj.set(selected, "link", "")
+    selected = obj.set(selected, "published", "")
+    selected = obj.set(selected, "summary", "Choose an item from the list on the left.")
+
+    loop articles as article
+        aid = obj.get(article, "id") ?? ""
+        if aid == selected_id
+            selected = article
+        done
+    done
+
+    title = obj.get(selected, "title") ?? "Select an article"
+    source = obj.get(selected, "source") ?? ""
+        link = obj.get(selected, "link") ?? ""
+        published = obj.get(selected, "published") ?? ""
+        summary = obj.get(selected, "summary") ?? ""
+
+        article_rows = list.new()
+        visible_count = 0
+        loop articles as article
+            aid = obj.get(article, "id") ?? ""
+            asource = obj.get(article, "source") ?? ""
+            atitle = obj.get(article, "title") ?? "Untitled"
+            shown_title = atitle
+            if str.len(shown_title) > 32
+                shown_title = str.slice(shown_title, 0, 32) + "..."
+            done
+            include = filter == "all" || filter == asource
+
+            if include
+                visible_count = visible_count + 1
+                row = ui.button("#{asource}: #{shown_title}") do item
+                item.width(220)
+                if aid == selected_id
+                    item.bold(true)
+                    item.backgroundColor("dark_green")
+                    item.color("white")
+                done
+                emit aid to :on_select
+            done
+            article_rows = list.append(article_rows, row)
+        done
+    done
+
+    all_label = "all"
+    if all_caps
+        all_label = "ALL"
+    done
+
+    tree = ui.screen() do
+    ui.hstack(12) do page
+    page.padding(14)
+
+    ui.vstack(6) do left
+    left.padding(8)
+    left.backgroundColor("dark_blue")
+    left.width(240)
+
+    ui.text("RSS Reader", 22) do heading
+    heading.bold(true)
+    heading.color("white")
+done
+
+ui.text("Status: #{status}") do status_label
+status_label.color("gray")
+done
+
+ui.hstack(4) do filters
+ui.button(all_label) do all
+emit true to :all_pressed
+done
+ui.button("Simon") do simon
+emit true to :on_filter_simon
+done
+ui.button("Daring") do df
+emit true to :on_filter_df
+done
+ui.button("Refresh") do refresh
+refresh.bold(true)
+emit true to :on_refresh
+done
+done
+
+ui.text("Articles (#{filter}) - #{to.text(visible_count)}") do list_heading
+list_heading.bold(true)
+done
+
+rows = ui.vstack(article_rows)
+if list.len(article_rows) == 0
+    ui.text("No articles available for this filter.") do empty
+    empty.color("gray")
+done
+done
+done
+
+ui.vstack(5) do right
+right.padding(8)
+right.backgroundColor("dark_gray")
+right.width(760)
+right.align("start")
+
+ui.text(title, 22) do t
+t.bold(true)
+t.color("white")
+done
+
+ui.text("Source: #{source}") do src
+src.color("cyan")
+done
+
+ui.text("Selected ID: #{selected_id}") do sid
+sid.color("gray")
+done
+
+ui.text("Published: #{published}") do pub
+pub.color("gray")
+done
+
+ui.text("Link: #{link}") do lnk
+lnk.color("blue")
+done
+
+ui.html(summary) do body
+body.color("white")
+done
+done
+done
+done
+
+_ = ui.update(tree)
+e = ui.events()
+emit e to :event
+done
+
+test View
+    mock ui.update => true
+    mock ui.events => {type: "action", action: "on_select", value: "simon-1"}
+    it "returns event after rendering"
+        articles = [{id: "simon-1", source: "simon", title: "A", link: "https://example.com", published: "", summary: "x"}]
+        e = View(articles, "simon-1", "all", "ready", false)
+        action = obj.get(e, "action")
+        must action == "on_select"
+    done
+done

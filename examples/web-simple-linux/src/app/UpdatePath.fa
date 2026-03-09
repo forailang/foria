@@ -1,0 +1,53 @@
+docs UpdatePath
+    Reduces native UI events into the next route path.
+    Action events trigger ui.navigate; nav events trust the provided path.
+done
+
+func UpdatePath
+    take path as text
+    take event as dict
+    emit path as text
+body
+    kind = obj.get(event, "type") ?? ""
+
+    if kind == "action"
+        action = obj.get(event, "action") ?? ""
+        case action
+            when "on_home"
+                _ = ui.navigate("/")
+                emit "/"
+            when "on_about"
+                _ = ui.navigate("/about")
+                emit "/about"
+            when "on_blog"
+                _ = ui.navigate("/blog")
+                emit "/blog"
+            else
+                emit path
+        done
+    else if kind == "nav"
+        next_path = obj.get(event, "path") ?? path
+        emit next_path
+    else
+        emit path
+    done
+done
+
+test UpdatePath
+    mock ui.navigate => true
+    it "maps action to target path"
+        e = {type: "action", action: "on_about", value: true}
+        p = UpdatePath("/", e)
+        must p == "/about"
+    done
+    it "uses nav path directly"
+        e = {type: "nav", path: "/blog"}
+        p = UpdatePath("/", e)
+        must p == "/blog"
+    done
+    it "passes through unknown events"
+        e = {type: "key", key: "x"}
+        p = UpdatePath("/about", e)
+        must p == "/about"
+    done
+done

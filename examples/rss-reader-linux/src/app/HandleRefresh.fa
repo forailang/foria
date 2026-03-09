@@ -1,0 +1,19 @@
+use LoadFeeds from "./LoadFeeds.fa"
+
+docs HandleRefresh
+    Refreshes the feed list by re-fetching articles.
+done
+
+func HandleRefresh
+    emit articles as list
+body
+    emit LoadFeeds() to :articles
+done
+
+test HandleRefresh
+    mock LoadFeeds => [{id: "a", source: "simon", title: "X", link: "", published: "", summary: ""}]
+    it "returns fresh articles"
+        result = HandleRefresh()
+        must list.len(result) == 1
+    done
+done

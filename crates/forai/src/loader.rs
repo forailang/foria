@@ -208,8 +208,16 @@ fn compile_func_decl(
         )
     })?;
 
-    typecheck::typecheck_func_with_flows(&func_decl.name, &func_decl.takes, &flow.body, &func_decl.emits, &func_decl.fails, registry, Some(flow_registry))
-        .map_err(|e| format!("{}: {e}", file_path.display()))?;
+    typecheck::typecheck_func_with_flows(
+        &func_decl.name,
+        &func_decl.takes,
+        &flow.body,
+        &func_decl.emits,
+        &func_decl.fails,
+        registry,
+        Some(flow_registry),
+    )
+    .map_err(|e| format!("{}: {e}", file_path.display()))?;
 
     let known: HashSet<&str> = runtime::known_ops().iter().copied().collect();
     let mut ops = Vec::new();
@@ -484,8 +492,13 @@ pub fn load_single_file(
         ));
     }
 
-    let type_registry = TypeRegistry::from_module(&module)
-        .map_err(|errors| format!("{}: type errors:\n{}", file_path.display(), errors.join("\n")))?;
+    let type_registry = TypeRegistry::from_module(&module).map_err(|errors| {
+        format!(
+            "{}: type errors:\n{}",
+            file_path.display(),
+            errors.join("\n")
+        )
+    })?;
 
     // Process nested use declarations within this file
     let mut sub_registry = FlowRegistry::new();
@@ -495,7 +508,15 @@ pub fn load_single_file(
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
             let resolved = resolve_use_path(&uses.path, file_dir, resolved_deps)?;
-            register_uses_imports(uses, &resolved, &mut sub_registry, loading_set, extra_ops, resolved_deps, file_path)?;
+            register_uses_imports(
+                uses,
+                &resolved,
+                &mut sub_registry,
+                loading_set,
+                extra_ops,
+                resolved_deps,
+                file_path,
+            )?;
         }
     }
 
@@ -606,7 +627,15 @@ pub fn load_module(
         for decl in &module.decls {
             if let TopDecl::Uses(uses) = decl {
                 let resolved = resolve_use_path(&uses.path, module_dir, resolved_deps)?;
-                register_uses_imports(uses, &resolved, &mut sub_registry, loading_set, extra_ops, resolved_deps, file)?;
+                register_uses_imports(
+                    uses,
+                    &resolved,
+                    &mut sub_registry,
+                    loading_set,
+                    extra_ops,
+                    resolved_deps,
+                    file,
+                )?;
             }
         }
 
@@ -696,7 +725,15 @@ pub fn build_flow_registry(
     for decl in &module.decls {
         if let TopDecl::Uses(uses) = decl {
             let resolved = resolve_use_path(&uses.path, base_dir, resolved_deps)?;
-            register_uses_imports(uses, &resolved, &mut registry, &mut loading_set, &extra_ops, resolved_deps, entry_path)?;
+            register_uses_imports(
+                uses,
+                &resolved,
+                &mut registry,
+                &mut loading_set,
+                &extra_ops,
+                resolved_deps,
+                entry_path,
+            )?;
         }
     }
 
@@ -717,7 +754,13 @@ pub fn collect_imported_ffi(
         None => return FfiRegistry::new(),
     };
     let mut ffi = FfiRegistry::new();
-    collect_ffi_recursive(module, base_dir, resolved_deps, &mut HashSet::new(), &mut ffi);
+    collect_ffi_recursive(
+        module,
+        base_dir,
+        resolved_deps,
+        &mut HashSet::new(),
+        &mut ffi,
+    );
     ffi
 }
 

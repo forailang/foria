@@ -1,0 +1,23 @@
+docs About
+    About page content as a UiNode tree.
+done
+
+func About
+    emit result as dict
+body
+    tree = ui.vstack(10) do stack
+    stack.padding(8)
+    ui.text("forai is a text-first DSL for reactive, pipeline-based apps.", 18)
+    ui.text("Sources produce events, funcs compute, sinks output.")
+    ui.text("The same ui.* tree renders in terminal, SSR HTML, browser WASM, and Linux GTK.")
+done
+emit tree
+done
+
+test About
+    it "returns a ui tree"
+        v = About()
+        t = obj.get(v, "type")
+        must t == "vstack"
+    done
+done

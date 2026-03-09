@@ -1085,9 +1085,11 @@ body
 done
 "#;
         let module = parse_module_v1(src).expect("parse");
-        let err = validate_module(&module, Some("main.fa")).expect_err("flow main should require a test");
+        let err =
+            validate_module(&module, Some("main.fa")).expect_err("flow main should require a test");
         assert!(
-            err.iter().any(|e| e.contains("flow `main` has no test block")),
+            err.iter()
+                .any(|e| e.contains("flow `main` has no test block")),
             "got: {err:?}"
         );
     }
@@ -1185,7 +1187,10 @@ done
     #[test]
     fn builds_unknown_op_fix_hint_for_pascal_case_call() {
         let hint = unknown_op_fix_hint("Round").expect("hint expected");
-        assert!(hint.contains("use Round from \"./round.fa\""), "got: {hint}");
+        assert!(
+            hint.contains("use Round from \"./round.fa\""),
+            "got: {hint}"
+        );
         assert!(hint.contains("result = Round()"), "got: {hint}");
     }
 

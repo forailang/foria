@@ -1,7 +1,11 @@
 [package]
 name = "forai"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
+
+[features]
+default = []
+linux-gtk = ["dep:gtk4"]
 
 [dependencies]
 forai-core = { path = "../forai-core" }
@@ -27,6 +31,7 @@ libloading = "0.9"
 libffi = "5"
 lsp-server = "0.7"
 lsp-types = "0.97"
+gtk4 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 proptest = "1.10.0"

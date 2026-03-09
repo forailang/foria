@@ -62,7 +62,9 @@ pub struct RunReport {
     pub ir: Ir,
 }
 
-use forai_core::pure_ops::{read_string_arg, read_i64_arg, read_object_arg, read_array_arg, read_f64_arg};
+use forai_core::pure_ops::{
+    read_array_arg, read_f64_arg, read_i64_arg, read_object_arg, read_string_arg,
+};
 
 fn extract_first_number(s: &str) -> Option<f64> {
     let re = Regex::new(r"-?\d+(\.\d+)?").unwrap();
@@ -453,7 +455,6 @@ pub fn known_ops() -> &'static [&'static str] {
         "list.range",
         "list.new",
         "list.append",
-
         "list.len",
         "list.contains",
         "list.slice",
@@ -1995,11 +1996,15 @@ pub(crate) async fn execute_op(
         }
         "route.get" | "route.post" | "route.put" | "route.delete" | "route.patch" => {
             let pattern = read_string_arg(args, 0, op)?;
-            let req = args.get(1).ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
+            let req = args
+                .get(1)
+                .ok_or_else(|| format!("Op `{op}` missing arg1 (request)"))?;
             let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
             let path = req.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let expected = op.strip_prefix("route.").unwrap().to_uppercase();
-            Ok(json!(method == expected && route_match_bool(&pattern, path)))
+            Ok(json!(
+                method == expected && route_match_bool(&pattern, path)
+            ))
         }
 
         // --- HTML ops ---
@@ -2263,7 +2268,12 @@ fn eval_ui_children<'a>(
                             }
                         }
                     }
-                    if try_apply_ui_modifier_call(&node.op, &args, &child_vars, &mut child_modifiers) {
+                    if try_apply_ui_modifier_call(
+                        &node.op,
+                        &args,
+                        &child_vars,
+                        &mut child_modifiers,
+                    ) {
                         child_vars.insert(node.bind.clone(), Value::Null);
                         continue;
                     }
@@ -2282,14 +2292,22 @@ fn eval_ui_children<'a>(
                     {
                         let mut evaluated = Vec::with_capacity(args.len());
                         for a in args {
-                            evaluated.push(eval_expr(a, &child_vars, flow_registry, host, codecs).await?);
+                            evaluated.push(
+                                eval_expr(a, &child_vars, flow_registry, host, codecs).await?,
+                            );
                         }
-                        if try_apply_ui_modifier_call(func, &evaluated, &child_vars, &mut child_modifiers) {
+                        if try_apply_ui_modifier_call(
+                            func,
+                            &evaluated,
+                            &child_vars,
+                            &mut child_modifiers,
+                        ) {
                             child_vars.insert(ea.bind.clone(), Value::Null);
                             continue;
                         }
                     }
-                    let value = eval_expr(&ea.expr, &child_vars, flow_registry, host, codecs).await?;
+                    let value =
+                        eval_expr(&ea.expr, &child_vars, flow_registry, host, codecs).await?;
                     if value.is_object() && value.get("type").is_some() {
                         child_nodes.push(value.clone());
                     }
@@ -2297,7 +2315,9 @@ fn eval_ui_children<'a>(
                 }
                 Statement::Emit(emit) => {
                     // Emits inside do...done blocks are captured as declarative event metadata
-                    let value = eval_expr(&emit.value_expr, &child_vars, flow_registry, host, codecs).await?;
+                    let value =
+                        eval_expr(&emit.value_expr, &child_vars, flow_registry, host, codecs)
+                            .await?;
                     child_events.insert(emit.output.clone(), value);
                 }
                 _ => {}
@@ -2328,7 +2348,11 @@ fn eval_expr<'a>(
                 let v = eval_expr(inner, vars, flow_registry, host, codecs).await?;
                 forai_core::eval::eval_unary(*op, &v)
             }
-            Expr::Call { func, args, children } => {
+            Expr::Call {
+                func,
+                args,
+                children,
+            } => {
                 let mut evaluated = Vec::with_capacity(args.len());
                 for a in args {
                     evaluated.push(eval_expr(a, vars, flow_registry, host, codecs).await?);
@@ -2375,8 +2399,16 @@ fn eval_expr<'a>(
                         let outputs = report.outputs.as_object().ok_or_else(|| {
                             format!("flow `{func}` produced invalid outputs shape")
                         })?;
-                        let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
-                        let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+                        let success = program
+                            .emit_name
+                            .as_deref()
+                            .and_then(|n| outputs.get(n))
+                            .cloned();
+                        let failure = program
+                            .fail_name
+                            .as_deref()
+                            .and_then(|n| outputs.get(n))
+                            .cloned();
                         if program.emit_name.is_none() {
                             return Ok(serde_json::Value::Null);
                         }
@@ -2456,15 +2488,21 @@ fn eval_expr<'a>(
                         Ok(arr[resolved as usize].clone())
                     }
                     Value::Object(map) => {
-                        let key = idx.as_str().ok_or_else(|| format!("Dict key must be a string, got {idx}"))?;
-                        map.get(key).cloned().ok_or_else(|| format!("Key \"{key}\" not found"))
+                        let key = idx
+                            .as_str()
+                            .ok_or_else(|| format!("Dict key must be a string, got {idx}"))?;
+                        map.get(key)
+                            .cloned()
+                            .ok_or_else(|| format!("Key \"{key}\" not found"))
                     }
                     _ => Err(format!("Cannot index into {}", collection)),
                 }
             }
             Expr::Coalesce { lhs, rhs } => {
                 let lhs_val = match lhs.as_ref() {
-                    Expr::Var(name) => resolve_var_path(vars, name).unwrap_or(serde_json::Value::Null),
+                    Expr::Var(name) => {
+                        resolve_var_path(vars, name).unwrap_or(serde_json::Value::Null)
+                    }
                     _ => eval_expr(lhs, vars, flow_registry, host, codecs).await?,
                 };
                 if lhs_val == serde_json::Value::Null {
@@ -2793,8 +2831,16 @@ async fn try_dispatch_flow(
         return Some(Err(format!("flow `{op}` produced invalid outputs shape")));
     };
 
-    let success = program.emit_name.as_deref().and_then(|n| outputs.get(n)).cloned();
-    let failure = program.fail_name.as_deref().and_then(|n| outputs.get(n)).cloned();
+    let success = program
+        .emit_name
+        .as_deref()
+        .and_then(|n| outputs.get(n))
+        .cloned();
+    let failure = program
+        .fail_name
+        .as_deref()
+        .and_then(|n| outputs.get(n))
+        .cloned();
 
     if program.emit_name.is_none() {
         return Some(Ok(serde_json::Value::Null));
@@ -3074,7 +3120,9 @@ fn execute_statements<'a>(
                     for arm in &case_block.arms {
                         if forai_core::eval::pattern_matches(&subject, &arm.pattern) {
                             if let Some(guard_expr) = &arm.guard {
-                                let guard_val = eval_expr(guard_expr, vars, flow_registry, host, codecs).await?;
+                                let guard_val =
+                                    eval_expr(guard_expr, vars, flow_registry, host, codecs)
+                                        .await?;
                                 if !guard_val.as_bool().unwrap_or(false) {
                                     continue;
                                 }
@@ -3137,7 +3185,10 @@ fn execute_statements<'a>(
                     })?;
                     let items = items.clone();
                     let previous = vars.get(&loop_block.item).cloned();
-                    let prev_index = loop_block.index.as_ref().and_then(|idx| vars.get(idx).cloned());
+                    let prev_index = loop_block
+                        .index
+                        .as_ref()
+                        .and_then(|idx| vars.get(idx).cloned());
                     for (i, item) in items.iter().enumerate() {
                         vars.insert(loop_block.item.clone(), item.clone());
                         if let Some(idx) = &loop_block.index {
@@ -3487,13 +3538,9 @@ fn execute_statements<'a>(
                     }
                     // Loop: call source op directly, bind result, execute body
                     loop {
-                        let event = execute_op(
-                            &on_block.source_op,
-                            &resolved_args,
-                            host.as_ref(),
-                            codecs,
-                        )
-                        .await?;
+                        let event =
+                            execute_op(&on_block.source_op, &resolved_args, host.as_ref(), codecs)
+                                .await?;
                         vars.insert(on_block.bind.clone(), event);
                         match execute_statements(
                             &on_block.body,
@@ -3685,9 +3732,9 @@ async fn execute_flow_inner(
 
         // Check if any step result contains an unhandled on_quit action
         if is_reactive {
-            let got_quit = vars.iter().any(|(_, v)| {
-                v.get("action").and_then(|a| a.as_str()) == Some("on_quit")
-            });
+            let got_quit = vars
+                .iter()
+                .any(|(_, v)| v.get("action").and_then(|a| a.as_str()) == Some("on_quit"));
             if got_quit {
                 break;
             }
@@ -3757,6 +3804,13 @@ async fn execute_flow_inner(
                 .map(|fr| !fr.value_mocks.is_empty())
                 .unwrap_or(false);
             if (has_mocks || flow_registry.is_none()) && cycle >= 100 {
+                break;
+            }
+            if cycle >= 255 {
+                eprintln!(
+                    "error: reactive flow '{}' exceeded 255 update cycles — possible infinite loop",
+                    flow.name
+                );
                 break;
             }
             continue;
@@ -3924,7 +3978,10 @@ done
         // With a fail port, output validation routes to fail instead of crashing
         let report = result.expect("should route to fail port, not crash");
         let outputs = report.outputs.as_object().unwrap();
-        assert!(outputs.contains_key("error"), "fail port should be populated: {outputs:?}");
+        assert!(
+            outputs.contains_key("error"),
+            "fail port should be populated: {outputs:?}"
+        );
         let error_val = &outputs["error"];
         assert_eq!(error_val["kind"], "output_validation_error");
     }
@@ -6970,8 +7027,7 @@ done
 
     #[test]
     fn route_params_extracts_params() {
-        let result =
-            test_op("route.params", &[json!("/users/:id"), json!("/users/42")]).unwrap();
+        let result = test_op("route.params", &[json!("/users/:id"), json!("/users/42")]).unwrap();
         assert_eq!(result["id"], json!("42"));
     }
 
@@ -6998,8 +7054,7 @@ done
 
     #[test]
     fn route_params_no_match_returns_empty() {
-        let result =
-            test_op("route.params", &[json!("/users/:id"), json!("/posts/42")]).unwrap();
+        let result = test_op("route.params", &[json!("/users/:id"), json!("/posts/42")]).unwrap();
         assert_eq!(result, json!({}));
     }
 
@@ -7366,7 +7421,14 @@ done
         assert!(!arr.is_empty());
         let first = &arr[0];
         assert!(first.get("name").unwrap().is_string());
-        assert!(first.get("full_name").unwrap().as_str().unwrap().starts_with("str."));
+        assert!(
+            first
+                .get("full_name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .starts_with("str.")
+        );
     }
 
     #[test]
@@ -7719,9 +7781,7 @@ done
         let codecs = CodecRegistry::default_registry();
 
         let mut flow_reg = FlowRegistry::new();
-        flow_reg
-            .value_mocks
-            .insert("View".to_string(), json!(null));
+        flow_reg.value_mocks.insert("View".to_string(), json!(null));
         flow_reg
             .value_mocks
             .insert("Increment".to_string(), json!(42));

@@ -640,6 +640,7 @@ Target behavior:
 | `browser` | `<out>/browser/` | Produces browser runtime assets (`forai-browser.js`, wasm, bootstrap `index.html`) |
 | `bundle` | `<out>/<name>` | Native executable bundle (depends on `wasm`) |
 | `native` | `<out>/<name>` | Native v3 bundle |
+| `linux-ui` | `<out>/linux-ui/` | Generates Linux native executable `<name>` and `run-linux-ui.sh` wrapper (GTK backend mode) |
 
 `forai build` always runs fmt + docs + tests before writing target artifacts.
 

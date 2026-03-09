@@ -48,8 +48,8 @@ pub enum TopDecl {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct UsesDecl {
-    pub name: String,       // bound name (e.g. "lib" or "Round")
-    pub path: String,       // path string (e.g. "./lib" or "./round.fa")
+    pub name: String,         // bound name (e.g. "lib" or "Round")
+    pub path: String,         // path string (e.g. "./lib" or "./round.fa")
     pub imports: Vec<String>, // named imports (e.g. ["View", "Loop"]); empty = import whole module
     pub span: Span,
 }
@@ -345,10 +345,10 @@ pub struct SourceLoopBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnBlock {
-    pub event_tag: String,       // "request", "input", etc.
-    pub source_op: String,       // "http.server.accept", "term.prompt"
-    pub source_args: Vec<Arg>,   // args to the source call
-    pub bind: String,            // "req", "raw"
+    pub event_tag: String,     // "request", "input", etc.
+    pub source_op: String,     // "http.server.accept", "term.prompt"
+    pub source_args: Vec<Arg>, // args to the source call
+    pub bind: String,          // "req", "raw"
     pub body: Vec<Statement>,
 }
 

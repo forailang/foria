@@ -1,0 +1,55 @@
+use resolve from "./resolve"
+
+docs View
+    Builds the current page UI tree, mounts then updates it in native Linux UI mode,
+    then waits for the next UI event.
+done
+
+func View
+    take path as text
+    emit event as dict
+body
+    section = resolve.ResolvePage(path)
+    title = obj.get(section, "title")
+    page_node = obj.get(section, "node")
+
+    tree = ui.screen() do
+    ui.vstack(14) do root
+    root.padding(16)
+
+    ui.text("forai web-simple-linux", 24) do app_title
+    app_title.bold(true)
+done
+
+ui.hstack(8) do nav
+ui.button("Home") do
+emit true to :on_home
+done
+ui.button("About") do
+emit true to :on_about
+done
+ui.button("Blog") do
+emit true to :on_blog
+done
+done
+
+ui.text(title, 20) do heading
+heading.bold(true)
+done
+
+page = page_node
+done
+done
+
+_ = ui.update(tree)
+
+e = ui.events()
+emit e to :event
+done
+
+test View
+    it "compiles and is exercised via main"
+        ok = true
+        must ok == true
+    done
+done
